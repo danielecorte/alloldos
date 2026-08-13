@@ -1,4 +1,4 @@
-# alloldos
+# AllOldOs
 
 Un raccoglitore di vecchi sistemi operativi emulati, che gira interamente dentro
 il browser. Si parte da una schermata di boot in stile GRUB: scegli la macchina
