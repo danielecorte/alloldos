@@ -7,6 +7,14 @@
 
 const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
+/** The C64 firmware, where VICE keeps it — the same place `npm run fetch-roms` looks. */
+const VICE_ROMS = 'https://raw.githubusercontent.com/VICE-Team/svn-mirror/main/vice/data/C64';
+const ROM_DOWNLOADS = [
+  ['kernal-901227-03.bin', '8 KB'],
+  ['basic-901226-01.bin', '8 KB'],
+  ['chargen-901225-01.bin', '4 KB'],
+];
+
 class AboutPage {
   constructor(container, { onExit }) {
     this.container = container;
@@ -31,6 +39,26 @@ class AboutPage {
       accende. La prima è il Commodore 64, emulato dal silicio in su e avviato
       sul KERNAL e sul BASIC V2 originali. Non è una simulazione dell'aspetto di
       un C64: è un C64 che esegue il suo firmware.</p>
+
+      <h2 class="about__heading">Dove trovare le ROM</h2>
+      <p>Quel firmware è proprietà Commodore/Cloanto e non può essere
+      distribuito con questa pagina, quindi al primo avvio la macchina te lo
+      chiede. Sono tre file, 20 KB in tutto, e vengono dalla distribuzione di
+      <a class="about__link" href="https://vice-emu.sourceforge.io/" target="_blank" rel="noopener noreferrer">VICE</a>:</p>
+      <ul class="about__list">
+        ${ROM_DOWNLOADS.map(
+          ([file, size]) =>
+            `<li><a class="about__link" href="${VICE_ROMS}/${file}" target="_blank" rel="noopener noreferrer">${file}</a> — ${size}</li>`,
+        ).join('\n        ')}
+      </ul>
+      <p>Scaricali e <b>trascinali tutti e tre sulla finestra</b>. Il nome non
+      conta: vengono riconosciuti dal contenuto, quindi vanno bene così come
+      sono. Se hai già VICE installato non serve scaricare niente — stanno nella
+      sua cartella <code>C64</code>.</p>
+      <p class="about__note">Restano nel tuo browser e non vanno da nessuna
+      parte: alloldos non ha un server a cui mandarli. Vanno rimessi se cambi
+      browser o cancelli i dati del sito. Chi vuole una licenza esplicita sul
+      firmware può prendere <i>C64 Forever</i> di Cloanto.</p>
 
       <h2 class="about__heading">Cosa è stato fatto</h2>
       <ul class="about__list">
