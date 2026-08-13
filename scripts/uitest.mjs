@@ -352,7 +352,12 @@ session.showROMPrompt(['KERNAL']);
 const panel = session.overlay.children[0];
 const panelText = [panel.innerHTML, ...panel.children.map((node) => node.innerHTML || node.textContent)].join(' ');
 check('the ROM prompt asks for the ROMs before explaining itself', panelText.includes('Trascina qui'));
-check('it says what is missing, and under what name', panelText.includes('KERNAL') && panelText.includes('kernal.bin'));
+check('it says what is missing', panelText.includes('KERNAL'));
+check(
+  'and offers a download for it, rather than leaving the visitor to guess',
+  panelText.includes('kernal-901227-03.bin') && panelText.includes('VICE-Team'),
+);
+check('but only for the ROM that is actually missing', !panelText.includes('chargen-901225-01.bin'));
 panel.children.find((node) => node.tagName === 'BUTTON').dispatch('click');
 check('and its button opens the file picker', filePickerOpened);
 

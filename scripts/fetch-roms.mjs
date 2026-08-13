@@ -9,19 +9,17 @@ import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The list of images, and where they come from, belongs to the emulator: the
+// page offers the same three downloads to anyone arriving without them, and the
+// two must not be able to drift apart.
+import { ROM_SPECS, ROM_SOURCE_URL } from '../src/systems/c64/roms.js';
+
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const DEST = join(ROOT, 'roms', 'c64');
-const BASE = 'https://raw.githubusercontent.com/VICE-Team/svn-mirror/main/vice/data/C64';
-
-const ROMS = [
-  { file: 'kernal.bin', from: 'kernal-901227-03.bin', size: 8192 },
-  { file: 'basic.bin', from: 'basic-901226-01.bin', size: 8192 },
-  { file: 'chargen.bin', from: 'chargen-901225-01.bin', size: 4096 },
-];
 
 await mkdir(DEST, { recursive: true });
 
-for (const rom of ROMS) {
+for (const rom of ROM_SPECS) {
   const target = join(DEST, rom.file);
   if (!process.argv.includes('--force')) {
     try {
@@ -33,7 +31,7 @@ for (const rom of ROMS) {
     }
   }
 
-  const url = `${BASE}/${rom.from}`;
+  const url = `${ROM_SOURCE_URL}/${rom.source}`;
   process.stdout.write(`↓ ${rom.file} … `);
   const res = await fetch(url);
   if (!res.ok) {

@@ -5,15 +5,9 @@
 // exactly what it is: a partition you can select, that happens to contain a
 // page instead of a computer.
 
-const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
+import { ROM_SPECS, romDownloadLink } from '../systems/c64/roms.js';
 
-/** The C64 firmware, where VICE keeps it — the same place `npm run fetch-roms` looks. */
-const VICE_ROMS = 'https://raw.githubusercontent.com/VICE-Team/svn-mirror/main/vice/data/C64';
-const ROM_DOWNLOADS = [
-  ['kernal-901227-03.bin', '8 KB'],
-  ['basic-901226-01.bin', '8 KB'],
-  ['chargen-901225-01.bin', '4 KB'],
-];
+const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
 class AboutPage {
   constructor(container, { onExit }) {
@@ -46,10 +40,7 @@ class AboutPage {
       chiede. Sono tre file, 20 KB in tutto, e vengono dalla distribuzione di
       <a class="about__link" href="https://vice-emu.sourceforge.io/" target="_blank" rel="noopener noreferrer">VICE</a>:</p>
       <ul class="about__list">
-        ${ROM_DOWNLOADS.map(
-          ([file, size]) =>
-            `<li><a class="about__link" href="${VICE_ROMS}/${file}" target="_blank" rel="noopener noreferrer">${file}</a> — ${size}</li>`,
-        ).join('\n        ')}
+        ${ROM_SPECS.map((spec) => `<li>${romDownloadLink(spec)}</li>`).join('\n        ')}
       </ul>
       <p>Scaricali e <b>trascinali tutti e tre sulla finestra</b>. Il nome non
       conta: vengono riconosciuti dal contenuto, quindi vanno bene così come

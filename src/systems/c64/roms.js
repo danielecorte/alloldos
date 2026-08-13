@@ -6,11 +6,27 @@
 
 const STORAGE_PREFIX = 'alloldos.rom.c64.';
 
+/**
+ * Where someone without the firmware can get it: VICE has shipped it for
+ * decades, and this is its source tree — the same place `npm run fetch-roms`
+ * looks, so the page and the script can never point at two different files.
+ */
+export const ROM_SOURCE_URL =
+  'https://raw.githubusercontent.com/VICE-Team/svn-mirror/main/vice/data/C64';
+
 export const ROM_SPECS = [
-  { name: 'kernal', file: 'kernal.bin', size: 8192, label: 'KERNAL' },
-  { name: 'basic', file: 'basic.bin', size: 8192, label: 'BASIC' },
-  { name: 'chargen', file: 'chargen.bin', size: 4096, label: 'Character generator' },
+  { name: 'kernal', file: 'kernal.bin', size: 8192, label: 'KERNAL', source: 'kernal-901227-03.bin' },
+  { name: 'basic', file: 'basic.bin', size: 8192, label: 'BASIC', source: 'basic-901226-01.bin' },
+  { name: 'chargen', file: 'chargen.bin', size: 4096, label: 'Character generator', source: 'chargen-901225-01.bin' },
 ];
+
+/** `<a>` markup for downloading one ROM from VICE, sized in whole kilobytes. */
+export function romDownloadLink(spec) {
+  return (
+    `<a href="${ROM_SOURCE_URL}/${spec.source}" target="_blank" rel="noopener noreferrer">` +
+    `${spec.source}</a> — ${spec.size / 1024} KB`
+  );
+}
 
 export class MissingROMsError extends Error {
   /** @param {string[]} missing names of the ROMs that could not be found */

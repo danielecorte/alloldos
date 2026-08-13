@@ -4,7 +4,7 @@
 import { C64, FPS } from './machine.js';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from './vic2.js';
 import { AudioOutput } from './audio.js';
-import { loadROMs, acceptROMFile, MissingROMsError, ROM_SPECS } from './roms.js';
+import { loadROMs, acceptROMFile, MissingROMsError, ROM_SPECS, romDownloadLink } from './roms.js';
 import { tokenize, detokenize, petsciiFromAscii, BasicSyntaxError } from './basic.js';
 import { parseTAP, encodeTAP, TAPFormatError } from './tap.js';
 import { BUTTON_NONE, BUTTON_PLAY } from './datasette.js';
@@ -174,9 +174,12 @@ class C64Session {
       <b>Trascina i tre file sulla finestra</b>, o scegli i file qui sotto:
       restano salvati in questo browser, e la prossima volta la macchina si
       accende da sé.</p>
-      <p><strong>Mancano:</strong> ${missing.join(', ')} —
-      <code>${ROM_SPECS.map((spec) => spec.file).join('</code>, <code>')}</code>,
-      in tutto 20 KB.</p>
+      <p><strong>Mancano:</strong> ${missing.join(', ')}. Se non sai dove
+      prenderle, sono qui — vengono dalla distribuzione di
+      <a href="https://vice-emu.sourceforge.io/" target="_blank" rel="noopener noreferrer">VICE</a>:</p>
+      <ul>${ROM_SPECS.filter((spec) => missing.includes(spec.label))
+        .map((spec) => `<li>${romDownloadLink(spec)}</li>`)
+        .join('')}</ul>
     `;
 
     const pick = element('button', 'c64__button');

@@ -248,7 +248,8 @@ body[data-screen='about'] #app {
   font-size: 0.9em;
 }
 
-.about__link {
+.about__link,
+.about a {
   color: #b8c76f;
 }
 
@@ -417,6 +418,15 @@ body[data-screen='c64'] {
 .c64__panel-note {
   color: #8f88c9;
   font-size: 0.85em;
+}
+
+.c64__panel ul {
+  margin: 0 0 0.9rem;
+  padding-left: 1.4rem;
+}
+
+.c64__panel a {
+  color: #b8c76f;
 }
 
 .c64__bar {
