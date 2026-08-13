@@ -158,23 +158,45 @@ class C64Session {
     this.rafHandle = requestAnimationFrame((time) => this.tick(time));
   }
 
-  /** Shown when the firmware images are not available yet. */
+  /**
+   * Shown when the firmware images are not available yet — which, on a public
+   * page, is the first thing a visitor ever sees. So it asks for the ROMs
+   * rather than explaining the problem: the invitation first, the reasons
+   * after, and the terminal command last, for the few who cloned the repo.
+   */
   showROMPrompt(missing) {
     const panel = element('div', 'c64__panel');
     panel.innerHTML = `
-      <h2>Servono le ROM del Commodore 64</h2>
-      <p>alloldos emula la macchina, ma il suo firmware è proprietà Commodore e
-      non viene distribuito insieme al progetto.</p>
-      <p><strong>Mancano:</strong> ${missing.join(', ')}</p>
-      <p>Nel terminale, dalla cartella del progetto:</p>
-      <pre>npm run fetch-roms</pre>
-      <p>Oppure trascina qui i tre file
-      (<code>${ROM_SPECS.map((spec) => spec.file).join('</code>, <code>')}</code>):
-      restano salvati in questo browser.</p>
-      <p class="c64__panel-note">Vengono riconosciuti dal contenuto, quindi il nome del file non conta.</p>
+      <h2>Trascina qui le ROM del Commodore 64</h2>
+      <p>alloldos non imita un C64: ne esegue il firmware originale. Quel
+      firmware è proprietà Commodore/Cloanto e non può essere distribuito
+      insieme a questa pagina, quindi va portato da te — una volta sola.
+      <b>Trascina i tre file sulla finestra</b>, o scegli i file qui sotto:
+      restano salvati in questo browser, e la prossima volta la macchina si
+      accende da sé.</p>
+      <p><strong>Mancano:</strong> ${missing.join(', ')} —
+      <code>${ROM_SPECS.map((spec) => spec.file).join('</code>, <code>')}</code>,
+      in tutto 20 KB.</p>
     `;
+
+    const pick = element('button', 'c64__button');
+    pick.type = 'button';
+    pick.textContent = 'Scegli i file…';
+    pick.addEventListener('click', () => this.pickFile());
+    panel.append(pick);
+
+    const notes = element('div', 'c64__panel-note');
+    notes.innerHTML = `
+      <p>Vengono riconosciuti dal contenuto, quindi il nome del file non conta.
+      Se hai <b>VICE</b> installato, i tre file stanno nella sua cartella
+      <code>C64</code>. Se hai clonato il repository, in cartella basta
+      <code>npm run fetch-roms</code>.</p>
+      <p>Non lasciano il tuo browser: alloldos non ha un server a cui mandarli.</p>
+    `;
+    panel.append(notes);
+
     this.overlay.replaceChildren(panel);
-    this.setStatus('ROM mancanti');
+    this.setStatus('Servono le ROM del C64 — trascinale sulla finestra');
   }
 
   // ------------------------------------------------------------------- loop

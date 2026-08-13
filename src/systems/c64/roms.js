@@ -21,9 +21,18 @@ export class MissingROMsError extends Error {
   }
 }
 
+/**
+ * Where the firmware lives, worked out from this module rather than from the
+ * root of the site: hosting alloldos in a subdirectory — which is what GitHub
+ * Pages does — must not break the one fetch that has to find its way home.
+ */
+function romURL(file) {
+  return new URL(`../../../roms/c64/${file}`, import.meta.url);
+}
+
 async function fetchROM(spec) {
   try {
-    const response = await fetch(`/roms/c64/${spec.file}`, { cache: 'force-cache' });
+    const response = await fetch(romURL(spec.file), { cache: 'force-cache' });
     if (!response.ok) return null;
     const bytes = new Uint8Array(await response.arrayBuffer());
     return bytes.length === spec.size ? bytes : null;

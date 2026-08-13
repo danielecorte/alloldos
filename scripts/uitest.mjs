@@ -173,7 +173,10 @@ globalThis.localStorage = {
   },
 };
 globalThis.fetch = async (url) => {
-  const path = join(ROOT, String(url).replace(/^\//, ''));
+  // A browser resolves every URL against the page; here the module-relative
+  // ones arrive already absolute, as file: URLs.
+  const text = String(url);
+  const path = text.startsWith('file:') ? fileURLToPath(text) : join(ROOT, text.replace(/^\//, ''));
   if (!existsSync(path)) return { ok: false, status: 404 };
   const bytes = readFileSync(path);
   return { ok: true, status: 200, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
@@ -339,6 +342,19 @@ check('and the button says so again', session.fullscreenButton.textContent === '
 session.canvas.dispatch('dblclick');
 check('a double click on the picture does it too', document.fullscreenElement === session.root);
 document.exitFullscreen();
+
+// The panel someone without the ROMs lands on. No local run ever shows it —
+// the ROMs are right there in roms/ — but on a public page it is the first
+// thing every visitor sees, so it gets checked like anything else.
+let filePickerOpened = false;
+session.pickFile = () => { filePickerOpened = true; };
+session.showROMPrompt(['KERNAL']);
+const panel = session.overlay.children[0];
+const panelText = [panel.innerHTML, ...panel.children.map((node) => node.innerHTML || node.textContent)].join(' ');
+check('the ROM prompt asks for the ROMs before explaining itself', panelText.includes('Trascina qui'));
+check('it says what is missing, and under what name', panelText.includes('KERNAL') && panelText.includes('kernal.bin'));
+panel.children.find((node) => node.tagName === 'BUTTON').dispatch('click');
+check('and its button opens the file picker', filePickerOpened);
 
 session.dispose();
 check('it shuts down cleanly', session.running === false);
