@@ -1,0 +1,13 @@
+# Commodore firmware: fetch it yourself with `npm run fetch-roms`.
+/roms/
+
+# Tape and disk images belong to whoever made the games on them.
+*.tap
+*.prg
+*.d64
+
+node_modules/
+.DS_Store
+
+# Local Claude Code settings: they describe this machine, not the project.
+.claude/

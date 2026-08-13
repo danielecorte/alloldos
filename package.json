@@ -1,0 +1,19 @@
+{
+  "name": "alloldos",
+  "version": "0.1.0",
+  "description": "A collection of emulated old operating systems, booted from a GRUB-like menu, running entirely in the browser.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "dev": "node scripts/serve.mjs",
+    "fetch-roms": "node scripts/fetch-roms.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/keytest.mjs && node scripts/taptest.mjs && node scripts/uitest.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielecorte/alloldos.git"
+  },
+  "author": "Daniele Corte",
+  "license": "GPL-3.0-only"
+}

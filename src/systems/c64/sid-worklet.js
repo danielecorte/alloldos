@@ -1,0 +1,62 @@
+// Audio worklet that plays the samples the SID emulation produces.
+//
+// The emulator runs on the main thread in bursts of whole frames, so this side
+// keeps a ring buffer and smooths over the gaps: on underrun it holds the last
+// sample rather than clicking to silence.
+
+class SIDProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buffer = new Float32Array(1 << 16);
+    this.writeIndex = 0;
+    this.readIndex = 0;
+    this.lastSample = 0;
+    this.muted = false;
+
+    this.port.onmessage = (event) => {
+      const { samples, muted } = event.data;
+      if (muted !== undefined) this.muted = muted;
+      if (!samples) return;
+
+      for (let i = 0; i < samples.length; i++) {
+        const next = (this.writeIndex + 1) % this.buffer.length;
+        if (next === this.readIndex) break; // full, drop the rest
+        this.buffer[this.writeIndex] = samples[i];
+        this.writeIndex = next;
+      }
+    };
+  }
+
+  get available() {
+    return (this.writeIndex - this.readIndex + this.buffer.length) % this.buffer.length;
+  }
+
+  process(inputs, outputs) {
+    const channel = outputs[0][0];
+    if (!channel) return true;
+
+    if (this.muted) {
+      channel.fill(0);
+      return true;
+    }
+
+    for (let i = 0; i < channel.length; i++) {
+      if (this.readIndex !== this.writeIndex) {
+        this.lastSample = this.buffer[this.readIndex];
+        this.readIndex = (this.readIndex + 1) % this.buffer.length;
+      } else {
+        this.lastSample *= 0.98; // underrun: decay instead of clicking
+      }
+      channel[i] = this.lastSample;
+    }
+
+    // Report the remaining runway now and then, so the main thread can throttle.
+    if ((this.reports = (this.reports ?? 0) + 1) >= 16) {
+      this.reports = 0;
+      this.port.postMessage({ available: this.available });
+    }
+    return true;
+  }
+}
+
+registerProcessor('sid-processor', SIDProcessor);

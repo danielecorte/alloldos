@@ -1,0 +1,502 @@
+/* alloldos — two looks: the boot menu, and whatever machine is running. */
+
+:root {
+  --mono: 'DejaVu Sans Mono', 'Liberation Mono', 'Menlo', 'Consolas', monospace;
+  --grub-bg: #000000;
+  --grub-fg: #b8b8b8;
+  --grub-bright: #ffffff;
+  --grub-dim: #5a5a5a;
+  --grub-accent: #6c5eb5;
+  --c64-blue: #352879;
+  --c64-light-blue: #6c5eb5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #000;
+  color: var(--grub-fg);
+  font-family: var(--mono);
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+noscript {
+  display: block;
+  padding: 2rem;
+  color: var(--grub-bright);
+}
+
+/* ------------------------------------------------------------ boot menu */
+
+.grub {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: clamp(1rem, 4vw, 3rem);
+  outline: none;
+  font-size: clamp(0.8rem, 1.5vw, 1rem);
+  line-height: 1.6;
+}
+
+.grub__header {
+  color: var(--grub-bright);
+  letter-spacing: 0.04em;
+}
+
+.grub__frame {
+  border: 1px solid var(--grub-fg);
+  padding: 0.5rem 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.grub__menu {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.grub__entry {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 0.15rem 1rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.grub__entry-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grub__entry-year {
+  color: var(--grub-dim);
+  flex: none;
+}
+
+.grub__entry--unavailable .grub__entry-label {
+  color: var(--grub-dim);
+}
+
+/* GRUB inverts the highlighted line rather than tinting it. */
+.grub__entry--selected {
+  background: var(--grub-fg);
+  color: var(--grub-bg);
+}
+
+.grub__entry--selected .grub__entry-year {
+  color: var(--grub-bg);
+}
+
+.grub__entry--selected.grub__entry--unavailable .grub__entry-label {
+  color: #3a3a3a;
+}
+
+.grub__details {
+  color: var(--grub-dim);
+}
+
+.grub__detail {
+  display: flex;
+  gap: 1rem;
+}
+
+.grub__detail-label {
+  flex: none;
+  width: 8ch;
+  color: #454545;
+}
+
+.grub__detail-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grub__message:empty {
+  display: none;
+}
+
+.grub__message {
+  color: #d97b6c;
+}
+
+.grub__help {
+  color: var(--grub-fg);
+}
+
+.grub__help b {
+  color: var(--grub-bright);
+  font-weight: normal;
+}
+
+.grub__footer {
+  color: var(--grub-bright);
+  min-height: 1.6em;
+}
+
+/* --------------------------------------------------------------- about */
+
+/* A C64 screen: dark surround, blue picture, light blue frame — the same look
+   the emulator has, so the page reads as one more thing the machine is showing. */
+body[data-screen='about'] {
+  background: #1b1636;
+  overflow: auto;
+}
+
+/* The only screen that is taller than the window: let it grow and scroll. */
+body[data-screen='about'] #app {
+  height: auto;
+  min-height: 100%;
+}
+
+.about {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: clamp(1rem, 4vw, 3rem);
+  outline: none;
+  color: #cfc9ff;
+  font-size: clamp(0.78rem, 1.4vw, 0.95rem);
+  line-height: 1.75;
+}
+
+.about__screen {
+  position: relative;
+  width: min(72ch, 100%);
+  padding: clamp(1rem, 3vw, 2.5rem);
+  background: var(--c64-blue);
+  border: 2px solid var(--c64-light-blue);
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 60%);
+  overflow: hidden;
+}
+
+/* The scanlines a CRT gave away for free. */
+.about__screen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 14%) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+.about__banner {
+  margin: 0 0 2rem;
+  color: #b8c76f;
+  white-space: pre-wrap;
+  letter-spacing: 0.08em;
+  line-height: 1.5;
+}
+
+.about__heading {
+  margin: 2rem 0 0.5rem;
+  color: #fff;
+  font-size: 1em;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.about p {
+  margin: 0 0 0.9rem;
+}
+
+.about__list {
+  margin: 0 0 0.9rem;
+  padding-left: 1.4rem;
+}
+
+.about__list li {
+  margin-bottom: 0.4rem;
+}
+
+.about b {
+  color: #fff;
+  font-weight: normal;
+}
+
+.about code {
+  color: #b8c76f;
+}
+
+.about__note {
+  color: #8f88c9;
+  font-size: 0.9em;
+}
+
+.about__link {
+  color: #b8c76f;
+}
+
+.about__ready {
+  margin: 2rem 0 0;
+  color: #b8c76f;
+  white-space: pre-wrap;
+}
+
+/* The cursor the C64 leaves blinking under READY. */
+.about__cursor {
+  display: inline-block;
+  width: 1ch;
+  background: #b8c76f;
+  animation: about-blink 1s steps(1, end) infinite;
+}
+
+@keyframes about-blink {
+  50% {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .about__cursor {
+    animation: none;
+  }
+}
+
+.about__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(72ch, 100%);
+}
+
+.about__button {
+  font: inherit;
+  color: #cfc9ff;
+  background: transparent;
+  border: 1px solid #3d3470;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+}
+
+.about__button:hover {
+  background: #241d4a;
+  color: #fff;
+}
+
+.about__hint {
+  color: #8f88c9;
+}
+
+/* ------------------------------------------------------------- panic */
+
+.panic {
+  margin: 0;
+  padding: clamp(1rem, 4vw, 3rem);
+  color: #d97b6c;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------- commodore 64 */
+
+body[data-screen='c64'] {
+  background: #1b1636;
+}
+
+.c64 {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.c64__stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.5rem, 2vw, 2rem);
+}
+
+.c64__canvas {
+  /* PAL pixels are slightly taller than they are wide. */
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 384 / 291;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: var(--c64-light-blue);
+  box-shadow: 0 0 0 2px #0b0920, 0 1.5rem 4rem rgb(0 0 0 / 60%);
+}
+
+.c64--dropping .c64__canvas {
+  box-shadow: 0 0 0 3px #b8c76f, 0 1.5rem 4rem rgb(0 0 0 / 60%);
+}
+
+/* Fullscreen. The element that fills the screen is the whole machine, bar and
+   all, so the picture gets the height that is left and the padding goes: on a
+   16:9 screen those two centimetres of margin are two centimetres of C64. */
+.c64--fullscreen {
+  background: #1b1636;
+}
+
+.c64--fullscreen .c64__stage {
+  padding: 0;
+}
+
+.c64--fullscreen .c64__canvas {
+  box-shadow: none;
+}
+
+.c64__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.c64__overlay:empty {
+  display: none;
+}
+
+.c64__panel {
+  pointer-events: auto;
+  max-width: min(46rem, 90%);
+  max-height: 90%;
+  overflow-y: auto;
+  padding: 1.5rem 2rem;
+  background: var(--c64-blue);
+  color: #cfc9ff;
+  border: 2px solid var(--c64-light-blue);
+  line-height: 1.6;
+  font-size: 0.9rem;
+}
+
+.c64__panel h2 {
+  margin-top: 0;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: normal;
+  letter-spacing: 0.05em;
+}
+
+.c64__panel pre {
+  background: #0b0920;
+  color: #b8c76f;
+  padding: 0.6rem 0.9rem;
+  overflow-x: auto;
+}
+
+.c64__panel code {
+  color: #b8c76f;
+}
+
+.c64__panel-note {
+  color: #8f88c9;
+  font-size: 0.85em;
+}
+
+.c64__bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem clamp(0.5rem, 2vw, 2rem);
+  background: #0b0920;
+  border-top: 1px solid #2a2350;
+  font-size: 0.8rem;
+}
+
+.c64__button {
+  font: inherit;
+  color: #cfc9ff;
+  background: transparent;
+  border: 1px solid #3d3470;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+}
+
+.c64__button:hover {
+  background: #241d4a;
+  color: #fff;
+}
+
+.c64__status {
+  margin-left: auto;
+  color: #8f88c9;
+  text-align: right;
+}
+
+.c64__file {
+  display: none;
+}
+
+.c64__tape {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem clamp(0.5rem, 2vw, 2rem);
+  background: #120e28;
+  border-top: 1px solid #2a2350;
+  font-size: 0.8rem;
+}
+
+.c64__tape-label {
+  color: #b8c76f;
+  margin-right: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.c64__probe {
+  flex: none;
+  max-height: 14rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.75rem clamp(0.5rem, 2vw, 2rem);
+  background: #06040f;
+  border-top: 1px solid #2a2350;
+  color: #b8c76f;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+@media (max-width: 40rem) {
+  .c64__canvas {
+    width: 100%;
+    height: auto;
+  }
+
+  .c64__status {
+    margin-left: 0;
+    width: 100%;
+    text-align: left;
+  }
+}
