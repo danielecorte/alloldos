@@ -1,8 +1,16 @@
 # AllOldOs
 
+**→ [danielecorte.github.io/alloldos](https://danielecorte.github.io/alloldos/)**
+
 Un raccoglitore di vecchi sistemi operativi emulati, che gira interamente dentro
 il browser. Si parte da una schermata di boot in stile GRUB: scegli la macchina
 con le frecce, premi Invio, e quella macchina si accende.
+
+Al primo avvio la pagina chiede le tre ROM del C64: sono proprietà
+Commodore/Cloanto e non possono essere distribuite, quindi si trascinano sulla
+finestra una volta sola e restano salvate in quel browser. Chi ha
+[VICE](https://vice-emu.sourceforge.io/) le ha già in casa; chi clona questo
+repository le prende con `npm run fetch-roms`.
 
 La prima disponibile è il **Commodore 64**, emulato dal silicio in su — 6510,
 VIC-II, due CIA e il SID — e avviato sul KERNAL e sul BASIC V2 originali. Non è
