@@ -8,7 +8,7 @@
     "start": "node scripts/serve.mjs",
     "dev": "node scripts/serve.mjs",
     "fetch-roms": "node scripts/fetch-roms.mjs",
-    "test": "node scripts/selftest.mjs && node scripts/keytest.mjs && node scripts/taptest.mjs && node scripts/uitest.mjs"
+    "test": "node scripts/selftest.mjs && node scripts/keytest.mjs && node scripts/taptest.mjs && node scripts/amigatest.mjs && node scripts/uitest.mjs"
   },
   "repository": {
     "type": "git",

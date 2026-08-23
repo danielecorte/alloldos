@@ -1,25 +1,34 @@
-// MOS 6526 CIA.
+// MOS 8520 CIA, twice over.
 //
-// CIA 1 drives the keyboard matrix, joystick port 2 and the jiffy-clock IRQ;
-// CIA 2 selects the VIC bank, drives the serial bus and pulls /NMI. Both share
-// this implementation; the port wiring is injected by the machine.
+// The same part as the C64's 6526 with one real difference: the time-of-day
+// counter is a plain 24-bit binary counter instead of a BCD clock, and it is
+// clocked by the video signal — CIA-A counts vertical blanks, CIA-B counts
+// horizontal lines. Its timers run off the E clock, a tenth of the CPU's.
+//
+// CIA-A owns the keyboard's serial line, the disk drive's status pins, the
+// power LED and the ROM overlay; CIA-B owns the drive's motor and stepper, the
+// parallel port and the serial handshake lines.
+
+export const CIA_CLOCK_DIVIDER = 10; // E clock = CPU clock / 10
 
 const ICR_TA = 0x01;
 const ICR_TB = 0x02;
 const ICR_ALARM = 0x04;
-const ICR_SDR = 0x08;
+const ICR_SP = 0x08;
 const ICR_FLAG = 0x10;
 
-export class CIA6526 {
+export class CIA8520 {
   /**
    * @param {object} hooks
-   * @param {(active:boolean)=>void} hooks.onInterrupt raises/lowers /IRQ or /NMI
-   * @param {(cia:CIA6526)=>number} [hooks.readPortA] value seen on the port A pins
-   * @param {(cia:CIA6526)=>number} [hooks.readPortB] value seen on the port B pins
+   * @param {(active:boolean)=>void} hooks.onInterrupt drives /INT, which on the
+   *   Amiga reaches the CPU through Paula rather than directly
+   * @param {()=>number} [hooks.readPortA] the value on the port A pins
+   * @param {()=>number} [hooks.readPortB]
    * @param {(value:number)=>void} [hooks.writePortA]
    * @param {(value:number)=>void} [hooks.writePortB]
    */
-  constructor(hooks) {
+  constructor(name, hooks) {
+    this.name = name;
     this.hooks = hooks;
     this.reset();
   }
@@ -37,23 +46,19 @@ export class CIA6526 {
     this.cra = 0;
     this.crb = 0;
 
-    this.icrData = 0; // pending interrupt flags
-    this.icrMask = 0; // enabled interrupt sources
+    this.icrData = 0;
+    this.icrMask = 0;
     this.irqActive = false;
 
     this.sdr = 0;
 
-    this.todTenths = 0;
-    this.todSeconds = 0;
-    this.todMinutes = 0;
-    this.todHours = 1;
-    this.todLatched = null;
-    this.todHalted = false;
-    this.todAlarm = { tenths: 0, seconds: 0, minutes: 0, hours: 0 };
-    this.todAccumulator = 0;
+    this.tod = 0;
+    this.todLatched = -1;
+    this.todAlarm = 0;
+    this.todStopped = false; // it counts from the moment it is clocked
+    this.eclock = 0;
   }
 
-  /** Value currently driven onto the port A pins (open bits float high). */
   get portAOutput() {
     return (this.pra & this.ddra) | (~this.ddra & 0xff);
   }
@@ -73,29 +78,40 @@ export class CIA6526 {
     }
   }
 
-  /**
-   * A falling edge on the /FLAG pin. On CIA 1 that pin is the datasette's read
-   * line, which is how the KERNAL is told a tape pulse just went past.
-   */
+  /** A falling edge on /FLAG. On CIA-B that pin is the parallel port's ACK. */
   triggerFlag() {
     this.requestInterrupt(ICR_FLAG);
   }
 
+  /**
+   * Hands the CIA a byte arriving on the serial pin — which, on CIA-A, is the
+   * keyboard sending a key code. The 8520 raises SP once all eight bits are in.
+   */
+  receiveSerial(byte) {
+    this.sdr = byte & 0xff;
+    this.requestInterrupt(ICR_SP);
+  }
+
   // ------------------------------------------------------------------ timers
 
-  tick(cycles) {
+  /** @param {number} cpuCycles cycles of the 7 MHz clock that just went past */
+  tick(cpuCycles) {
+    this.eclock += cpuCycles;
+    const ticks = Math.floor(this.eclock / CIA_CLOCK_DIVIDER);
+    if (ticks === 0) return;
+    this.eclock -= ticks * CIA_CLOCK_DIVIDER;
+
     if (this.cra & 0x01 && !(this.cra & 0x20)) {
-      this.timerA -= cycles;
+      this.timerA -= ticks;
       while (this.timerA <= 0) {
         this.timerA += this.latchA + 1;
         this.onTimerAUnderflow();
       }
     }
 
-    // Timer B counts phi2 or timer A underflows; the latter is handled above.
     const inmode = (this.crb >> 5) & 0x03;
     if (this.crb & 0x01 && inmode === 0) {
-      this.timerB -= cycles;
+      this.timerB -= ticks;
       while (this.timerB <= 0) {
         this.timerB += this.latchB + 1;
         this.onTimerBUnderflow();
@@ -120,29 +136,15 @@ export class CIA6526 {
     if (this.crb & 0x08) this.crb &= ~0x01;
   }
 
-  /** Advances the time-of-day clock. @param {number} seconds elapsed real time */
-  tickTOD(seconds) {
-    if (this.todHalted) return;
-    this.todAccumulator += seconds;
-    while (this.todAccumulator >= 0.1) {
-      this.todAccumulator -= 0.1;
-      if (++this.todTenths < 10) continue;
-      this.todTenths = 0;
-      if (++this.todSeconds < 60) continue;
-      this.todSeconds = 0;
-      if (++this.todMinutes < 60) continue;
-      this.todMinutes = 0;
-      this.todHours = (this.todHours + 1) & 0x1f;
-    }
-    const alarm = this.todAlarm;
-    if (
-      alarm.tenths === this.todTenths &&
-      alarm.seconds === this.todSeconds &&
-      alarm.minutes === this.todMinutes &&
-      alarm.hours === this.todHours
-    ) {
-      this.requestInterrupt(ICR_ALARM);
-    }
+  /**
+   * One tick of whatever video signal this CIA's counter is wired to. Twenty
+   * four bits of it, counting up — AmigaDOS turns it into the clock in the
+   * corner of the Workbench screen.
+   */
+  tickTOD() {
+    if (this.todStopped) return;
+    this.tod = (this.tod + 1) & 0xffffff;
+    if (this.tod === this.todAlarm) this.requestInterrupt(ICR_ALARM);
   }
 
   // --------------------------------------------------------------- registers
@@ -150,9 +152,9 @@ export class CIA6526 {
   read(reg) {
     switch (reg & 0x0f) {
       case 0x0:
-        return this.hooks.readPortA ? this.hooks.readPortA(this) : this.portAOutput;
+        return this.hooks.readPortA ? this.hooks.readPortA() & 0xff : this.portAOutput;
       case 0x1:
-        return this.hooks.readPortB ? this.hooks.readPortB(this) : this.portBOutput;
+        return this.hooks.readPortB ? this.hooks.readPortB() & 0xff : this.portBOutput;
       case 0x2:
         return this.ddra;
       case 0x3:
@@ -166,25 +168,20 @@ export class CIA6526 {
       case 0x7:
         return (this.timerB >> 8) & 0xff;
       case 0x8: {
-        const value = this.todLatched ? this.todLatched.tenths : this.todTenths;
-        this.todLatched = null; // reading tenths releases the latch
-        return value;
+        // Reading the low byte releases the latch the high byte took.
+        const value = this.todLatched >= 0 ? this.todLatched : this.tod;
+        this.todLatched = -1;
+        return value & 0xff;
       }
       case 0x9:
-        return toBCD(this.todLatched ? this.todLatched.seconds : this.todSeconds);
+        return ((this.todLatched >= 0 ? this.todLatched : this.tod) >> 8) & 0xff;
       case 0xa:
-        return toBCD(this.todLatched ? this.todLatched.minutes : this.todMinutes);
-      case 0xb: {
-        // Reading hours latches the whole time until tenths is read.
-        this.todLatched = {
-          tenths: this.todTenths,
-          seconds: this.todSeconds,
-          minutes: this.todMinutes,
-          hours: this.todHours,
-        };
-        const hours = this.todLatched.hours;
-        return (hours & 0x80) | toBCD(hours & 0x1f);
-      }
+        // Reading the high byte freezes the whole counter until the low byte
+        // is read, so a program can never catch it half way through carrying.
+        this.todLatched = this.tod;
+        return (this.tod >> 16) & 0xff;
+      case 0xb:
+        return 0;
       case 0xc:
         return this.sdr;
       case 0xd: {
@@ -227,9 +224,10 @@ export class CIA6526 {
         break;
       case 0x5:
         this.latchA = (this.latchA & 0x00ff) | (value << 8);
-        // Writing the high byte of a stopped timer loads it, and if the timer
-        // is in one-shot mode that write also starts it: a one-shot delay is a
-        // single store, with nothing setting the run bit afterwards.
+        // Writing the high byte of a stopped timer loads it — and if the timer
+        // is in one-shot mode, that write also starts it. Nothing sets the run
+        // bit afterwards, which is why a one-shot delay written this way is a
+        // single store and not two: the keyboard handshake is one of them.
         if (!(this.cra & 0x01)) {
           this.timerA = this.latchA;
           if (this.cra & 0x08) this.cra |= 0x01;
@@ -246,35 +244,34 @@ export class CIA6526 {
         }
         break;
       case 0x8:
-        if (this.crb & 0x80) this.todAlarm.tenths = value & 0x0f;
+        if (this.crb & 0x80) this.todAlarm = (this.todAlarm & 0xffff00) | value;
         else {
-          this.todTenths = value & 0x0f;
-          this.todHalted = false;
+          this.tod = (this.tod & 0xffff00) | value;
+          this.todStopped = false; // writing the low byte starts it again
         }
         break;
       case 0x9:
-        if (this.crb & 0x80) this.todAlarm.seconds = fromBCD(value & 0x7f);
-        else this.todSeconds = fromBCD(value & 0x7f);
+        if (this.crb & 0x80) this.todAlarm = (this.todAlarm & 0xff00ff) | (value << 8);
+        else this.tod = (this.tod & 0xff00ff) | (value << 8);
         break;
       case 0xa:
-        if (this.crb & 0x80) this.todAlarm.minutes = fromBCD(value & 0x7f);
-        else this.todMinutes = fromBCD(value & 0x7f);
+        if (this.crb & 0x80) this.todAlarm = (this.todAlarm & 0x00ffff) | (value << 16);
+        else {
+          this.tod = (this.tod & 0x00ffff) | (value << 16);
+          this.todStopped = true; // and writing the high byte stops it
+        }
         break;
       case 0xb:
-        if (this.crb & 0x80) this.todAlarm.hours = (value & 0x80) | fromBCD(value & 0x1f);
-        else {
-          this.todHours = (value & 0x80) | fromBCD(value & 0x1f);
-          this.todHalted = true; // writing hours stops the clock until tenths is written
-        }
         break;
       case 0xc:
         this.sdr = value;
-        if (this.cra & 0x40) this.requestInterrupt(ICR_SDR); // output mode: shifts out immediately
+        // Output mode shifts the byte straight out; nothing here listens, but
+        // the interrupt that says "sent" still has to arrive.
+        if (this.cra & 0x40) this.requestInterrupt(ICR_SP);
         break;
       case 0xd:
         if (value & 0x80) this.icrMask |= value & 0x1f;
         else this.icrMask &= ~(value & 0x1f);
-        // Unmasking a source that is already pending fires straight away.
         if (this.icrData & this.icrMask & 0x1f) {
           this.icrData |= 0x80;
           if (!this.irqActive) {
@@ -285,7 +282,7 @@ export class CIA6526 {
         break;
       case 0xe:
         this.cra = value & 0xef;
-        if (value & 0x10) this.timerA = this.latchA; // force load
+        if (value & 0x10) this.timerA = this.latchA;
         break;
       default:
         this.crb = value & 0xef;
@@ -293,12 +290,4 @@ export class CIA6526 {
         break;
     }
   }
-}
-
-function toBCD(value) {
-  return ((Math.floor(value / 10) % 10) << 4) | value % 10;
-}
-
-function fromBCD(value) {
-  return ((value >> 4) & 0x0f) * 10 + (value & 0x0f);
 }

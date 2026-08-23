@@ -4,8 +4,13 @@
 // export, one `dispose()` — because from the boot menu's point of view that is
 // exactly what it is: a partition you can select, that happens to contain a
 // page instead of a computer.
+//
+// The page is laid out the way the project is: the credits first, and then one
+// section per machine, each one saying where its firmware comes from, what has
+// been built, and what has not been built yet.
 
 import { ROM_SPECS, romDownloadLink } from '../systems/c64/roms.js';
+import { AMIGA_FOREVER_URL, AROS_URL } from '../systems/amiga/roms.js';
 
 const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
@@ -26,15 +31,75 @@ class AboutPage {
 
  </pre>
 
-      <h2 class="about__heading">Cos'è</h2>
       <p>Un raccoglitore di vecchi sistemi operativi emulati, che gira
       interamente dentro il browser. Si parte da una schermata di avvio in stile
       GRUB: scegli la macchina con le frecce, premi Invio, e quella macchina si
-      accende. La prima è il Commodore 64, emulato dal silicio in su e avviato
-      sul KERNAL e sul BASIC V2 originali. Non è una simulazione dell'aspetto di
-      un C64: è un C64 che esegue il suo firmware.</p>
+      accende. Non è una simulazione dell'aspetto di quei computer: sono quei
+      computer che eseguono il loro firmware, dal silicio in su.</p>
 
-      <h2 class="about__heading">Dove trovare le ROM</h2>
+      <p class="about__note">Il firmware non è incluso: è di chi lo ha scritto,
+      e va portato da te. Ogni macchina qui sotto dice dove prendere il suo.</p>
+
+      ${this.credits()}
+      ${this.commodore64()}
+      ${this.amiga500()}
+
+      <pre class="about__ready">READY.
+<span class="about__cursor">&nbsp;</span></pre>
+    `;
+
+    this.exitButton = element('button', 'about__button');
+    this.exitButton.type = 'button';
+    this.exitButton.textContent = 'Torna al menu di avvio';
+    this.exitButton.addEventListener('click', () => this.onExit());
+
+    const footer = element('div', 'about__footer');
+    footer.append(this.exitButton);
+    const hint = element('span', 'about__hint');
+    hint.textContent = 'oppure premi Invio o Esc';
+    footer.append(hint);
+
+    this.root.append(screen, footer);
+    this.container.append(this.root);
+
+    this.keyHandler = (event) => this.onKeyDown(event);
+    window.addEventListener('keydown', this.keyHandler);
+    this.root.focus();
+  }
+
+  // ------------------------------------------------------------- crediti
+
+  credits() {
+    return `
+      <h2 class="about__section">Crediti</h2>
+
+      <h3 class="about__heading">Fatto da</h3>
+      <p><b>Daniele Corte</b> e <b>Claude Code</b>, a quattro mani.</p>
+
+      <h3 class="about__heading">Licenza</h3>
+      <p>alloldos è <b>software libero</b>, sotto <b>GNU General Public License
+      versione 3</b>. Puoi usarlo, studiarlo, modificarlo e ridistribuirlo — a
+      patto che chi lo riceve da te si ritrovi con le stesse libertà. Il testo
+      completo è nel file <code>LICENSE</code> del repository.</p>
+      <p class="about__note">Le ROM delle macchine emulate non sono incluse in
+      questo progetto e non sono coperte da questa licenza: restano di
+      Commodore/Cloanto, che ne è la proprietaria.</p>
+
+      <h3 class="about__heading">Sorgenti</h3>
+      <p>Il codice è pubblico:<br>
+      <a class="about__link" href="${SOURCE_URL}" target="_blank" rel="noopener noreferrer">${SOURCE_URL.replace('https://', '')}</a></p>
+    `;
+  }
+
+  // --------------------------------------------------------- commodore 64
+
+  commodore64() {
+    return `
+      <h2 class="about__section">Commodore 64</h2>
+      <p>Un C64 PAL emulato dal silicio in su, avviato sul KERNAL e sul BASIC V2
+      originali.</p>
+
+      <h3 class="about__heading">Dove trovare le ROM</h3>
       <p>Quel firmware è proprietà Commodore/Cloanto e non può essere
       distribuito con questa pagina, quindi al primo avvio la macchina te lo
       chiede. Sono tre file, 20 KB in tutto, e vengono dalla distribuzione di
@@ -51,7 +116,7 @@ class AboutPage {
       browser o cancelli i dati del sito. Chi vuole una licenza esplicita sul
       firmware può prendere <i>C64 Forever</i> di Cloanto.</p>
 
-      <h2 class="about__heading">Cosa è stato fatto</h2>
+      <h3 class="about__heading">Cosa è stato fatto</h3>
       <ul class="about__list">
         <li>Il <b>6510</b> per intero.</li>
         <li>Il <b>VIC-II</b> una riga di raster alla volta: testo, multicolor,
@@ -75,55 +140,110 @@ class AboutPage {
         personaggio.</li>
       </ul>
 
-      <h2 class="about__heading">Sviluppi futuri</h2>
+      <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li>Le altre macchine già elencate nel menu di avvio: ZX Spectrum,
-        Apple II, MS-DOS, Amiga. Compaiono come partizioni che il bootloader
-        vede e non sa ancora leggere.</li>
         <li>Il drive <b>1541</b> e le immagini <code>.d64</code>.</li>
-        <li>Salvataggio e ripristino dello stato della macchina.</li>
         <li>Il filtro del SID fatto per bene: oggi è un'approssimazione.</li>
-        <li>Joypad USB con la Gamepad API, e comandi a sfioramento per il
-        telefono.</li>
+        <li>Salvataggio e ripristino dello stato della macchina.</li>
+      </ul>
+    `;
+  }
+
+  // ----------------------------------------------------------- amiga 500
+
+  amiga500() {
+    return `
+      <h2 class="about__section">Amiga 500</h2>
+      <p>Un A500 PAL: 68000, Agnus, Denise e Paula, due CIA 8520 e il drive
+      DF0:. Multitasking preemptivo nel 1987, su una macchina che costava come
+      una televisione.</p>
+      <p>La memoria è quella di un A500 cresciuto bene: 1 MB di Chip RAM come
+      l'Agnus 8372A dell'A500+, i 512 KB della scheda A501 sotto lo sportello, e
+      8 MB di Fast RAM su una scheda Zorro II che si presenta da sola in
+      autoconfig. Non è la macchina uscita dal negozio nel 1987, ed è voluto:
+      AROS è un sistema operativo molto più grande della Kickstart per cui questi
+      programmi sono stati scritti, e senza spazio dove starsene si siede
+      esattamente dove il programma vuole mettere lo schermo.</p>
+      <p>Non è una macchina che <i>dovrebbe</i> funzionare: ci gira sopra un
+      sistema operativo vero. Con la Kickstart libera di AROS la macchina si
+      accende, monta exec, graphics, intuition e dos, apre uno schermo a 640×512
+      interlacciato e arriva alla sua schermata di avvio, con il puntatore del
+      mouse che si muove.</p>
+
+      <h3 class="about__heading">Dove trovare la Kickstart</h3>
+      <p>Qui il firmware non è un aiuto all'avvio: <b>è il sistema operativo</b>.
+      Dentro la Kickstart ci stanno <b>exec</b>, <b>graphics</b>,
+      <b>intuition</b> e <b>dos</b> — tutto AmigaOS tranne quello che sta sul
+      disco. Serve un file da <b>256 KB</b> (Kickstart 1.2 o 1.3) oppure da
+      <b>512 KB</b> (2.0 e successive), da trascinare sulla finestra.</p>
+      <p>A differenza delle ROM del C64 non c'è un VICE da cui scaricarla: la
+      Kickstart è di Cloanto, e nessuna copia gratuita in giro è una copia
+      legale. Due strade oneste:</p>
+      <ul class="about__list">
+        <li><a class="about__link" href="${AMIGA_FOREVER_URL}" target="_blank" rel="noopener noreferrer">Amiga
+        Forever</a> di Cloanto, che è la licenza ufficiale delle ROM;</li>
+        <li>la Kickstart libera di
+        <a class="about__link" href="${AROS_URL}" target="_blank" rel="noopener noreferrer">AROS</a>,
+        che è software libero, si scarica e si avvia davvero.</li>
+      </ul>
+      <p class="about__note">Le ROM cifrate di Cloanto (quelle che iniziano con
+      <code>AMIROMTYPE1</code>) non vanno bene così come sono: serve la versione
+      in chiaro. Anche questa resta nel tuo browser e non va da nessuna parte.</p>
+
+      <h3 class="about__heading">Cosa è stato fatto</h3>
+      <ul class="about__list">
+        <li>Il <b>68000</b> per intero: modo utente e supervisore, i due stack,
+        le eccezioni vere — errore di indirizzo, violazione di privilegio, TRAP,
+        interrupt autovettorizzati.</li>
+        <li><b>Agnus</b>: il conteggio del pennello, la DMA di bitplane e
+        sprite, e il <b>copper</b> — che aspetta il pennello e scrive nei
+        registri mentre lo schermo si sta disegnando. Le sue MOVE cadono nel
+        punto esatto della riga in cui il copper le esegue, non all'inizio.</li>
+        <li>Il <b>blitter</b>: quattro canali, i 256 minterm, il barrel shifter,
+        l'area fill e il tracciamento di linee con Bresenham.</li>
+        <li><b>Denise</b>: da uno a sei bitplane, lores e hires, dual playfield,
+        <b>HAM</b> ed <b>extra half brite</b>, gli otto sprite con le priorità
+        di BPLCON2, e la finestra di visualizzazione.</li>
+        <li><b>Paula</b>: gli interrupt di tutta la macchina, e quattro canali
+        audio in DMA — 0 e 3 a sinistra, 1 e 2 a destra, come l'originale.</li>
+        <li>Due <b>CIA 8520</b>: timer, i contatori a 24 bit agganciati al
+        quadro e alla riga, la tastiera seriale, la linea di overlay della ROM.</li>
+        <li>Il <b>drive DF0:</b> vero: motore, testina, passi, protezione da
+        scrittura. Un <code>.adf</code> non viene letto a settori ma
+        <b>riscritto in MFM</b> — intestazioni, checksum, sync e gap — e dato
+        alla DMA come flusso grezzo, perché è così che trackdisk.device se lo
+        aspetta.</li>
+        <li><b>Mouse</b> con il puntatore agganciato alla finestra: l'Amiga non
+        sa dove sia il mouse, conta solo di quanto è girata la pallina.</li>
+        <li>L'<b>interlace</b>: ogni riga di quadro ha due righe di immagine, e
+        i due semiquadri finiscono su quelle alterne. Senza, uno schermo a
+        640×512 viene fuori schiacciato a metà altezza.</li>
       </ul>
 
-      <h2 class="about__heading">Licenza</h2>
-      <p>alloldos è <b>software libero</b>, sotto <b>GNU General Public License
-      versione 3</b>. Puoi usarlo, studiarlo, modificarlo e ridistribuirlo — a
-      patto che chi lo riceve da te si ritrovi con le stesse libertà. Il testo
-      completo è nel file <code>LICENSE</code> del repository.</p>
-      <p class="about__note">Le ROM del Commodore 64 (KERNAL, BASIC e generatore
-      di caratteri) sono proprietà Commodore/Cloanto: non sono incluse in questo
-      progetto e non sono coperte da questa licenza.</p>
+      <h3 class="about__heading">Le due cose che solo un sistema vero ha trovato</h3>
+      <p>Tutte le prove sintetiche passavano già. Queste due no, e non si vedono
+      finché non provi a far girare del software che non sapeva di te:</p>
+      <ul class="about__list">
+        <li>Un <b>timer del CIA in one-shot parte quando gli scrivi il byte
+        alto</b>: è una riga sola nel foglio dati del 6526, e AmigaOS ci
+        costruisce sopra l'handshake della tastiera. Senza, la macchina si
+        inchioda a metà avvio con tutte le task in attesa e nessuna pronta. È lo
+        stesso chip del C64, quindi la correzione è andata anche lì.</li>
+        <li>Il <b>fetch dei bitplane si conta a blocchi di otto color clock,
+        arrotondando per eccesso</b>. Troncarlo fa pescare a ogni riga due byte
+        più indietro della riga sopra: il Workbench resta perfettamente
+        leggibile, ma in diagonale.</li>
+      </ul>
 
-      <h2 class="about__heading">Fatto da</h2>
-      <p><b>Daniele Corte</b> e <b>Claude Code</b>, a quattro mani.</p>
-
-      <h2 class="about__heading">Sorgenti</h2>
-      <p>Il codice è pubblico:<br>
-      <a class="about__link" href="${SOURCE_URL}" target="_blank" rel="noopener noreferrer">${SOURCE_URL.replace('https://', '')}</a></p>
-
-      <pre class="about__ready">READY.
-<span class="about__cursor">&nbsp;</span></pre>
+      <h3 class="about__heading">Cosa manca</h3>
+      <ul class="about__list">
+        <li>I <b>blit non istantanei</b>: qui finiscono tutti in un colpo. Chi
+        aspetta BBUSY o l'interrupt non se ne accorge, chi conta i cicli sì.</li>
+        <li>La <b>scrittura</b> sui dischi: DF0: è sempre protetto.</li>
+        <li>I <b>collision detect</b> e le <b>porte pot</b>.</li>
+        <li>Il secondo drive, l'hard disk e la memoria autoconfig.</li>
+      </ul>
     `;
-
-    this.exitButton = element('button', 'about__button');
-    this.exitButton.type = 'button';
-    this.exitButton.textContent = 'Torna al menu di avvio';
-    this.exitButton.addEventListener('click', () => this.onExit());
-
-    const footer = element('div', 'about__footer');
-    footer.append(this.exitButton);
-    const hint = element('span', 'about__hint');
-    hint.textContent = 'oppure premi Invio o Esc';
-    footer.append(hint);
-
-    this.root.append(screen, footer);
-    this.container.append(this.root);
-
-    this.keyHandler = (event) => this.onKeyDown(event);
-    window.addEventListener('keydown', this.keyHandler);
-    this.root.focus();
   }
 
   onKeyDown(event) {

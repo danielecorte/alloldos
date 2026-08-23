@@ -5,6 +5,8 @@
 *.tap
 *.prg
 *.d64
+*.adf
+*.rom
 
 node_modules/
 .DS_Store

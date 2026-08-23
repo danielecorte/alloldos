@@ -18,6 +18,16 @@ export const SYSTEMS = [
     load: () => import('../systems/c64/index.js'),
   },
   {
+    id: 'amiga',
+    label: 'Commodore Amiga 500 — Kickstart / Workbench 1.3',
+    year: 1987,
+    cpu: 'Motorola 68000 @ 7,09 MHz',
+    memory: '1 MB Chip + 512 KB A501 + 8 MB Fast in autoconfig',
+    notes: 'Agnus, Denise e Paula: multitasking preemptivo nel 1987.',
+    available: true,
+    load: () => import('../systems/amiga/index.js'),
+  },
+  {
     id: 'zx-spectrum',
     label: 'Sinclair ZX Spectrum 48K — Sinclair BASIC',
     year: 1982,
@@ -42,15 +52,6 @@ export const SYSTEMS = [
     cpu: 'Intel 8086 e successori',
     memory: '640 KB convenzionali',
     notes: 'Richiede un emulatore x86 e un disco di avvio.',
-    available: false,
-  },
-  {
-    id: 'amiga',
-    label: 'Commodore Amiga 500 — Workbench 1.3',
-    year: 1987,
-    cpu: 'Motorola 68000 @ 7,09 MHz',
-    memory: '512 KB Chip RAM',
-    notes: 'Agnus, Denise e Paula: multitasking preemptivo nel 1987.',
     available: false,
   },
   // Not a machine, but it boots like one — the way GRUB keeps its own entries

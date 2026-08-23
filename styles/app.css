@@ -9,6 +9,8 @@
   --grub-accent: #6c5eb5;
   --c64-blue: #352879;
   --c64-light-blue: #6c5eb5;
+  --amiga-blue: #0055aa;
+  --amiga-orange: #ff8800;
 }
 
 * {
@@ -210,6 +212,18 @@ body[data-screen='about'] #app {
   white-space: pre-wrap;
   letter-spacing: 0.08em;
   line-height: 1.5;
+}
+
+/* One band per machine, so the page reads as a list of partitions too. */
+.about__section {
+  margin: 3rem 0 1rem;
+  padding: 0.3rem 0.6rem;
+  background: var(--c64-light-blue);
+  color: var(--c64-blue);
+  font-size: 1em;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
 }
 
 .about__heading {
@@ -498,13 +512,173 @@ body[data-screen='c64'] {
   overflow-x: auto;
 }
 
+/* ---------------------------------------------------------- amiga 500 */
+
+/* The Amiga's own grey, the one Workbench 1.3 came up in. */
+body[data-screen='amiga'] {
+  background: #10141c;
+}
+
+.amiga {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.amiga__stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.5rem, 2vw, 2rem);
+}
+
+.amiga__canvas {
+  /* 688 hires pixels by 284 lines, shown in the 4:3 a PAL set had. */
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #000;
+  /* The pointer is the Amiga's own once it is captured, and the browser hides
+     the host one for us then; until then it has to stay visible. */
+  cursor: crosshair;
+  box-shadow: 0 0 0 2px #05070b, 0 1.5rem 4rem rgb(0 0 0 / 60%);
+}
+
+.amiga--dropping .amiga__canvas {
+  box-shadow: 0 0 0 3px var(--amiga-orange), 0 1.5rem 4rem rgb(0 0 0 / 60%);
+}
+
+.amiga--fullscreen {
+  background: #10141c;
+}
+
+.amiga--fullscreen .amiga__stage {
+  padding: 0;
+}
+
+.amiga--fullscreen .amiga__canvas {
+  box-shadow: none;
+}
+
+.amiga__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.amiga__overlay:empty {
+  display: none;
+}
+
+.amiga__panel {
+  pointer-events: auto;
+  max-width: min(46rem, 90%);
+  max-height: 90%;
+  overflow-y: auto;
+  padding: 1.5rem 2rem;
+  background: #0d1220;
+  color: #c3ccdd;
+  border: 2px solid var(--amiga-blue);
+  line-height: 1.6;
+  font-size: 0.9rem;
+}
+
+.amiga__panel h2 {
+  margin-top: 0;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: normal;
+  letter-spacing: 0.05em;
+}
+
+.amiga__panel ul {
+  margin: 0 0 0.9rem;
+  padding-left: 1.4rem;
+}
+
+.amiga__panel code,
+.amiga__panel a {
+  color: var(--amiga-orange);
+}
+
+.amiga__panel-note {
+  color: #7f8aa3;
+  font-size: 0.85em;
+}
+
+.amiga__bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem clamp(0.5rem, 2vw, 2rem);
+  background: #05070b;
+  border-top: 1px solid #1d2740;
+  font-size: 0.8rem;
+}
+
+.amiga__button {
+  font: inherit;
+  color: #c3ccdd;
+  background: transparent;
+  border: 1px solid #24314f;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+}
+
+.amiga__button:hover {
+  background: #16203a;
+  color: #fff;
+}
+
+.amiga__status {
+  margin-left: auto;
+  color: #7f8aa3;
+  text-align: right;
+}
+
+.amiga__file {
+  display: none;
+}
+
+/* The drive light, which on a real A500 is the only thing that tells you
+   anything is happening at all. */
+.amiga__drive {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem clamp(0.5rem, 2vw, 2rem);
+  background: #0a0e18;
+  border-top: 1px solid #1d2740;
+  font-size: 0.8rem;
+}
+
+.amiga__drive-label {
+  color: var(--amiga-orange);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 40rem) {
-  .c64__canvas {
+  .c64__canvas,
+  .amiga__canvas {
     width: 100%;
     height: auto;
   }
 
-  .c64__status {
+  .c64__status,
+  .amiga__status {
     margin-left: 0;
     width: 100%;
     text-align: left;

@@ -69,6 +69,12 @@ class StubElement {
     return Promise.resolve();
   }
 
+  requestPointerLock() {
+    document.pointerLockElement = this;
+    document.dispatch('pointerlockchange');
+    return Promise.resolve();
+  }
+
   getContext() {
     return {
       createImageData: (width, height) => ({ data: new Uint8ClampedArray(width * height * 4) }),
@@ -142,6 +148,7 @@ globalThis.document = {
   createElement: (tag) => new StubElement(tag),
   body: new StubElement('body'),
   fullscreenElement: null,
+  pointerLockElement: null,
   addEventListener(type, handler) {
     if (!documentListeners.has(type)) documentListeners.set(type, []);
     documentListeners.get(type).push(handler);
@@ -158,6 +165,10 @@ globalThis.document = {
     document.fullscreenElement = null;
     document.dispatch('fullscreenchange');
     return Promise.resolve();
+  },
+  exitPointerLock() {
+    document.pointerLockElement = null;
+    document.dispatch('pointerlockchange');
   },
 };
 globalThis.localStorage = {
@@ -364,6 +375,94 @@ check('and its button opens the file picker', filePickerOpened);
 session.dispose();
 check('it shuts down cleanly', session.running === false);
 
+// ------------------------------------------------------------- the Amiga
+
+// The same browser layer, for the other machine. It starts with no Kickstart,
+// which is what every visitor to the public page gets, and then is handed one.
+const amigaEntry = (await import('../src/boot/systems.js')).SYSTEMS.find((s) => s.id === 'amiga');
+check('the boot menu offers the Amiga', amigaEntry?.available === true);
+
+const amigaModule = await amigaEntry.load();
+const amiga = await amigaModule.boot(new StubElement('main'), { onExit: () => {} });
+
+/** A file the way the browser hands one over. */
+const asFile = (name, bytes) => ({ name, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
+
+// A Kickstart-shaped ROM with a program in it rather than an operating system:
+// enough to prove that a dropped ROM is recognised, stored and booted. It is
+// only needed when there is no real one in roms/amiga to boot from.
+const fakeROM = new Uint8Array(262144);
+const romView = new DataView(fakeROM.buffer);
+romView.setUint16(0, 0x1114, false); // the size marker a 256 KB Kickstart starts with
+romView.setUint16(2, 0x4ef9, false); // and its jump
+romView.setUint32(4, 0x00fc0008, false);
+[0x33fc, 0x0f00, 0x00df, 0xf180, 0x60fe].forEach((word, i) => romView.setUint16(8 + i * 2, word, false));
+
+if (amiga.machine === null) {
+  check('with no Kickstart it does not pretend to have booted', true);
+  await amiga.acceptFile(asFile('kick13.rom', fakeROM));
+  check('and a dropped one starts the machine', amiga.machine !== null);
+  check('and is kept for next time', localStorage.getItem('alloldos.rom.amiga.kickstart') !== null);
+} else {
+  check('a Kickstart in roms/amiga boots on its own', amiga.machine !== null);
+  check('and the session says which one', amiga.status.textContent.includes('Kickstart'), amiga.status.textContent);
+}
+
+// The panel a visitor without a ROM lands on. No local run reaches it when
+// there is a ROM in roms/amiga, so it is asked for by name, the same way the
+// C64's is.
+amiga.showROMPrompt();
+const romPanel = amiga.overlay.children[0];
+const romText = [romPanel.innerHTML, ...romPanel.children.map((n) => n.innerHTML || n.textContent)].join(' ');
+check('it asks for the ROM before explaining itself', romText.includes('Trascina qui la ROM Kickstart'));
+check('it says how big one is', romText.includes('256 KB') && romText.includes('512 KB'));
+check('it points at the licence you can buy', romText.includes('amigaforever.com'));
+check('and at the free replacement that works', romText.includes('aros'));
+amiga.overlay.replaceChildren();
+
+pump(10);
+check('the emulated 68000 is running the ROM', amiga.machine.cpu.instructions > 1000, `${amiga.machine.cpu.instructions} istruzioni`);
+check('and the picture is being drawn', amiga.machine.frameCount > 0, `${amiga.machine.frameCount} quadri`);
+
+// A disk, through the same path the file picker uses.
+const adf = new Uint8Array(901120);
+adf.set([0x44, 0x4f, 0x53, 0x00]); // "DOS"
+const root = 880 * 512;
+const label = 'Workbench';
+adf[root + 432] = label.length;
+for (let i = 0; i < label.length; i++) adf[root + 433 + i] = label.charCodeAt(i);
+
+await amiga.acceptFile(asFile('workbench.adf', adf));
+check('a dropped .adf goes in the drive', amiga.machine.disk.inserted);
+check('and the drive bar says what is in it', amiga.drive.hidden === false && amiga.driveLabel.textContent.includes('Workbench'));
+check('and that it can be booted from', amiga.status.textContent.includes('Reset'));
+
+amiga.ejectDisk();
+check('and comes back out again', amiga.machine.disk.inserted === false && amiga.drive.hidden === true);
+
+// A file that is neither a ROM nor a disk says so instead of throwing.
+await amiga.acceptFiles([asFile('nonsense.txt', new Uint8Array(64))]);
+check('anything else is refused politely', amiga.status.textContent.includes('.adf'), amiga.status.textContent);
+
+// The mouse: the Amiga only ever knows how far the ball turned.
+amiga.captureMouse();
+check('the picture can capture the pointer', document.pointerLockElement === amiga.canvas);
+const beforeMouse = amiga.machine.keyboard.joy0dat;
+amiga.canvas.dispatch('mousemove', { movementX: 8, movementY: 4 });
+check('and moving it moves the counters', amiga.machine.keyboard.joy0dat !== beforeMouse);
+amiga.canvas.dispatch('mousedown', { button: 0 });
+check('the left button is a CIA pin, and it goes low', amiga.machine.keyboard.fireBit === 0);
+amiga.canvas.dispatch('mouseup', { button: 0 });
+check('and back up', amiga.machine.keyboard.fireBit === 0x40);
+
+// Typing: a key becomes a byte on the keyboard's serial line, inverted.
+sendKey('keydown', 'KeyA', 'a');
+const queued = amiga.machine.keyboard.queue;
+check('a key press is queued as an Amiga key code', queued[queued.length - 1] === (~(0x20 << 1) & 0xff), String(queued[queued.length - 1]));
+
+amiga.dispose();
+check('the Amiga shuts down cleanly', amiga.running === false);
+
 // The about page boots through the same contract as a machine, so it can be
 // run here the same way — and what it claims about itself has to be true.
 const aboutEntry = (await import('../src/boot/systems.js')).SYSTEMS.find((system) => system.id === 'about');
@@ -375,6 +474,14 @@ const aboutText = about.root.children.map((node) => node.innerHTML || node.textC
 check('it says who wrote it', aboutText.includes('Daniele Corte') && aboutText.includes('Claude Code'));
 check('it says which licence it is under', aboutText.includes('GNU General Public License'));
 check('it points at the public repository', aboutText.includes('github.com/danielecorte/alloldos'));
+check(
+  'and it is laid out as credits and then one machine at a time',
+  ['Crediti', 'Commodore 64', 'Amiga 500'].every((title) =>
+    aboutText.includes(`about__section">${title}`),
+  ),
+);
+check('the C64 section links its own ROMs', aboutText.includes('kernal-901227-03.bin'));
+check('and the Amiga section says where its Kickstart comes from', aboutText.includes('amigaforever.com'));
 
 sendKey('keydown', 'Escape', 'Escape');
 check('Escape goes back to the boot menu', leftAbout);
