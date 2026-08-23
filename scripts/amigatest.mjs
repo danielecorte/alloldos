@@ -1031,8 +1031,33 @@ const forever = [0x60fe]; // bra to itself
   amiga.write16(0xdff024, 0x9900); // DSKLEN: $1900 words, DMA on
   amiga.write16(0xdff024, 0x9900); // twice, as the hardware insists
 
-  check('the disk interrupt fired', (amiga.paula.intreq & 0x0002) !== 0);
-  check('and the sync one with it', (amiga.paula.intreq & 0x1000) !== 0);
+  // The sync goes past at once, because the head is already over the track.
+  // The data behind it does not: the drive has to turn.
+  check('the sync interrupt fired straight away', (amiga.paula.intreq & 0x1000) !== 0);
+  check('but the transfer has not finished yet', (amiga.paula.intreq & 0x0002) === 0);
+  check('and nothing has landed in memory', amiga.peek16(0x00040000) === 0);
+
+  // This is what a game's own trackloader does between arming the DMA and
+  // watching for it: clear the interrupt still standing from the last read. It
+  // only works if the transfer is genuinely still under way.
+  amiga.write16(0xdff09c, 0x0002); // INTREQ: clear DSKBLK
+
+  // $1900 words at two words a scan line is 3200 lines, which is a bit over ten
+  // frames — one revolution of the drive, near enough.
+  let frames = 0;
+  while (frames < 40 && (amiga.paula.intreq & 0x0002) === 0) {
+    amiga.runFrame();
+    frames++;
+    if (frames === 1) {
+      check(
+        'a frame in, some of it has arrived and the rest has not',
+        amiga.peek16(0x00040000) !== 0 && amiga.disk.transferring,
+      );
+    }
+  }
+  check('the disk interrupt fired when the transfer ended', (amiga.paula.intreq & 0x0002) !== 0);
+  check('after about a revolution of the drive', frames === 11, `${frames} quadri`);
+  check('and the drive is idle again', amiga.disk.transferring === false);
 
   // Now read the buffer the way trackdisk.device does: find a sync word, and
   // take the two longs after the last of them as the sector's header. Its top
@@ -1059,6 +1084,75 @@ const forever = [0x60fe]; // bra to itself
   amiga.disk.eject();
   selectAndMotor(true);
   check('an empty drive is never ready', (amiga.read8(CIAA_PRA) & 0x20) !== 0);
+}
+
+{
+  // Sync happens at a bit, not at a word.
+  //
+  // A loader that wants its data on a different boundary than AmigaDOS put it
+  // asks to sync on $4891, which is the ordinary $4489 seen three bits early.
+  // The hardware finds it because the head shifts the stream along one bit at a
+  // time; every word after it then arrives shifted to match, and the loader
+  // knows that and undoes it. Looking only at whole words would find nothing at
+  // all, and the read would never even start.
+  const image = new Uint8Array(ADF_SIZE);
+  for (let i = 0; i < BYTES_PER_SECTOR * 2; i++) image[i] = (i * 7) & 0xff;
+  const track = encodeTrack(image, 0);
+
+  // The stream, read by hand, so the drive has something to be checked against.
+  const bitAt = (bit) => (track[(bit >> 3) % MFM_TRACK_LENGTH] >> (7 - (bit & 7))) & 1;
+  const wordAtBit = (bit) => {
+    let word = 0;
+    for (let i = 0; i < 16; i++) word = ((word << 1) | bitAt(bit + i)) & 0xffff;
+    return word;
+  };
+
+  let firstOddSync = -1;
+  for (let bit = 0; bit < MFM_TRACK_LENGTH * 8 && firstOddSync < 0; bit++) {
+    if (wordAtBit(bit) === 0x4891) firstOddSync = bit;
+  }
+  check('the odd sync is really in a perfectly ordinary track', firstOddSync === 29, `bit ${firstOddSync}`);
+  check('and it is the usual one, three bits early', wordAtBit(firstOddSync + 3) === SYNC);
+
+  const amiga = new Amiga(buildROM([...forever]));
+  amiga.disk.insert(image, 'prova');
+  amiga.write8(0xbfd100, 0xff); // deselect, so the motor latch sees an edge
+  amiga.write8(0xbfd100, 0x75); // /SEL0 low, motor on
+  amiga.write16(0xdff09e, 0x8400); // ADKCON: WORDSYNC
+  amiga.write16(0xdff07e, 0x4891); // DSKSYNC: the odd one
+  amiga.write16(0xdff096, 0x8210); // DMACON: master and disk
+  amiga.write32(0xdff020, 0x00050000); // DSKPT
+  amiga.write16(0xdff024, 0x8010); // DSKLEN: 16 words
+  amiga.write16(0xdff024, 0x8010);
+
+  check('the drive found it and started reading', amiga.disk.transferring);
+  let frames = 0;
+  while (frames < 10 && amiga.disk.transferring) {
+    amiga.runFrame();
+    frames++;
+  }
+  check('and the read finished', (amiga.paula.intreq & 0x0002) !== 0);
+
+  // What landed is the stream from just past the sync, shifted bits and all.
+  let same = true;
+  for (let i = 0; i < 16; i++) {
+    if (amiga.peek16(0x00050000 + i * 2) !== wordAtBit(firstOddSync + 16 + i * 16)) same = false;
+  }
+  check('and every word of it came off the right bit', same, hex(amiga.peek16(0x00050000), 4));
+
+  // The same track, asked for the ordinary way, still lands where it always did.
+  const plain = new Amiga(buildROM([...forever]));
+  plain.disk.insert(image, 'prova');
+  plain.write8(0xbfd100, 0xff);
+  plain.write8(0xbfd100, 0x75);
+  plain.write16(0xdff09e, 0x8400);
+  plain.write16(0xdff07e, 0x4489);
+  plain.write16(0xdff096, 0x8210);
+  plain.write32(0xdff020, 0x00050000);
+  plain.write16(0xdff024, 0x8010);
+  plain.write16(0xdff024, 0x8010);
+  for (let i = 0; i < 10 && plain.disk.transferring; i++) plain.runFrame();
+  check('and a plain $4489 read is still word aligned', plain.peek16(0x00050000) === SYNC, hex(plain.peek16(0x00050000), 4));
 }
 
 {

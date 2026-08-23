@@ -16,6 +16,36 @@ const CIAB_MOTOR = 0x80;
 
 const CYLINDERS = 80;
 
+/**
+ * How long one word takes to come off the head, in CPU cycles.
+ *
+ * A double density track is one revolution of a drive turning at 300 rpm: 200
+ * milliseconds for the twelve and a half thousand bytes of it, which works out
+ * at a bit every two microseconds and so a word every thirty-two. At 7.09 MHz
+ * that is 227 cycles — exactly two words per scan line, which is the same fact
+ * said the other way round.
+ *
+ * It matters that this is a real duration and not nothing. Software that goes
+ * through trackdisk.device never notices either way, because it waits on an
+ * interrupt. A game with its own trackloader does notice: the usual shape is to
+ * arm the DMA, clear the disk interrupt that is still set from last time, and
+ * only then start watching for it. A transfer that finished instantly would set
+ * that interrupt before the clearing write, and the loader would wait for
+ * something that had already happened and given up.
+ */
+const CYCLES_PER_WORD = 227;
+
+/**
+ * The head reads a bit stream, not bytes: where a word starts is decided by
+ * where the sync was found, and that can be at any bit at all.
+ *
+ * This is not a detail. A loader that wants its data on a different boundary
+ * than AmigaDOS puts it asks for a sync value that is the ordinary $4489 seen a
+ * few bits early — $4891 is $4489 shifted along by three — and every word after
+ * it arrives shifted to match. Looking only at whole words would never find it.
+ */
+const TRACK_BITS = MFM_TRACK_LENGTH * 8;
+
 export class DiskDrive {
   /**
    * @param {object} hooks
@@ -50,7 +80,14 @@ export class DiskDrive {
 
     this.track = null; // the MFM of the cylinder and side under the head
     this.trackNumber = -1;
-    this.position = 0;
+    this.position = 0; // where the head is in the bit stream, in bits
+
+    // A transfer in flight: how much of it is left, and the cycles banked
+    // towards the next word of it.
+    this.transferring = false;
+    this.transferWords = 0;
+    this.writing = false;
+    this.cycleDebt = 0;
   }
 
   /** @param {Uint8Array} bytes a whole .adf */
@@ -161,9 +198,14 @@ export class DiskDrive {
         // Two writes with the DMA bit set, in a row, is the arming sequence:
         // one write on its own is how the driver makes sure it is disarmed.
         if (value & 0x8000) {
-          if (this.dmaArmed) this.transfer(value);
+          if (this.dmaArmed) this.start(value);
           else this.dmaArmed = true;
-        } else this.dmaArmed = false;
+        } else {
+          this.dmaArmed = false;
+          // Taking the DMA bit away stops a transfer where it stands, and no
+          // interrupt comes: this is how a loader tidies up after itself.
+          this.transferring = false;
+        }
         this.dsklen = value;
         return true;
       case 0x026: // DSKDAT, for the CPU-driven writes nothing here does
@@ -187,57 +229,113 @@ export class DiskDrive {
   }
 
   /**
-   * One whole DSKLEN's worth of transfer, at once. The real drive would take a
-   * revolution over it and interrupt at the end; the software waits for that
-   * interrupt either way.
+   * Sets a DSKLEN's worth of transfer going. Nothing is moved here: the head
+   * has to get to the data first, and the words arrive under tick().
    */
-  transfer(length) {
+  start(length) {
     this.dmaArmed = false;
+    this.transferring = false;
     if (!this.hooks.dmaEnabled()) return;
 
     const words = length & 0x3fff;
-    if (length & 0x4000) {
-      // A write. The disk is protected, so the bytes go nowhere — but the
-      // pointer and the interrupt still have to behave.
-      this.dskpt = (this.dskpt + words * 2) & 0x1ffffe;
+    this.writing = (length & 0x4000) !== 0;
+    this.transferWords = words;
+    this.cycleDebt = 0;
+
+    if (!this.writing) {
+      const track = this.currentTrack();
+      if (!track) return; // no disk: the transfer never finishes, and DOS times out
+
+      if (this.hooks.adkcon() & 0x0400) {
+        // Word sync: the DMA does not start until the sync word goes past, and
+        // the sync word itself is not part of what lands in memory.
+        const found = this.findSync(track, this.position);
+        if (found < 0) return;
+        this.position = found;
+        this.hooks.onSyncFound();
+      }
+    }
+
+    // Asking for nothing is over before it starts, but it still interrupts.
+    if (words === 0) {
       this.hooks.onBlockFinished();
       return;
     }
-
-    const track = this.currentTrack();
-    if (!track) return; // no disk: the transfer never finishes, and DOS times out
-
-    let at = this.position;
-    if (this.hooks.adkcon() & 0x0400) {
-      // Word sync: the DMA does not start until the sync word goes past, and
-      // the sync word itself is not part of what lands in memory.
-      const found = this.findSync(track, at);
-      if (found < 0) return;
-      at = found;
-      this.hooks.onSyncFound();
-    }
-
-    let pointer = this.dskpt;
-    for (let i = 0; i < words; i++) {
-      const high = track[at];
-      const low = track[(at + 1) % MFM_TRACK_LENGTH];
-      this.hooks.write(pointer, (high << 8) | low);
-      pointer = (pointer + 2) & 0x1ffffe;
-      at = (at + 2) % MFM_TRACK_LENGTH;
-      this.lastByte = low;
-    }
-    this.dskpt = pointer;
-    this.position = at;
-    this.hooks.onBlockFinished();
+    this.transferring = true;
   }
 
-  /** @returns {number} the byte just past the next sync word, or -1 */
+  /**
+   * The drive turning, for however many CPU cycles have gone by. Words come off
+   * the head at their own rate whatever the processor is doing, and the
+   * interrupt at the end of them arrives when the last one does.
+   *
+   * @param {number} cycles CPU cycles since the last call
+   */
+  tick(cycles) {
+    if (!this.transferring) return;
+    if (!this.hooks.dmaEnabled()) {
+      // The DMA was switched off underneath it. The transfer stops where it is
+      // and says nothing, exactly as the hardware would.
+      this.transferring = false;
+      return;
+    }
+
+    this.cycleDebt += cycles;
+    let words = (this.cycleDebt / CYCLES_PER_WORD) | 0;
+    if (words <= 0) return;
+    this.cycleDebt -= words * CYCLES_PER_WORD;
+    if (words > this.transferWords) words = this.transferWords;
+
+    if (this.writing) {
+      // The disk is protected, so the bytes go nowhere — but the pointer still
+      // has to walk, because the software looks at where it ended up.
+      this.dskpt = (this.dskpt + words * 2) & 0x1ffffe;
+    } else {
+      const track = this.currentTrack();
+      if (!track) {
+        // Ejected mid-transfer. Nothing more is coming, and nothing says so.
+        this.transferring = false;
+        return;
+      }
+      let at = this.position;
+      let pointer = this.dskpt;
+      for (let i = 0; i < words; i++) {
+        const word = this.wordAt(track, at);
+        this.hooks.write(pointer, word);
+        pointer = (pointer + 2) & 0x1ffffe;
+        at = (at + 16) % TRACK_BITS;
+        this.lastByte = word & 0xff;
+      }
+      this.dskpt = pointer;
+      this.position = at;
+    }
+
+    this.transferWords -= words;
+    if (this.transferWords === 0) {
+      this.transferring = false;
+      this.hooks.onBlockFinished();
+    }
+  }
+
+  /**
+   * The sixteen bits of the stream starting at a bit, wrapping round the end of
+   * the track the way the head does when the disk comes round again.
+   */
+  wordAt(track, bit) {
+    const byte = (bit >> 3) % MFM_TRACK_LENGTH;
+    const shift = bit & 7;
+    const high = track[byte];
+    const middle = track[(byte + 1) % MFM_TRACK_LENGTH];
+    const low = track[(byte + 2) % MFM_TRACK_LENGTH];
+    return (((high << 16) | (middle << 8) | low) >> (8 - shift)) & 0xffff;
+  }
+
+  /** @returns {number} the bit just past the next sync word, or -1 */
   findSync(track, from) {
     const target = this.dsksync === 0 ? SYNC : this.dsksync;
-    for (let i = 0; i < MFM_TRACK_LENGTH; i += 2) {
-      const at = (from + i) % MFM_TRACK_LENGTH;
-      const word = (track[at] << 8) | track[(at + 1) % MFM_TRACK_LENGTH];
-      if (word === target) return (at + 2) % MFM_TRACK_LENGTH;
+    for (let i = 0; i < TRACK_BITS; i++) {
+      const bit = (from + i) % TRACK_BITS;
+      if (this.wordAt(track, bit) === target) return (bit + 16) % TRACK_BITS;
     }
     return -1;
   }

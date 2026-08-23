@@ -441,6 +441,9 @@ export class Amiga {
       this.agnus.runCopper(until);
       this.agnus.hpos = until;
       this.hpos = until;
+      // The drive turns before the CPU gets its slice, so a program that is
+      // watching the buffer fill sees it filling rather than already full.
+      this.disk.tick((until - clock) * 2);
       this.runCycles((until - clock) * 2);
     }
 
