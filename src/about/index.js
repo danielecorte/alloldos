@@ -215,6 +215,10 @@ class AboutPage {
         aspetta.</li>
         <li><b>Mouse</b> con il puntatore agganciato alla finestra: l'Amiga non
         sa dove sia il mouse, conta solo di quanto è girata la pallina.</li>
+        <li><b>Joystick</b> nella porta 2, su richiesta, con frecce e spazio. La
+        porta è nata per un mouse, quindi su e giù non sono bit: escono da uno
+        XOR fra bit vicini, ed è per quello che ogni gioco li legge con uno
+        shift.</li>
         <li>L'<b>interlace</b>: ogni riga di quadro ha due righe di immagine, e
         i due semiquadri finiscono su quelle alterne. Senza, uno schermo a
         640×512 viene fuori schiacciato a metà altezza.</li>

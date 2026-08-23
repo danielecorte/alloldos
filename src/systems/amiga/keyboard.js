@@ -122,6 +122,28 @@ const KEY_TERMINATE_POWER_UP = 0xfe;
 /** Roughly the time a real keyboard takes over one byte and its handshake. */
 const SEND_INTERVAL_CYCLES = 3000;
 
+const JOY_UP = 0x01;
+const JOY_DOWN = 0x02;
+const JOY_LEFT = 0x04;
+const JOY_RIGHT = 0x08;
+const JOY_FIRE = 0x10;
+
+/**
+ * The stick, when there is one, is the cursor keys and the space bar.
+ *
+ * The C64 in the next room can leave its joystick on the numeric keypad all the
+ * time, because a real C64 has no keypad for the keys to clash with. An Amiga
+ * does, and games use it, so here the stick has to be asked for: until it is,
+ * every one of these keys is its own key and reaches the machine as itself.
+ */
+const JOYSTICK_CODES = new Map(Object.entries({
+  ArrowUp: JOY_UP,
+  ArrowDown: JOY_DOWN,
+  ArrowLeft: JOY_LEFT,
+  ArrowRight: JOY_RIGHT,
+  Space: JOY_FIRE,
+}));
+
 export class AmigaKeyboard {
   constructor() {
     this.queue = [];
@@ -131,6 +153,10 @@ export class AmigaKeyboard {
     this.mouseX = 0;
     this.mouseY = 0;
     this.buttons = [false, false, false]; // left, right, middle
+    /** Which way the stick in the game port is pushed, and whether it is fired. */
+    this.joystick = 0;
+    /** Whether the cursor keys are that stick rather than the Amiga's own keys. */
+    this.arrowsAreJoystick = false;
     this.announce();
   }
 
@@ -138,6 +164,7 @@ export class AmigaKeyboard {
     this.queue.length = 0;
     this.held.clear();
     this.buttons = [false, false, false];
+    this.joystick = 0;
     this.announce();
   }
 
@@ -151,6 +178,11 @@ export class AmigaKeyboard {
    * @returns {boolean} true if the key belongs to the Amiga and not the browser
    */
   handleKeyDown(event) {
+    const direction = this.joystickBit(event.code);
+    if (direction) {
+      this.joystick |= direction;
+      return true;
+    }
     const code = KEY_MAP[event.code];
     if (code === undefined) return false;
     // A held key repeats in the browser; the Amiga repeats keys itself.
@@ -161,6 +193,11 @@ export class AmigaKeyboard {
   }
 
   handleKeyUp(event) {
+    const direction = this.joystickBit(event.code);
+    if (direction) {
+      this.joystick &= ~direction;
+      return true;
+    }
     const code = KEY_MAP[event.code];
     if (code === undefined) return false;
     if (!this.held.delete(code)) return true;
@@ -168,10 +205,26 @@ export class AmigaKeyboard {
     return true;
   }
 
+  /** The direction a key stands for while the stick is plugged in, or 0. */
+  joystickBit(code) {
+    if (!this.arrowsAreJoystick) return 0;
+    return JOYSTICK_CODES.get(code) ?? 0;
+  }
+
+  /**
+   * Unplugs the stick, letting go of it first: a direction left held on a port
+   * nobody is reading any more is a direction held forever.
+   */
+  setJoystick(plugged) {
+    this.joystick = 0;
+    this.arrowsAreJoystick = plugged === true;
+  }
+
   /** Everything goes up when the window loses focus, or keys stick down. */
   releaseAll() {
     for (const code of this.held) this.send(code, true);
     this.held.clear();
+    this.joystick = 0;
   }
 
   send(code, up) {
@@ -207,9 +260,37 @@ export class AmigaKeyboard {
     return ((this.mouseY & 0xff) << 8) | (this.mouseX & 0xff);
   }
 
+  /**
+   * JOY1DAT: the game port, where a joystick goes.
+   *
+   * The port is wired for a mouse, so what it reports is a pair of quadrature
+   * counters, and a joystick has to be read out of them sideways. Left and
+   * right are plain bits, 9 and 1. Up and down are not: they come out of the
+   * bit below each of those, exclusive-ored with it, which is what the two
+   * lines of shifting and xoring at the top of every game's control routine is
+   * for. So the value has to be built to survive that arithmetic.
+   */
+  get joy1dat() {
+    const right = (this.joystick & JOY_RIGHT) !== 0;
+    const left = (this.joystick & JOY_LEFT) !== 0;
+    const up = (this.joystick & JOY_UP) !== 0;
+    const down = (this.joystick & JOY_DOWN) !== 0;
+    let value = 0;
+    if (right) value |= 0x0002;
+    if (left) value |= 0x0200;
+    if (up !== right) value |= 0x0001; // bit 0, so that bit 0 xor bit 1 is up
+    if (down !== left) value |= 0x0100; // bit 8, likewise against bit 9
+    return value;
+  }
+
   /** The left button is a CIA pin; it reads low while it is down. */
   get fireBit() {
     return this.buttons[0] ? 0 : 0x40;
+  }
+
+  /** The game port's fire button is the pin next door, and just as active low. */
+  get joystickFireBit() {
+    return this.joystick & JOY_FIRE ? 0 : 0x80;
   }
 
   /** POTGOR carries the other two buttons, and they are active low as well. */

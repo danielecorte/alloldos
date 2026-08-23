@@ -59,6 +59,7 @@ class AmigaSession {
       this.button('Reset', () => this.resetMachine()),
       (this.pauseButton = this.button('Pausa', () => this.togglePause())),
       (this.muteButton = this.button('Audio on', () => this.toggleMute())),
+      (this.joystickButton = this.button('Joystick: no', () => this.toggleJoystick())),
       (this.mouseButton = this.button('Cattura il mouse', () => this.captureMouse())),
       (this.fullscreenButton = this.button('Schermo intero', () => this.toggleFullscreen())),
       this.button('Menu di boot', () => this.onExit()),
@@ -283,6 +284,30 @@ class AmigaSession {
     this.paused = !this.paused;
     this.pauseButton.textContent = this.paused ? 'Riprendi' : 'Pausa';
     this.setStatus(this.paused ? 'In pausa' : 'In esecuzione');
+  }
+
+  /**
+   * Plugs a joystick into the game port, or takes it out again.
+   *
+   * It has to be asked for, because the keys it needs are keys the Amiga wants
+   * too: Prince of Persia is played on the cursor keys, and a stick left
+   * plugged in would eat every one of them.
+   */
+  toggleJoystick() {
+    if (!this.machine) {
+      this.setStatus('Prima serve la Kickstart');
+      return;
+    }
+    const keyboard = this.machine.keyboard;
+    keyboard.setJoystick(!keyboard.arrowsAreJoystick);
+    this.joystickButton.textContent = keyboard.arrowsAreJoystick
+      ? 'Joystick: porta 2'
+      : 'Joystick: no';
+    this.setStatus(
+      keyboard.arrowsAreJoystick
+        ? 'Frecce e spazio = joystick nella porta 2'
+        : 'Frecce e spazio = tasti dell\'Amiga',
+    );
   }
 
   toggleMute() {

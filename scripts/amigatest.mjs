@@ -1220,6 +1220,77 @@ const forever = [0x60fe]; // bra to itself
 }
 
 {
+  // The game port, which is where a joystick goes.
+  //
+  // The port was wired for a mouse, so what comes back is a pair of quadrature
+  // counters and a stick has to be read out of them sideways. Every game does
+  // it the same way: take the word, shift it right one, exclusive-or it with
+  // itself, and up and down fall out at bits 0 and 8 — while left and right
+  // were plain bits 9 and 1 all along. So this checks the arithmetic a game
+  // actually does, not the bits we happened to set.
+  const amiga = new Amiga(buildROM([...forever]));
+  const keyboard = amiga.keyboard;
+  keyboard.setJoystick(true);
+
+  const stick = () => {
+    const value = amiga.read16(0xdff00c);
+    const crossed = (value ^ (value >> 1)) & 0xffff;
+    return {
+      right: (value & 0x0002) !== 0,
+      left: (value & 0x0200) !== 0,
+      up: (crossed & 0x0001) !== 0,
+      down: (crossed & 0x0100) !== 0,
+    };
+  };
+  const push = (code) => keyboard.handleKeyDown({ code });
+  const release = (code) => keyboard.handleKeyUp({ code });
+  const only = (...directions) => {
+    const s = stick();
+    for (const way of ['up', 'down', 'left', 'right']) {
+      if (s[way] !== directions.includes(way)) return false;
+    }
+    return true;
+  };
+
+  check('a stick nobody is touching reads as centred', only());
+
+  push('ArrowRight');
+  check('pushed right, a game reads right', only('right'));
+  push('ArrowUp');
+  check('and a diagonal is both, not one or neither', only('up', 'right'));
+  release('ArrowRight');
+  check('letting go of one leaves the other', only('up'));
+  release('ArrowUp');
+
+  push('ArrowLeft');
+  check('left is the other plain bit', only('left'));
+  push('ArrowDown');
+  check('and the other diagonal works too', only('down', 'left'));
+  release('ArrowLeft');
+  check('down on its own survives the crossing', only('down'));
+  release('ArrowDown');
+  check('and it centres again', only());
+
+  // Fire is not in that word at all: it is a CIA pin, and it is active low.
+  const CIAA_PRA = 0xbfe001;
+  check('the fire button starts up', (amiga.read8(CIAA_PRA) & 0x80) !== 0);
+  push('Space');
+  check('and pulls its pin low when pressed', (amiga.read8(CIAA_PRA) & 0x80) === 0);
+  check('without disturbing the mouse button next door', (amiga.read8(CIAA_PRA) & 0x40) !== 0);
+  release('Space');
+  check('and lets go again', (amiga.read8(CIAA_PRA) & 0x80) !== 0);
+
+  // Unplugged, every one of those keys is its own key again — which is the
+  // whole reason the stick has to be asked for.
+  push('ArrowUp');
+  keyboard.setJoystick(false);
+  check('unplugging it centres the port', only());
+  keyboard.queue.length = 0;
+  check('and now the cursor keys reach the Amiga', keyboard.handleKeyDown({ code: 'ArrowUp' }) === true && keyboard.queue.length === 1);
+  check('as themselves', keyboard.queue[0] === (~(0x4c << 1) & 0xff), String(keyboard.queue[0]));
+}
+
+{
   // The CIA time-of-day counters, which AmigaDOS turns into a clock.
   const amiga = new Amiga(buildROM([...forever]));
   for (let i = 0; i < 50; i++) amiga.runFrame();

@@ -272,6 +272,23 @@ Esc, come qualsiasi altra pagina che cattura il mouse. Il tasto sinistro è un
 piedino del CIA-A, il destro sta in POTGOR: sono due strade completamente
 diverse dentro la macchina, ed è per quello che i menu si aprono con il destro.
 
+### Il joystick
+
+Quasi ogni gioco Amiga si comanda col joystick nella **porta 2**, e il pulsante
+*Joystick* nella barra ce ne mette uno: frecce e barra spazio. Va chiesto invece
+di stare sempre lì perché quei tasti l'Amiga li vuole per sé — Prince of Persia,
+per dirne uno, si gioca con le frecce sulla tastiera, e uno stick perennemente
+inserito se le mangerebbe tutte.
+
+Leggerlo è più strano di quanto sembri, perché la porta è nata per un mouse e
+quello che restituisce sono due contatori in quadratura. Sinistra e destra sono
+bit normali, il 9 e l'1. Su e giù no: escono dal bit sotto ciascuno dei due,
+messo in XOR con lui. È il motivo per cui la routine dei comandi di ogni gioco
+comincia con uno shift e uno XOR, e per cui `JOY1DAT` qui è costruito in modo da
+sopravvivere a quel conto. Il fuoco non sta in quella parola: è il bit 7 della
+porta A del CIA-A, attivo basso, il piedino accanto a quello del tasto sinistro
+del mouse.
+
 ### Cosa c'è dentro
 
 Il **68000** è completo: modo utente e supervisore, i due stack pointer, e le

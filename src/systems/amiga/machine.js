@@ -341,11 +341,14 @@ export class Amiga {
 
   /**
    * CIA-A's port A: the overlay line and the power LED going out, the four
-   * drive status pins coming back, and the left mouse button on top.
+   * drive status pins coming back, and the two fire buttons on top — the mouse
+   * port's on bit 6, the game port's on bit 7.
    */
   readCIAAPortA() {
     const driven = this.ciaa.portAOutput & 0x03;
-    return (driven | this.disk.statusBits | this.keyboard.fireBit | 0x80) & 0xff;
+    return (
+      (driven | this.disk.statusBits | this.keyboard.fireBit | this.keyboard.joystickFireBit) & 0xff
+    );
   }
 
   // --------------------------------------------------------- custom chips
@@ -363,7 +366,7 @@ export class Amiga {
       case 0x00a:
         return this.keyboard.joy0dat;
       case 0x00c:
-        return 0x0000; // nothing in the second port
+        return this.keyboard.joy1dat;
       case 0x00e:
         return 0x0000; // collisions, which nothing here reports
       case 0x012:

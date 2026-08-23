@@ -455,6 +455,22 @@ check('the left button is a CIA pin, and it goes low', amiga.machine.keyboard.fi
 amiga.canvas.dispatch('mouseup', { button: 0 });
 check('and back up', amiga.machine.keyboard.fireBit === 0x40);
 
+// The joystick has to be asked for, because it takes keys the Amiga wants.
+check('there is no stick in the port to begin with', amiga.machine.keyboard.arrowsAreJoystick === false);
+sendKey('keydown', 'ArrowLeft', 'ArrowLeft');
+check('so a cursor key is a cursor key', amiga.machine.keyboard.joy1dat === 0);
+sendKey('keyup', 'ArrowLeft', 'ArrowLeft');
+
+amiga.toggleJoystick();
+check('the button plugs one in', amiga.machine.keyboard.arrowsAreJoystick === true);
+check('and says which port it went into', amiga.joystickButton.textContent.includes('porta 2'));
+sendKey('keydown', 'ArrowLeft', 'ArrowLeft');
+check('now the same key pushes the stick', (amiga.machine.keyboard.joy1dat & 0x0200) !== 0);
+sendKey('keyup', 'ArrowLeft', 'ArrowLeft');
+
+amiga.toggleJoystick();
+check('and the button takes it out again', amiga.joystickButton.textContent === 'Joystick: no');
+
 // Typing: a key becomes a byte on the keyboard's serial line, inverted.
 sendKey('keydown', 'KeyA', 'a');
 const queued = amiga.machine.keyboard.queue;
