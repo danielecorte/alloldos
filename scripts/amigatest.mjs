@@ -37,6 +37,7 @@ import {
   volumeName,
 } from '../src/systems/amiga/adf.js';
 import { romVersion } from '../src/systems/amiga/roms.js';
+import { makeDisk, readFile, checkDisk } from './ofs.mjs';
 import { AUTOCONFIG_BASE } from '../src/systems/amiga/autoconfig.js';
 
 let failures = 0;
@@ -1213,6 +1214,57 @@ const forever = [0x60fe]; // bra to itself
   amiga.reset();
   check('a reset leaves the disk in the drive', amiga.disk.inserted);
   check('with the writes still in it', amiga.disk.modified && amiga.disk.image.every((b, i) => b === before[i]));
+}
+
+{
+  // Saving a program, all the way through.
+  //
+  // Everything above is about sectors. This is about a file: an AmigaDOS disk
+  // with a BASIC program on it, the program made longer the way saving over it
+  // would, and the whole track written back through the DMA. What comes out has
+  // to be a disk whose filesystem still adds up and whose file is the new one —
+  // which is the difference between "the sectors changed" and "it saved".
+  const text = (bytes) => new TextDecoder().decode(bytes);
+  const first = '10 PRINT "CIAO"\n20 END\n';
+  const second = '10 PRINT "CIAO, MONDO!"\n20 PRINT "SALVATO SU DF0:"\n30 END\n';
+  const disk = makeDisk({ name: 'Ciao', files: [{ name: 'Ciao.bas', data: first }] });
+  const saved = makeDisk({ name: 'Ciao', files: [{ name: 'Ciao.bas', data: second }] });
+
+  const amiga = new Amiga(buildROM([...forever]));
+  amiga.disk.insert(disk, 'ciao');
+  check('the disk we made says what it is called', amiga.disk.label === 'Ciao', amiga.disk.label);
+  check('and has the program on it', text(readFile(amiga.disk.image, 'Ciao.bas')) === first);
+
+  // Blocks 880 to 890 are one track: the root, the bitmap, the file's header
+  // and its data all sit on it, which is why saving a small file is one write.
+  const TRACK = 80;
+  amiga.disk.cylinder = TRACK >> 1;
+  amiga.disk.head = TRACK & 1;
+  const mfm = encodeTrack(saved, TRACK);
+  const words = mfm.length / 2;
+  const buffer = 0x00030000;
+  for (let i = 0; i < words; i++) amiga.poke16(buffer + i * 2, (mfm[i * 2] << 8) | mfm[i * 2 + 1]);
+  amiga.write16(0xdff096, 0x8210);
+  amiga.write32(0xdff020, buffer);
+  amiga.write16(0xdff024, 0xc000 | words);
+  amiga.write16(0xdff024, 0xc000 | words);
+  for (let i = 0; i < 40 && amiga.disk.transferring; i++) amiga.runFrame();
+
+  check('the track went onto the disk', amiga.disk.writeCount === 1 && amiga.disk.modified);
+  check('the filesystem still adds up', checkDisk(amiga.disk.image).length === 0, `${checkDisk(amiga.disk.image)}`);
+  check('the volume is still called Ciao', amiga.disk.label === 'Ciao');
+  check(
+    'and the program on it is the one that was saved',
+    text(readFile(amiga.disk.image, 'Ciao.bas')) === second,
+    text(readFile(amiga.disk.image, 'Ciao.bas') ?? new Uint8Array()).split('\n')[0],
+  );
+
+  // And it is on the disk, not just in the image we happen to be holding: the
+  // head reads it back out of the MFM the drive is turning.
+  amiga.disk.track = null;
+  const back = decodeTrack(amiga.disk.currentTrack());
+  const data = back.find((sector) => sector.sector === 3); // block 883, the file's data
+  check('and the head reads it back off the track', text(data.data.subarray(24, 24 + second.length)) === second);
 }
 
 {

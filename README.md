@@ -263,6 +263,31 @@ Un gioco che si formatta i dischi da sé, con un formato tutto suo invece di
 quello di AmigaDOS, non ha dove andare in un `.adf`: la barra lo dice, e quel
 salvataggio si perde.
 
+### Un disco da provare
+
+Un `.adf` distribuibile non si trova: i dischi dei giochi sono di chi li ha
+fatti. Quindi qui il disco se lo formatta da sé:
+
+```
+npm run make-adf
+```
+
+sputa fuori `ciao.adf`, un floppy OFS — il filesystem che la Kickstart 1.3 monta
+senza bisogno d'altro — con dentro `programs/ciao-amiga.bas`. Blocco di boot,
+radice al blocco 880, tabella hash dei nomi, mappa dei blocchi liberi e somme di
+controllo, tutto vero: si trascina sulla finestra e il drive ci legge il nome del
+volume. Non si avvia, perché il codice di boot di AmigaOS è di Commodore, ed è un
+disco dati come quelli che ci si formattava per i propri programmi — e senza
+Workbench non c'è nessun AmigaBASIC che possa farlo girare. Il BASIC che *gira*
+davvero, qui dentro, è quello del C64: sta nella sua ROM e parte da solo.
+
+Serve però a una cosa precisa: `npm test` prende quel disco, gli riscrive sopra
+il programma facendolo più lungo — una traccia intera attraverso la DMA, come
+farebbe un salvataggio vero — e poi ritira fuori il file passando per la tabella
+hash e la catena dei blocchi. Se il file che esce è quello nuovo e le somme di
+controllo tornano ancora, allora salvare funziona davvero; altrimenti sono solo
+settori che sono cambiati.
+
 ### Tastiera e mouse
 
 La tastiera è **posizionale**: ogni tasto del PC va sul tasto che sta nello

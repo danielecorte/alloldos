@@ -8,6 +8,7 @@
     "start": "node scripts/serve.mjs",
     "dev": "node scripts/serve.mjs",
     "fetch-roms": "node scripts/fetch-roms.mjs",
+    "make-adf": "node scripts/makeadf.mjs",
     "test": "node scripts/selftest.mjs && node scripts/keytest.mjs && node scripts/taptest.mjs && node scripts/amigatest.mjs && node scripts/uitest.mjs"
   },
   "repository": {
