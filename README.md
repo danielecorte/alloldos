@@ -10,8 +10,9 @@ Ce ne sono due che partono davvero:
 
 - il **Commodore 64**, emulato dal silicio in su — 6510, VIC-II, due CIA e il
   SID — e avviato sul KERNAL e sul BASIC V2 originali;
-- l'**Amiga 500**, con il 68000, Agnus, Denise, Paula, due CIA 8520 e il drive
-  DF0:, avviato sulla Kickstart e capace di leggere un `.adf`. Ci gira sopra un
+- l'**Amiga 500**, con il 68000, Agnus, Denise, Paula, due CIA 8520 e i due
+  drive DF0: e DF1:, avviato sulla Kickstart e capace di leggere e scrivere un
+  `.adf`. Ci gira sopra un
   sistema operativo vero: **AROS m68k** arriva alla sua schermata di avvio.
 
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
@@ -207,9 +208,9 @@ barra spaziatrice anche senza joystick. Lo riproduciamo perché succedeva.
 
 ## Amiga 500
 
-Un A500 PAL: 68000 a 7,09 MHz, Agnus, Denise e Paula, due CIA 8520 e il drive
-DF0:. Trascinaci sopra una Kickstart e si accende; dagli poi un `.adf` e premi
-**Reset**, e da lì in avanti è AmigaOS che fa il resto.
+Un A500 PAL: 68000 a 7,09 MHz, Agnus, Denise e Paula, due CIA 8520 e due drive,
+DF0: e DF1:. Trascinaci sopra una Kickstart e si accende; dagli poi un `.adf` e
+premi **Reset**, e da lì in avanti è AmigaOS che fa il resto.
 
 La memoria è quella di un A500 cresciuto bene, e non per vezzo: 1 MB di Chip RAM
 (l'Agnus 8372A dell'A500+, a cui moltissimi A500 sono stati portati), i 512 KB
@@ -241,6 +242,28 @@ la direzione su un altro piedino, e le quattro linee di stato (/RDY, /TK0,
 /WPRO, /CHNG) tornano indietro sulla porta A del CIA-A. Con il motore fermo
 /RDY fa anche da identificazione del drive, che è il modo in cui il ROM scopre
 che al connettore c'è un 3,5" da 880 KB.
+
+### Due drive
+
+DF0: sta dentro la macchina, DF1: è il connettore dietro con un drive attaccato.
+Sull'hardware sono la stessa cosa quasi in tutto: **un** filo per il motore,
+**quattro** fili di stato (/RDY, /TK0, /WPRO, /CHNG) e **un** canale DMA in
+Paula, per tutti e due. A distinguerli c'è solo la linea di selezione — /SEL0 sul
+bit 3 della porta B del CIA-B, /SEL1 sul bit 4 — e la regola è che il drive non
+selezionato lascia andare i fili, che le resistenze di pull-up tirano su. Da lì
+viene tutto il resto: il motore si aggancia sul fronte in cui il drive viene
+selezionato (e continua a girare anche dopo, che è come un filo solo fa girare
+due motori), un passo muove la testina di chi è selezionato e nessun'altra, e la
+DMA legge il disco di chi era selezionato quando è partita.
+
+Il secondo disco di un gioco ci finisce da solo: quello che trascini sulla
+finestra va nel primo drive libero, e due file insieme diventano disco uno e
+disco due. Ogni drive ha la sua riga sotto lo schermo, con la sua spia, la sua
+traccia e i suoi quattro bottoni.
+
+La Kickstart il drive se lo trova da sola, senza che nessuno glielo dica: con un
+disco in DF1: e DF0: vuoto, AROS accende il motore del secondo e gli legge la
+traccia 0.
 
 ### Scrivere sui dischi
 
@@ -453,7 +476,7 @@ src/systems/amiga/    l'Amiga 500
   denise.js           bitplane, sprite, priorità, HAM, EHB, e i pixel
   paula.js            interrupt di tutta la macchina, e quattro voci in DMA
   cia.js              8520: timer, TOD a 24 bit, tastiera seriale, overlay
-  disk.js             DF0:: motore, testina, passi, e la DMA del disco
+  disk.js             DF0: e DF1:, e l'unico canale DMA che li legge
   adf.js              da immagine .adf a flusso MFM, checksum compresi
   keyboard.js         tastiera posizionale e contatori del mouse
   roms.js             dove trovare la Kickstart

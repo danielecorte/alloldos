@@ -13,7 +13,7 @@ import { Agnus, LINES_PER_FRAME, CPU_CYCLES_PER_LINE, DMA_DISK, DMA_MASTER } fro
 import { Blitter } from './blitter.js';
 import { Denise, COLOR_CLOCKS_PER_LINE } from './denise.js';
 import { Paula, INT_VERTB, INT_BLIT, INT_PORTS, INT_EXTER, INT_DSKBLK, INT_DSKSYNC } from './paula.js';
-import { DiskDrive } from './disk.js';
+import { DiskDrive, DiskController } from './disk.js';
 import { AmigaKeyboard } from './keyboard.js';
 import { romBase, EXTENDED_ROM_BASE, EXTENDED_ROM_SIZE } from './roms.js';
 import { FastRAM, AUTOCONFIG_BASE, AUTOCONFIG_SIZE } from './autoconfig.js';
@@ -105,7 +105,11 @@ export class Amiga {
       hires: () => this.denise.hires,
       interlaced: () => this.denise.interlaced,
     });
-    this.disk = new DiskDrive({
+    // Two drives, and the one channel that reads them. An A500 came with DF0:
+    // inside it and a socket on the back for the rest; DF1: is that socket
+    // filled, which is what a game on two disks expects to find.
+    this.drives = [new DiskDrive(0), new DiskDrive(1)];
+    this.diskDMA = new DiskController(this.drives, {
       write: (addr, value) => this.chipWrite(addr, value),
       read: (addr) => this.chipRead(addr),
       dmaEnabled: () => this.agnus.dmaOn(DMA_DISK),
@@ -127,7 +131,9 @@ export class Amiga {
         if (active) this.paula.raise(INT_EXTER);
         else this.paula.clear(INT_EXTER);
       },
-      writePortB: (value) => this.disk.writeControl(value),
+      writePortB: (value) => {
+        for (const drive of this.drives) drive.writeControl(value);
+      },
     });
 
     this.cpu = new CPU68000(this);
@@ -148,7 +154,8 @@ export class Amiga {
     this.blitter.reset();
     this.denise.reset();
     this.paula.reset();
-    this.disk.reset();
+    for (const drive of this.drives) drive.reset();
+    this.diskDMA.reset();
     this.ciaa.reset();
     this.ciab.reset();
     this.keyboard.reset();
@@ -184,8 +191,8 @@ export class Amiga {
     this.fast?.reset();
     this.updateOverlay();
     // A reset CIA-B drives every drive line high: no drive selected, no motor.
-    // The head does not move, because nothing resets the drive itself.
-    this.disk.writeControl(this.ciab.portBOutput);
+    // The heads do not move, because nothing resets the drives themselves.
+    for (const drive of this.drives) drive.writeControl(this.ciab.portBOutput);
   }
 
   updateOverlay() {
@@ -346,10 +353,12 @@ export class Amiga {
    * port's on bit 6, the game port's on bit 7.
    */
   readCIAAPortA() {
+    // The four status pins are one set of wires with every drive hanging off
+    // them: an unselected drive lets go and the pull-ups make its bits ones, so
+    // the drives are ANDed together and whoever is selected decides.
+    const status = this.drives.reduce((bits, drive) => bits & drive.statusBits, 0xff);
     const driven = this.ciaa.portAOutput & 0x03;
-    return (
-      (driven | this.disk.statusBits | this.keyboard.fireBit | this.keyboard.joystickFireBit) & 0xff
-    );
+    return (driven | status | this.keyboard.fireBit | this.keyboard.joystickFireBit) & 0xff;
   }
 
   // --------------------------------------------------------- custom chips
@@ -363,7 +372,7 @@ export class Amiga {
         return this.agnus.readRegister(offset);
       case 0x008:
       case 0x01a:
-        return this.disk.readRegister(offset);
+        return this.diskDMA.readRegister(offset);
       case 0x00a:
         return this.keyboard.joy0dat;
       case 0x00c:
@@ -403,7 +412,7 @@ export class Amiga {
       if (offset === 0x096) this.paula.updateAudioDMA();
       return;
     }
-    if (this.disk.writeRegister(offset, word)) return;
+    if (this.diskDMA.writeRegister(offset, word)) return;
     if (this.paula.writeRegister(offset, word)) return;
     if (offset === 0x034) return; // POTGO: the pot counters nothing here counts
     if (offset === 0x032) return; // SERPER
@@ -447,7 +456,7 @@ export class Amiga {
       this.hpos = until;
       // The drive turns before the CPU gets its slice, so a program that is
       // watching the buffer fill sees it filling rather than already full.
-      this.disk.tick((until - clock) * 2);
+      this.diskDMA.tick((until - clock) * 2);
       this.runCycles((until - clock) * 2);
     }
 

@@ -433,9 +433,21 @@ adf[root + 432] = label.length;
 for (let i = 0; i < label.length; i++) adf[root + 433 + i] = label.charCodeAt(i);
 
 await amiga.acceptFile(asFile('workbench.adf', adf));
-check('a dropped .adf goes in the drive', amiga.machine.disk.inserted);
-check('and the drive bar says what is in it', amiga.drive.hidden === false && amiga.driveLabel.textContent.includes('Workbench'));
+check('a dropped .adf goes in the drive', amiga.machine.drives[0].inserted);
+check('and the drive row says what is in it', amiga.driveRows[0].label.textContent.includes('Workbench'));
 check('and that it can be booted from', amiga.status.textContent.includes('Reset'));
+check('while the second drive says it is empty', amiga.driveRows[1].label.textContent.includes('vuoto'));
+
+// The second disk of a game goes in the second drive, without being asked.
+const other = adf.slice();
+const otherLabel = 'Disco2';
+other[root + 432] = otherLabel.length;
+for (let i = 0; i < otherLabel.length; i++) other[root + 433 + i] = otherLabel.charCodeAt(i);
+await amiga.acceptFile(asFile('disco2.adf', other));
+check('a second .adf goes into DF1:', amiga.machine.drives[1].inserted);
+check('and DF0: keeps the one it had', amiga.machine.drives[0].label === 'Workbench');
+check('and the row says which drive it went into', amiga.driveRows[1].label.textContent.includes('DF1:'));
+check('and the bar says it too', amiga.status.textContent.includes('DF1:'), amiga.status.textContent);
 
 // What happens when the machine writes to it. There is nowhere in a browser to
 // put a disk down, so the .adf comes straight back out as a file.
@@ -453,34 +465,44 @@ document.createElement = (tag) => {
   return node;
 };
 
-const drive = amiga.machine.disk;
+const drive = amiga.machine.drives[0];
 drive.image[123] = 0x77; // where a write would have left its mark
 drive.modified = true;
 drive.writeCount++;
 
-amiga.offerModifiedDisk();
+amiga.offerModifiedDisk(0);
 check('a disk being written to is not handed back mid-write', downloads.length === 0);
-amiga.quietAt = performance.now() - 1; // the drive has gone quiet
-amiga.offerModifiedDisk();
+amiga.quietAt[0] = performance.now() - 1; // the drive has gone quiet
+amiga.offerModifiedDisk(0);
 check('and comes back as a file once the drive stops', downloads.length === 1);
 check('a whole .adf of it', downloads[0]?.size === 901120, `${downloads[0]?.size} byte`);
 check('named after the disk', /^workbench .*\.adf$/.test(lastAnchor?.download ?? ''), lastAnchor?.download);
-check('and the bar says so', amiga.status.textContent.includes('.adf'), amiga.status.textContent);
-amiga.offerModifiedDisk();
+check('and the bar says which drive wrote it', amiga.status.textContent.includes('DF0:'), amiga.status.textContent);
+amiga.offerModifiedDisk(0);
 check('the same write is not downloaded twice', downloads.length === 1);
-amiga.updateDrive(); // the drive light is redrawn every frame
-check('the drive light shows the disk has been written to', amiga.driveLabel.textContent.includes('scritto'));
+amiga.updateDrives(); // the drive lights are redrawn every frame
+check('the drive light shows the disk has been written to', amiga.driveRows[0].label.textContent.includes('scritto'));
 
-amiga.toggleWriteProtect();
-check('the write-protect tab can be pushed across', drive.writeProtected === true);
-check('and the button says which way it is', amiga.protectButton.textContent.includes('sì'));
-amiga.toggleWriteProtect();
-check('and back', drive.writeProtected === false);
+// The other drive has its own everything: its own tab, its own count.
+amiga.toggleWriteProtect(1);
+check('the write-protect tab can be pushed across', amiga.machine.drives[1].writeProtected === true);
+check('on that drive and not the other', drive.writeProtected === false);
+check('and its button says which way it is', amiga.driveRows[1].protect.textContent.includes('sì'));
+amiga.toggleWriteProtect(1);
+check('and back', amiga.machine.drives[1].writeProtected === false);
 
 drive.writeCount++; // one more write, still in the machine
-amiga.ejectDisk();
+amiga.ejectDisk(0);
 check('ejecting a written disk hands it back first', downloads.length === 2);
-check('and comes back out again', amiga.machine.disk.inserted === false && amiga.drive.hidden === true);
+check('and it comes back out again', amiga.machine.drives[0].inserted === false);
+check('while DF1: still has its disk', amiga.machine.drives[1].inserted);
+
+// With DF0: empty again, the next disk dropped goes back into it.
+await amiga.acceptFile(asFile('workbench.adf', adf));
+check('a disk dropped now fills the empty drive', amiga.machine.drives[0].inserted);
+amiga.ejectDisk(0);
+amiga.ejectDisk(1);
+check('and both come out', !amiga.machine.drives[0].inserted && !amiga.machine.drives[1].inserted);
 
 globalThis.URL.createObjectURL = realCreateObjectURL;
 document.createElement = realCreateElement;

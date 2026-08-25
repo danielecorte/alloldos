@@ -1028,6 +1028,22 @@ const forever = [0x60fe]; // bra to itself
   check('and it stops after sixteen pixels', at(0x51, 340) !== red);
 }
 
+/**
+ * Picks a drive and turns its motor on, the way trackdisk.device does before it
+ * touches the DMA at all: everything is deselected first, because the motor is
+ * latched on the edge where a drive becomes selected.
+ */
+function selectDrive(amiga, unit, motorOn = true) {
+  // The lines go high before they are made outputs, or the drive takes a step
+  // the moment the port wakes up: a port full of zeroes is /STEP held low.
+  amiga.write8(0xbfd100, 0xff);
+  amiga.write8(0xbfd300, 0xff); // CIA-B port B: all outputs
+  amiga.write8(0xbfd100, 0xff); // nothing selected, motor line high
+  let value = 0xff & ~(unit === 0 ? 0x08 : 0x10);
+  if (motorOn) value &= ~0x80;
+  amiga.write8(0xbfd100, value & 0xff);
+}
+
 {
   // The whole disk path, driven the way trackdisk drives it: select the drive
   // through CIA-B, look at the status pins through CIA-A, then let the DMA run.
@@ -1037,7 +1053,7 @@ const forever = [0x60fe]; // bra to itself
   image[1] = 0x4f; // 'O'
   image[2] = 0x53; // 'S'
   for (let i = 0; i < 512; i++) image[i + 4] = (i * 3) & 0xff;
-  amiga.disk.insert(image, 'prova');
+  amiga.drives[0].insert(image, 'prova');
 
   const CIAA_PRA = 0xbfe001;
   const CIAB_PRB = 0xbfd100;
@@ -1070,13 +1086,13 @@ const forever = [0x60fe]; // bra to itself
   // Two steps inwards, which is where cylinder 1 and 2 are.
   step(false);
   step(false);
-  check('two steps inward reach cylinder 2', amiga.disk.cylinder === 2, `cilindro ${amiga.disk.cylinder}`);
+  check('two steps inward reach cylinder 2', amiga.drives[0].cylinder === 2, `cilindro ${amiga.drives[0].cylinder}`);
   check('so track zero stops answering', (amiga.read8(CIAA_PRA) & 0x10) !== 0);
   check('and the disk-changed line has cleared', (amiga.read8(CIAA_PRA) & 0x04) !== 0);
 
   // Back out to track 0 the way a driver finds it: step until the pin says so.
   for (let i = 0; i < 90 && (amiga.read8(CIAA_PRA) & 0x10) !== 0; i++) step(true);
-  check('stepping outward finds track zero again', amiga.disk.cylinder === 0);
+  check('stepping outward finds track zero again', amiga.drives[0].cylinder === 0);
 
   // Now read a track: word sync on, DMA on, DSKLEN written twice.
   amiga.write16(0xdff09e, 0x8400); // ADKCON: WORDSYNC
@@ -1106,13 +1122,13 @@ const forever = [0x60fe]; // bra to itself
     if (frames === 1) {
       check(
         'a frame in, some of it has arrived and the rest has not',
-        amiga.peek16(0x00040000) !== 0 && amiga.disk.transferring,
+        amiga.peek16(0x00040000) !== 0 && amiga.diskDMA.transferring,
       );
     }
   }
   check('the disk interrupt fired when the transfer ended', (amiga.paula.intreq & 0x0002) !== 0);
   check('after about a revolution of the drive', frames === 11, `${frames} quadri`);
-  check('and the drive is idle again', amiga.disk.transferring === false);
+  check('and the drive is idle again', amiga.diskDMA.transferring === false);
 
   // Now read the buffer the way trackdisk.device does: find a sync word, and
   // take the two longs after the last of them as the sector's header. Its top
@@ -1136,7 +1152,7 @@ const forever = [0x60fe]; // bra to itself
     })(),
   );
 
-  amiga.disk.eject();
+  amiga.drives[0].eject();
   selectAndMotor(true);
   check('an empty drive is never ready', (amiga.read8(CIAA_PRA) & 0x20) !== 0);
 }
@@ -1151,7 +1167,8 @@ const forever = [0x60fe]; // bra to itself
   const amiga = new Amiga(buildROM([...forever]));
   const image = new Uint8Array(ADF_SIZE);
   for (let i = 0; i < image.length; i++) image[i] = (i * 5) & 0xff;
-  amiga.disk.insert(image, 'prova');
+  amiga.drives[0].insert(image, 'prova');
+  selectDrive(amiga, 0);
 
   // What the machine means to leave on track 0: sector 5, rewritten.
   const wanted = image.slice();
@@ -1167,53 +1184,53 @@ const forever = [0x60fe]; // bra to itself
   amiga.write32(0xdff020, buffer); // DSKPT
   amiga.write16(0xdff024, 0xc000 | words); // DSKLEN: DMA on, WRITE, a whole track
   amiga.write16(0xdff024, 0xc000 | words);
-  check('a write transfer starts', amiga.disk.transferring && amiga.disk.writing);
-  check('and nothing has reached the disk yet', amiga.disk.writeCount === 0);
+  check('a write transfer starts', amiga.diskDMA.transferring && amiga.diskDMA.writing);
+  check('and nothing has reached the disk yet', amiga.drives[0].writeCount === 0);
 
   let frames = 0;
-  while (frames < 40 && amiga.disk.transferring) {
+  while (frames < 40 && amiga.diskDMA.transferring) {
     amiga.runFrame();
     frames++;
   }
   check('the track takes about a revolution to write', frames === 11, `${frames} quadri`);
   check('the disk interrupt fired at the end of it', (amiga.paula.intreq & 0x0002) !== 0);
-  check('and the drive counted one write', amiga.disk.writeCount === 1);
-  check('the disk knows it has been written to', amiga.disk.modified === true);
-  check('in a format it recognised', amiga.disk.foreignWrites === 0);
+  check('and the drive counted one write', amiga.drives[0].writeCount === 1);
+  check('the disk knows it has been written to', amiga.drives[0].modified === true);
+  check('in a format it recognised', amiga.drives[0].foreignWrites === 0);
   check(
     'the sector that changed is in the image',
-    amiga.disk.image.subarray(sector5, sector5 + BYTES_PER_SECTOR).every((b, i) => b === wanted[sector5 + i]),
+    amiga.drives[0].image.subarray(sector5, sector5 + BYTES_PER_SECTOR).every((b, i) => b === wanted[sector5 + i]),
   );
   check(
     'and every other sector of the disk is untouched',
-    amiga.disk.image.every((b, i) => b === (i >= sector5 && i < sector5 + BYTES_PER_SECTOR ? wanted[i] : image[i])),
+    amiga.drives[0].image.every((b, i) => b === (i >= sector5 && i < sector5 + BYTES_PER_SECTOR ? wanted[i] : image[i])),
   );
 
   // Reading it back now has to see the new bytes: the encoded copy of the track
   // the drive was holding is no longer the track.
-  const reread = amiga.disk.currentTrack();
+  const reread = amiga.drives[0].currentTrack();
   const back = decodeTrack(reread).find((s) => s.sector === 5);
   check('and the head reads back what was written, not what was there', back !== undefined && back.data.every((b, i) => b === wanted[sector5 + i]));
 
   // Now the tab, across. The transfer still happens — the drive has no idea —
   // but nothing of it reaches the disk.
-  amiga.disk.writeProtected = true;
-  const before = amiga.disk.image.slice();
+  amiga.drives[0].writeProtected = true;
+  const before = amiga.drives[0].image.slice();
   for (let i = 0; i < BYTES_PER_SECTOR; i++) wanted[sector5 + i] = 0x11;
   const second = encodeTrack(wanted, 0);
   for (let i = 0; i < words; i++) amiga.poke16(buffer + i * 2, (second[i * 2] << 8) | second[i * 2 + 1]);
   amiga.write32(0xdff020, buffer);
   amiga.write16(0xdff024, 0xc000 | words);
   amiga.write16(0xdff024, 0xc000 | words);
-  for (let i = 0; i < 40 && amiga.disk.transferring; i++) amiga.runFrame();
-  check('a protected disk still takes the transfer', amiga.disk.transferring === false);
-  check('but keeps every byte it had', amiga.disk.image.every((b, i) => b === before[i]));
-  check('and counts no write', amiga.disk.writeCount === 1);
+  for (let i = 0; i < 40 && amiga.diskDMA.transferring; i++) amiga.runFrame();
+  check('a protected disk still takes the transfer', amiga.diskDMA.transferring === false);
+  check('but keeps every byte it had', amiga.drives[0].image.every((b, i) => b === before[i]));
+  check('and counts no write', amiga.drives[0].writeCount === 1);
 
   // A reset is not an eject: the machine forgets everything, the disk does not.
   amiga.reset();
-  check('a reset leaves the disk in the drive', amiga.disk.inserted);
-  check('with the writes still in it', amiga.disk.modified && amiga.disk.image.every((b, i) => b === before[i]));
+  check('a reset leaves the disk in the drive', amiga.drives[0].inserted);
+  check('with the writes still in it', amiga.drives[0].modified && amiga.drives[0].image.every((b, i) => b === before[i]));
 }
 
 {
@@ -1231,15 +1248,16 @@ const forever = [0x60fe]; // bra to itself
   const saved = makeDisk({ name: 'Ciao', files: [{ name: 'Ciao.bas', data: second }] });
 
   const amiga = new Amiga(buildROM([...forever]));
-  amiga.disk.insert(disk, 'ciao');
-  check('the disk we made says what it is called', amiga.disk.label === 'Ciao', amiga.disk.label);
-  check('and has the program on it', text(readFile(amiga.disk.image, 'Ciao.bas')) === first);
+  amiga.drives[0].insert(disk, 'ciao');
+  selectDrive(amiga, 0);
+  check('the disk we made says what it is called', amiga.drives[0].label === 'Ciao', amiga.drives[0].label);
+  check('and has the program on it', text(readFile(amiga.drives[0].image, 'Ciao.bas')) === first);
 
   // Blocks 880 to 890 are one track: the root, the bitmap, the file's header
   // and its data all sit on it, which is why saving a small file is one write.
   const TRACK = 80;
-  amiga.disk.cylinder = TRACK >> 1;
-  amiga.disk.head = TRACK & 1;
+  amiga.drives[0].cylinder = TRACK >> 1;
+  amiga.drives[0].head = TRACK & 1;
   const mfm = encodeTrack(saved, TRACK);
   const words = mfm.length / 2;
   const buffer = 0x00030000;
@@ -1248,23 +1266,128 @@ const forever = [0x60fe]; // bra to itself
   amiga.write32(0xdff020, buffer);
   amiga.write16(0xdff024, 0xc000 | words);
   amiga.write16(0xdff024, 0xc000 | words);
-  for (let i = 0; i < 40 && amiga.disk.transferring; i++) amiga.runFrame();
+  for (let i = 0; i < 40 && amiga.diskDMA.transferring; i++) amiga.runFrame();
 
-  check('the track went onto the disk', amiga.disk.writeCount === 1 && amiga.disk.modified);
-  check('the filesystem still adds up', checkDisk(amiga.disk.image).length === 0, `${checkDisk(amiga.disk.image)}`);
-  check('the volume is still called Ciao', amiga.disk.label === 'Ciao');
+  check('the track went onto the disk', amiga.drives[0].writeCount === 1 && amiga.drives[0].modified);
+  check('the filesystem still adds up', checkDisk(amiga.drives[0].image).length === 0, `${checkDisk(amiga.drives[0].image)}`);
+  check('the volume is still called Ciao', amiga.drives[0].label === 'Ciao');
   check(
     'and the program on it is the one that was saved',
-    text(readFile(amiga.disk.image, 'Ciao.bas')) === second,
-    text(readFile(amiga.disk.image, 'Ciao.bas') ?? new Uint8Array()).split('\n')[0],
+    text(readFile(amiga.drives[0].image, 'Ciao.bas')) === second,
+    text(readFile(amiga.drives[0].image, 'Ciao.bas') ?? new Uint8Array()).split('\n')[0],
   );
 
   // And it is on the disk, not just in the image we happen to be holding: the
   // head reads it back out of the MFM the drive is turning.
-  amiga.disk.track = null;
-  const back = decodeTrack(amiga.disk.currentTrack());
+  amiga.drives[0].track = null;
+  const back = decodeTrack(amiga.drives[0].currentTrack());
   const data = back.find((sector) => sector.sector === 3); // block 883, the file's data
   check('and the head reads it back off the track', text(data.data.subarray(24, 24 + second.length)) === second);
+}
+
+{
+  // DF1:, the second drive.
+  //
+  // One motor line, one set of four status pins and one DMA channel, shared by
+  // both drives: everything that tells them apart is the select line. So this
+  // is really a test about who is listening — that the pins answer for the
+  // selected drive and nobody else, that a step moves one head and not the
+  // other, and that the DMA reads and writes the disk that was selected when
+  // it started rather than the one that happens to be first.
+  const amiga = new Amiga(buildROM([...forever]));
+  const CIAA_PRA = 0xbfe001;
+
+  const inDF0 = new Uint8Array(ADF_SIZE);
+  const inDF1 = new Uint8Array(ADF_SIZE);
+  for (let i = 0; i < ADF_SIZE; i++) {
+    inDF0[i] = (i * 3) & 0xff;
+    inDF1[i] = (0xff - i * 3) & 0xff;
+  }
+  amiga.drives[0].insert(inDF0, 'uno');
+  amiga.drives[1].insert(inDF1, 'due');
+  check('the machine has two drives', amiga.drives.length === 2);
+  check('and they know which is which', amiga.drives[0].title === 'DF0:' && amiga.drives[1].title === 'DF1:');
+
+  selectDrive(amiga, 0);
+  check('selecting DF0: leaves DF1: alone', amiga.drives[0].selected && !amiga.drives[1].selected);
+  check('and DF0: with a disk in it is ready', (amiga.read8(CIAA_PRA) & 0x20) === 0);
+
+  selectDrive(amiga, 1);
+  check('selecting DF1: makes DF0: let go', !amiga.drives[0].selected && amiga.drives[1].selected);
+  check('and now it is DF1: answering the pins', (amiga.read8(CIAA_PRA) & 0x20) === 0);
+
+  // An empty DF1: says so on the same four wires DF0: was using a moment ago.
+  amiga.drives[1].eject();
+  check('an empty selected drive is never ready', (amiga.read8(CIAA_PRA) & 0x20) !== 0);
+  amiga.drives[1].insert(inDF1, 'due');
+
+  // Two steps inward, with DF1: selected: only its head moves.
+  const step = (unit) => {
+    const base = 0xff & ~(unit === 0 ? 0x08 : 0x10) & ~0x80;
+    amiga.write8(0xbfd100, base & ~0x02); // direction: inward
+    amiga.write8(0xbfd100, base & ~0x02 & ~0x01); // /STEP down
+    amiga.write8(0xbfd100, base & ~0x02); // and up again
+  };
+  step(1);
+  step(1);
+  check('two steps move the selected head', amiga.drives[1].cylinder === 2, `DF1: al cilindro ${amiga.drives[1].cylinder}`);
+  check('and leave the other one where it was', amiga.drives[0].cylinder === 0);
+  check('so track zero answers for DF0: and not for DF1:', (amiga.read8(CIAA_PRA) & 0x10) !== 0);
+
+  // Reading, with DF1: selected: what lands in memory is DF1:'s disk.
+  const buffer = 0x00040000;
+  const words = 0x1900;
+  amiga.write16(0xdff09e, 0x8400); // ADKCON: WORDSYNC
+  amiga.write16(0xdff07e, 0x4489); // DSKSYNC
+  amiga.write16(0xdff096, 0x8210); // DMACON: master and disk
+  amiga.write32(0xdff020, buffer);
+  amiga.write16(0xdff024, 0x8000 | words);
+  amiga.write16(0xdff024, 0x8000 | words);
+  for (let i = 0; i < 40 && amiga.diskDMA.transferring; i++) amiga.runFrame();
+
+  const got = new Uint8Array(words * 2);
+  for (let i = 0; i < got.length; i += 2) {
+    const word = amiga.peek16(buffer + i);
+    got[i] = (word >> 8) & 0xff;
+    got[i + 1] = word & 0xff;
+  }
+  const read = decodeTrack(got);
+  check('the DMA brought back whole sectors', read.length > 0, `${read.length} settori`);
+  check('from the cylinder DF1:\'s head is on', read.every((sector) => sector.track === 4), `traccia ${read[0]?.track}`);
+  check(
+    'and they are the disk in DF1:, not the one in DF0:',
+    read.every((sector) => {
+      const source = (sector.track * SECTORS_PER_TRACK + sector.sector) * BYTES_PER_SECTOR;
+      return sector.data.every((byte, i) => byte === inDF1[source + i]);
+    }),
+  );
+
+  // Writing, with DF1: still selected: it lands on DF1: and nowhere else.
+  const wanted = inDF1.slice();
+  const sector0 = 4 * SECTORS_PER_TRACK * BYTES_PER_SECTOR;
+  for (let i = 0; i < BYTES_PER_SECTOR; i++) wanted[sector0 + i] = (0x5a + i) & 0xff;
+  const mfm = encodeTrack(wanted, 4);
+  const trackWords = mfm.length / 2;
+  for (let i = 0; i < trackWords; i++) amiga.poke16(buffer + i * 2, (mfm[i * 2] << 8) | mfm[i * 2 + 1]);
+  amiga.write32(0xdff020, buffer);
+  amiga.write16(0xdff024, 0xc000 | trackWords);
+  amiga.write16(0xdff024, 0xc000 | trackWords);
+  for (let i = 0; i < 40 && amiga.diskDMA.transferring; i++) amiga.runFrame();
+
+  check('the write went to DF1:', amiga.drives[1].writeCount === 1 && amiga.drives[1].modified);
+  check('and DF0: never noticed', amiga.drives[0].writeCount === 0 && amiga.drives[0].modified === false);
+  check(
+    'the sector changed on the disk in DF1:',
+    amiga.drives[1].image.subarray(sector0, sector0 + BYTES_PER_SECTOR).every((b, i) => b === wanted[sector0 + i]),
+  );
+  check('and the disk in DF0: is byte for byte what it was', amiga.drives[0].image.every((b, i) => b === inDF0[i]));
+
+  // The motor is latched when a drive is selected, so it keeps turning after
+  // the select line goes away: that is how one wire runs two motors.
+  check('DF0:\'s motor is still running from when it was picked', amiga.drives[0].motor === true);
+  selectDrive(amiga, 0, false);
+  check('and stops when it is selected again with the motor line high', amiga.drives[0].motor === false);
+  check('while DF1: keeps turning', amiga.drives[1].motor === true);
 }
 
 {
@@ -1296,9 +1419,8 @@ const forever = [0x60fe]; // bra to itself
   check('and it is the usual one, three bits early', wordAtBit(firstOddSync + 3) === SYNC);
 
   const amiga = new Amiga(buildROM([...forever]));
-  amiga.disk.insert(image, 'prova');
-  amiga.write8(0xbfd100, 0xff); // deselect, so the motor latch sees an edge
-  amiga.write8(0xbfd100, 0x75); // /SEL0 low, motor on
+  amiga.drives[0].insert(image, 'prova');
+  selectDrive(amiga, 0);
   amiga.write16(0xdff09e, 0x8400); // ADKCON: WORDSYNC
   amiga.write16(0xdff07e, 0x4891); // DSKSYNC: the odd one
   amiga.write16(0xdff096, 0x8210); // DMACON: master and disk
@@ -1306,9 +1428,9 @@ const forever = [0x60fe]; // bra to itself
   amiga.write16(0xdff024, 0x8010); // DSKLEN: 16 words
   amiga.write16(0xdff024, 0x8010);
 
-  check('the drive found it and started reading', amiga.disk.transferring);
+  check('the drive found it and started reading', amiga.diskDMA.transferring);
   let frames = 0;
-  while (frames < 10 && amiga.disk.transferring) {
+  while (frames < 10 && amiga.diskDMA.transferring) {
     amiga.runFrame();
     frames++;
   }
@@ -1323,7 +1445,8 @@ const forever = [0x60fe]; // bra to itself
 
   // The same track, asked for the ordinary way, still lands where it always did.
   const plain = new Amiga(buildROM([...forever]));
-  plain.disk.insert(image, 'prova');
+  plain.drives[0].insert(image, 'prova');
+  selectDrive(plain, 0);
   plain.write8(0xbfd100, 0xff);
   plain.write8(0xbfd100, 0x75);
   plain.write16(0xdff09e, 0x8400);
@@ -1332,7 +1455,7 @@ const forever = [0x60fe]; // bra to itself
   plain.write32(0xdff020, 0x00050000);
   plain.write16(0xdff024, 0x8010);
   plain.write16(0xdff024, 0x8010);
-  for (let i = 0; i < 10 && plain.disk.transferring; i++) plain.runFrame();
+  for (let i = 0; i < 10 && plain.diskDMA.transferring; i++) plain.runFrame();
   check('and a plain $4489 read is still word aligned', plain.peek16(0x00050000) === SYNC, hex(plain.peek16(0x00050000), 4));
 }
 
@@ -1397,7 +1520,7 @@ const forever = [0x60fe]; // bra to itself
     hex(amiga.read16(2)),
   );
   check('and RAM is left alone, so what a program parked there survives', amiga.peek16(0x0100) === 0xdead);
-  check('no drive is selected any more', amiga.disk.selected === false);
+  check('no drive is selected any more', amiga.drives[0].selected === false);
 }
 
 {

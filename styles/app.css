@@ -665,9 +665,27 @@ body[data-screen='amiga'] {
   font-size: 0.8rem;
 }
 
+.amiga__drive + .amiga__drive {
+  border-top: 1px solid #131a2b;
+}
+
 .amiga__drive-label {
   color: var(--amiga-orange);
   font-variant-numeric: tabular-nums;
+}
+
+/* I comandi del drive stanno in fondo alla sua riga, dove sul vero A500 c'era
+   il pulsante di espulsione: attaccati al drive di cui parlano. */
+.amiga__drive-buttons {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.amiga__button--small {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
 }
 
 @media (max-width: 40rem) {

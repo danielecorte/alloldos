@@ -208,11 +208,16 @@ class AboutPage {
         audio in DMA — 0 e 3 a sinistra, 1 e 2 a destra, come l'originale.</li>
         <li>Due <b>CIA 8520</b>: timer, i contatori a 24 bit agganciati al
         quadro e alla riga, la tastiera seriale, la linea di overlay della ROM.</li>
-        <li>Il <b>drive DF0:</b> vero: motore, testina, passi, protezione da
-        scrittura. Un <code>.adf</code> non viene letto a settori ma
-        <b>riscritto in MFM</b> — intestazioni, checksum, sync e gap — e dato
-        alla DMA come flusso grezzo, perché è così che trackdisk.device se lo
-        aspetta.</li>
+        <li>I due <b>drive</b>, <b>DF0:</b> e <b>DF1:</b>: motore, testina,
+        passi, linguetta di protezione, e una sola linea di selezione a decidere
+        chi risponde — che è il motivo per cui quattro fili di stato bastano per
+        tutti. Un <code>.adf</code> non viene letto a settori ma <b>riscritto in
+        MFM</b> — intestazioni, checksum, sync e gap — e dato alla DMA come
+        flusso grezzo, perché è così che trackdisk.device se lo aspetta.</li>
+        <li>La <b>scrittura</b>: la traccia che esce viene riletta come la
+        leggerebbe la testina, e i settori tornano nell'immagine. Appena il
+        drive tace, l'<code>.adf</code> aggiornato viene scaricato: qui non c'è
+        nessuno scaffale dove posare un floppy.</li>
         <li><b>Mouse</b> con il puntatore agganciato alla finestra: l'Amiga non
         sa dove sia il mouse, conta solo di quanto è girata la pallina.</li>
         <li><b>Joystick</b> nella porta 2, su richiesta, con frecce e spazio. La
@@ -243,9 +248,8 @@ class AboutPage {
       <ul class="about__list">
         <li>I <b>blit non istantanei</b>: qui finiscono tutti in un colpo. Chi
         aspetta BBUSY o l'interrupt non se ne accorge, chi conta i cicli sì.</li>
-        <li>La <b>scrittura</b> sui dischi: DF0: è sempre protetto.</li>
         <li>I <b>collision detect</b> e le <b>porte pot</b>.</li>
-        <li>Il secondo drive, l'hard disk e la memoria autoconfig.</li>
+        <li>L'hard disk, e le macchine NTSC: questa è PAL e basta.</li>
       </ul>
     `;
   }

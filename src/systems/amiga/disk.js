@@ -1,14 +1,21 @@
-// DF0: — one 3.5" drive, and the DMA channel that reads and writes it.
+// DF0: e DF1:, e il canale DMA che li legge e li scrive.
 //
-// The drive is worked entirely through side doors: CIA-B's port B turns the
-// motor, picks the side and pulses the stepper, CIA-A's port A reads back the
-// four status pins, and Paula's DSKPT/DSKLEN pair streams raw MFM into chip
-// RAM. trackdisk.device does the rest in software, which is why the emulator
-// has to be honest about the flux rather than about the sectors.
+// The drives are worked entirely through side doors: CIA-B's port B turns the
+// motor, picks the side, pulses the stepper and chooses which drive is
+// listening, CIA-A's port A reads back the four status pins, and Paula's
+// DSKPT/DSKLEN pair streams raw MFM into chip RAM. trackdisk.device does the
+// rest in software, which is why the emulator has to be honest about the flux
+// rather than about the sectors.
 //
 // Writing runs the same way backwards: the machine hands out a whole track of
 // MFM, and the drive reads it back the way a head would to find out which
 // sectors it was.
+//
+// There are two drives and one DMA channel, and that is the shape of the real
+// machine too: Paula has a single set of disk registers, and which drive they
+// are talking to is decided elsewhere, by a select line on a CIA that Paula
+// knows nothing about. So the channel is a class of its own that asks, every
+// time it matters, which drive is listening.
 
 import {
   encodeTrack,
@@ -23,8 +30,15 @@ import {
 const CIAB_STEP = 0x01;
 const CIAB_DIRECTION = 0x02;
 const CIAB_SIDE = 0x04;
-const CIAB_SELECT0 = 0x08;
 const CIAB_MOTOR = 0x80;
+
+/**
+ * /SEL0 and /SEL1, the two lines that pick a drive. The A500 has four of them —
+ * the other two go to the external connector — and they are the reason one
+ * motor line and four status pins are enough for the whole daisy chain: only
+ * the selected drive listens, and only the selected drive answers.
+ */
+const CIAB_SELECT = [0x08, 0x10];
 
 const CYLINDERS = 80;
 
@@ -58,18 +72,14 @@ const CYCLES_PER_WORD = 227;
  */
 const TRACK_BITS = MFM_TRACK_LENGTH * 8;
 
+/** One 3.5" drive: a motor, a head that steps, and whatever is in the slot. */
 export class DiskDrive {
-  /**
-   * @param {object} hooks
-   * @param {(addr:number,value:number)=>void} hooks.write chip RAM
-   * @param {(addr:number)=>number} hooks.read chip RAM, for what is written out
-   * @param {()=>boolean} hooks.dmaEnabled disk DMA, master switch included
-   * @param {()=>number} hooks.adkcon for the word-sync bit
-   * @param {()=>void} hooks.onBlockFinished
-   * @param {()=>void} hooks.onSyncFound
-   */
-  constructor(hooks) {
-    this.hooks = hooks;
+  /** @param {number} unit 0 for DF0:, 1 for DF1: */
+  constructor(unit = 0) {
+    this.unit = unit;
+    this.title = `DF${unit}:`;
+    this.select = CIAB_SELECT[unit] ?? CIAB_SELECT[0];
+
     this.image = null;
     this.name = '';
     this.label = '';
@@ -93,28 +103,9 @@ export class DiskDrive {
     this.previousControl = 0xff;
     this.diskChanged = true;
 
-    this.dskpt = 0;
-    this.dsklen = 0;
-    this.dmaArmed = false;
-    this.dsksync = 0x4489;
-    this.lastByte = 0;
-
     this.track = null; // the MFM of the cylinder and side under the head
     this.trackNumber = -1;
     this.position = 0; // where the head is in the bit stream, in bits
-
-    // A transfer in flight: how much of it is left, and the cycles banked
-    // towards the next word of it.
-    this.transferring = false;
-    this.transferWords = 0;
-    this.writing = false;
-    this.cycleDebt = 0;
-
-    // What is being written out, gathered as it goes past: the machine hands
-    // over MFM a word at a time, and only a whole track's worth of it says
-    // anything about which sectors these are.
-    this.writeBuffer = null;
-    this.writeAt = 0;
   }
 
   /** @param {Uint8Array} bytes a whole .adf */
@@ -152,13 +143,15 @@ export class DiskDrive {
   // ------------------------------------------------------------- the drive
 
   /**
-   * CIA-B's port B, which is the whole of the drive's control panel. The motor
-   * is latched on the edge where the drive is selected, not while it is: that
-   * is how one motor line drives four drives independently.
+   * CIA-B's port B, which is the whole control panel of every drive at once.
+   * Each one watches its own select line and ignores the rest of the world
+   * while that line is high; the motor is latched on the edge where the drive
+   * is selected, not while it is, which is how one motor line drives four
+   * drives independently.
    */
   writeControl(value) {
     const wasSelected = this.selected;
-    this.selected = (value & CIAB_SELECT0) === 0;
+    this.selected = (value & this.select) === 0;
 
     if (this.selected && !wasSelected) this.motor = (value & CIAB_MOTOR) === 0;
     if (!this.selected) {
@@ -185,7 +178,9 @@ export class DiskDrive {
 
   /**
    * The four status pins, in the bits CIA-A's port A reads them on. An
-   * unselected drive drives none of them, and the pull-ups make them ones.
+   * unselected drive drives none of them, and the pull-ups make them ones —
+   * which is what lets two drives share four wires: whoever is selected pulls
+   * them down, and everybody else lets go.
    *
    * /RDY does double duty: with the motor off it clocks out the drive's
    * identity, and a plain double-density drive answers all ones — which is a
@@ -202,7 +197,7 @@ export class DiskDrive {
     return bits;
   }
 
-  // ---------------------------------------------------------------- the DMA
+  // -------------------------------------------------------------- the medium
 
   /** Encodes the track under the head, if it is not encoded already. */
   currentTrack() {
@@ -213,6 +208,127 @@ export class DiskDrive {
     this.trackNumber = number;
     this.position = 0;
     return this.track;
+  }
+
+  /**
+   * The sixteen bits of the stream starting at a bit, wrapping round the end of
+   * the track the way the head does when the disk comes round again.
+   */
+  wordAt(track, bit) {
+    const byte = (bit >> 3) % MFM_TRACK_LENGTH;
+    const shift = bit & 7;
+    const high = track[byte];
+    const middle = track[(byte + 1) % MFM_TRACK_LENGTH];
+    const low = track[(byte + 2) % MFM_TRACK_LENGTH];
+    return (((high << 16) | (middle << 8) | low) >> (8 - shift)) & 0xffff;
+  }
+
+  /** @returns {number} the bit just past the next sync word, or -1 */
+  findSync(track, from, sync) {
+    const target = sync === 0 ? SYNC : sync;
+    for (let i = 0; i < TRACK_BITS; i++) {
+      const bit = (from + i) % TRACK_BITS;
+      if (this.wordAt(track, bit) === target) return (bit + 16) % TRACK_BITS;
+    }
+    return -1;
+  }
+
+  /**
+   * The end of a write: the MFM that went past the head, back into the image.
+   *
+   * A track is written whole, so the way to find out what was written is to
+   * read it back exactly as the machine would — sync, header, checksums — and
+   * keep the sectors that check out. Each one says which track and which sector
+   * it is, so where it goes in the image is not a matter of where the head
+   * happens to be: it is written on the disk, which is the entire point of a
+   * sector header.
+   *
+   * A track that yields nothing was written in a format of its own, and there
+   * is no room for it in an .adf. That gets counted rather than hidden.
+   *
+   * @param {Uint8Array} mfm what went out of the DMA
+   */
+  acceptWrite(mfm) {
+    if (!this.inserted || this.writeProtected) return;
+
+    const sectors = decodeTrack(mfm);
+    if (sectors.length === 0) {
+      this.foreignWrites++;
+      return;
+    }
+
+    const touched = applySectors(this.image, sectors);
+    this.modified = true;
+    this.writeCount++;
+
+    // The disk under the head has changed, so the encoded copy of it is stale.
+    // The bit the head is on is not: the drive kept turning throughout.
+    if (touched.has(this.trackNumber)) {
+      const at = this.position;
+      this.track = null;
+      this.currentTrack();
+      this.position = at;
+    }
+
+    // Writing to the boot block can make a disk bootable, or stop it being.
+    this.bootable = isBootable(this.image);
+    this.label = volumeName(this.image) || this.label;
+  }
+}
+
+/**
+ * Paula's disk DMA: one channel, one pointer, one length, for however many
+ * drives are hanging off the machine.
+ *
+ * It has no idea which drive it is talking to. The select lines are on CIA-B,
+ * where trackdisk.device sets them before it touches DSKLEN at all, so the
+ * channel simply asks the drives which of them is listening and streams from
+ * that one. Nobody selected means nobody answers: the transfer never finishes,
+ * and the software times out — which is exactly what a real Amiga does when a
+ * loader asks DF1: for a disk that is not there.
+ */
+export class DiskController {
+  /**
+   * @param {DiskDrive[]} drives
+   * @param {object} hooks
+   * @param {(addr:number,value:number)=>void} hooks.write chip RAM
+   * @param {(addr:number)=>number} hooks.read chip RAM, for what is written out
+   * @param {()=>boolean} hooks.dmaEnabled disk DMA, master switch included
+   * @param {()=>number} hooks.adkcon for the word-sync bit
+   * @param {()=>void} hooks.onBlockFinished
+   * @param {()=>void} hooks.onSyncFound
+   */
+  constructor(drives, hooks) {
+    this.drives = drives;
+    this.hooks = hooks;
+    this.reset();
+  }
+
+  reset() {
+    this.dskpt = 0;
+    this.dsklen = 0;
+    this.dmaArmed = false;
+    this.dsksync = 0x4489;
+    this.lastByte = 0;
+
+    // A transfer in flight: which drive it is with, how much of it is left, and
+    // the cycles banked towards the next word of it.
+    this.transferring = false;
+    this.transferWords = 0;
+    this.writing = false;
+    this.cycleDebt = 0;
+    this.drive = null;
+
+    // What is being written out, gathered as it goes past: the machine hands
+    // over MFM a word at a time, and only a whole track's worth of it says
+    // anything about which sectors these are.
+    this.writeBuffer = null;
+    this.writeAt = 0;
+  }
+
+  /** Whichever drive is holding the shared lines down, or none. */
+  get selectedDrive() {
+    return this.drives.find((drive) => drive.selected) ?? null;
   }
 
   writeRegister(offset, value) {
@@ -273,16 +389,21 @@ export class DiskDrive {
     this.writeBuffer = this.writing && words > 0 ? new Uint8Array(words * 2) : null;
     this.writeAt = 0;
 
+    // Which drive this transfer is with is decided now, once: the select lines
+    // were set long before DSKLEN was touched, and nothing sane moves them
+    // while the head is streaming.
+    this.drive = this.selectedDrive;
+
     if (!this.writing) {
-      const track = this.currentTrack();
-      if (!track) return; // no disk: the transfer never finishes, and DOS times out
+      const track = this.drive?.currentTrack();
+      if (!track) return; // no drive, no disk: the transfer never finishes
 
       if (this.hooks.adkcon() & 0x0400) {
         // Word sync: the DMA does not start until the sync word goes past, and
         // the sync word itself is not part of what lands in memory.
-        const found = this.findSync(track, this.position);
+        const found = this.drive.findSync(track, this.drive.position, this.dsksync);
         if (found < 0) return;
-        this.position = found;
+        this.drive.position = found;
         this.hooks.onSyncFound();
       }
     }
@@ -332,97 +453,36 @@ export class DiskDrive {
         this.lastByte = word & 0xff;
       }
       this.dskpt = pointer;
-      this.position = (this.position + words * 16) % TRACK_BITS;
+      if (this.drive) this.drive.position = (this.drive.position + words * 16) % TRACK_BITS;
     } else {
-      const track = this.currentTrack();
+      const track = this.drive?.currentTrack();
       if (!track) {
         // Ejected mid-transfer. Nothing more is coming, and nothing says so.
         this.transferring = false;
         return;
       }
-      let at = this.position;
+      let at = this.drive.position;
       let pointer = this.dskpt;
       for (let i = 0; i < words; i++) {
-        const word = this.wordAt(track, at);
+        const word = this.drive.wordAt(track, at);
         this.hooks.write(pointer, word);
         pointer = (pointer + 2) & 0x1ffffe;
         at = (at + 16) % TRACK_BITS;
         this.lastByte = word & 0xff;
       }
       this.dskpt = pointer;
-      this.position = at;
+      this.drive.position = at;
     }
 
     this.transferWords -= words;
     if (this.transferWords === 0) {
       this.transferring = false;
-      if (this.writing) this.finishWrite();
+      if (this.writing) {
+        const buffer = this.writeBuffer;
+        this.writeBuffer = null;
+        if (buffer) this.drive?.acceptWrite(buffer.subarray(0, this.writeAt));
+      }
       this.hooks.onBlockFinished();
     }
-  }
-
-  /**
-   * The end of a write: the MFM that went past the head, back into the image.
-   *
-   * A track is written whole, so the way to find out what was written is to
-   * read it back exactly as the machine would — sync, header, checksums — and
-   * keep the sectors that check out. Each one says which track and which sector
-   * it is, so where it goes in the image is not a matter of where the head
-   * happens to be: it is written on the disk, which is the entire point of a
-   * sector header.
-   *
-   * A track that yields nothing was written in a format of its own, and there
-   * is no room for it in an .adf. That gets counted rather than hidden.
-   */
-  finishWrite() {
-    const buffer = this.writeBuffer;
-    this.writeBuffer = null;
-    if (!buffer || !this.inserted || this.writeProtected) return;
-
-    const sectors = decodeTrack(buffer.subarray(0, this.writeAt));
-    if (sectors.length === 0) {
-      this.foreignWrites++;
-      return;
-    }
-
-    const touched = applySectors(this.image, sectors);
-    this.modified = true;
-    this.writeCount++;
-
-    // The disk under the head has changed, so the encoded copy of it is stale.
-    // The bit the head is on is not: the drive kept turning throughout.
-    if (touched.has(this.trackNumber)) {
-      const at = this.position;
-      this.track = null;
-      this.currentTrack();
-      this.position = at;
-    }
-
-    // Writing to the boot block can make a disk bootable, or stop it being.
-    this.bootable = isBootable(this.image);
-    this.label = volumeName(this.image) || this.label;
-  }
-
-  /**
-   * The sixteen bits of the stream starting at a bit, wrapping round the end of
-   * the track the way the head does when the disk comes round again.
-   */
-  wordAt(track, bit) {
-    const byte = (bit >> 3) % MFM_TRACK_LENGTH;
-    const shift = bit & 7;
-    const high = track[byte];
-    const middle = track[(byte + 1) % MFM_TRACK_LENGTH];
-    const low = track[(byte + 2) % MFM_TRACK_LENGTH];
-    return (((high << 16) | (middle << 8) | low) >> (8 - shift)) & 0xffff;
-  }
-
-  /** @returns {number} the bit just past the next sync word, or -1 */
-  findSync(track, from) {
-    const target = this.dsksync === 0 ? SYNC : this.dsksync;
-    for (let i = 0; i < TRACK_BITS; i++) {
-      const bit = (from + i) % TRACK_BITS;
-      if (this.wordAt(track, bit) === target) return (bit + 16) % TRACK_BITS;
-    }
-    return -1;
   }
 }

@@ -43,12 +43,13 @@ class AmigaSession {
     this.frameDebt = 0;
     this.mouseRemainder = { x: 0, y: 0 };
 
-    // Writes to the disk, counted three ways: what the drive has done, what has
-    // already gone back to the user as a file, and when the drive last moved.
-    this.seenWrites = 0;
-    this.savedWrites = 0;
-    this.seenForeignWrites = 0;
-    this.quietAt = 0;
+    // Writes to each disk, counted three ways: what the drive has done, what
+    // has already gone back to the user as a file, and when it last moved.
+    this.seenWrites = [0, 0];
+    this.savedWrites = [0, 0];
+    this.seenForeignWrites = [0, 0];
+    this.quietAt = [0, 0];
+    this.pickTarget = 0;
     this.build();
   }
 
@@ -73,10 +74,7 @@ class AmigaSession {
     this.bar = element('div', 'amiga__bar');
     this.status = element('span', 'amiga__status');
     this.bar.append(
-      this.button('Inserisci un disco .adf', () => this.pickFile()),
-      (this.ejectButton = this.button('Espelli', () => this.ejectDisk())),
-      (this.saveButton = this.button('Salva .adf', () => this.saveDisk())),
-      (this.protectButton = this.button('Protetto: no', () => this.toggleWriteProtect())),
+      this.button('Inserisci un disco .adf', () => this.pickFile(0)),
       this.button('Reset', () => this.resetMachine()),
       (this.pauseButton = this.button('Pausa', () => this.togglePause())),
       (this.muteButton = this.button('Audio on', () => this.toggleMute())),
@@ -87,30 +85,44 @@ class AmigaSession {
       this.status,
     );
 
-    // The drive light and the power light, which on a real machine are the only
-    // two things telling you the computer is alive at all.
-    this.drive = element('div', 'amiga__drive');
-    this.drive.hidden = true;
-    this.driveLabel = element('span', 'amiga__drive-label');
-    this.drive.append(this.driveLabel);
+    // One row per drive. The light and the track number are the only two things
+    // a real machine tells you about a floppy, and the rest of the row is what
+    // you can do to it: put one in, take it out, keep a copy, close the tab.
+    this.driveRows = [this.buildDriveRow(0), this.buildDriveRow(1)];
 
     this.fileInput = element('input', 'amiga__file');
     this.fileInput.type = 'file';
     this.fileInput.accept = '.adf,.rom,.bin';
     this.fileInput.multiple = true;
     this.fileInput.addEventListener('change', () => {
-      this.acceptFiles([...this.fileInput.files]);
+      this.acceptFiles([...this.fileInput.files], this.pickTarget);
       this.fileInput.value = '';
     });
 
-    this.root.append(stage, this.bar, this.drive, this.fileInput);
+    this.root.append(stage, this.bar, ...this.driveRows.map((row) => row.row), this.fileInput);
     this.container.append(this.root);
 
     this.bindEvents();
   }
 
-  button(label, action) {
-    const node = element('button', 'amiga__button');
+  /** A drive, as a row of the bar under the picture. */
+  buildDriveRow(unit) {
+    const row = element('div', 'amiga__drive');
+    const label = element('span', 'amiga__drive-label');
+    const buttons = element('div', 'amiga__drive-buttons');
+    const protect = this.button('Protetto: no', () => this.toggleWriteProtect(unit), 'amiga__button--small');
+    buttons.append(
+      this.button('Inserisci…', () => this.pickFile(unit), 'amiga__button--small'),
+      this.button('Espelli', () => this.ejectDisk(unit), 'amiga__button--small'),
+      this.button('Salva .adf', () => this.saveDisk(unit), 'amiga__button--small'),
+      protect,
+    );
+    row.append(label, buttons);
+    return { row, label, protect };
+  }
+
+  button(label, action, extra = '') {
+    const node = element('button', `amiga__button${extra ? ` ${extra}` : ''}`);
     node.type = 'button';
     node.tabIndex = -1;
     node.textContent = label;
@@ -219,7 +231,7 @@ class AmigaSession {
     const pick = element('button', 'amiga__button');
     pick.type = 'button';
     pick.textContent = 'Scegli il file…';
-    pick.addEventListener('click', () => this.pickFile());
+    pick.addEventListener('click', () => this.pickFile(0));
     panel.append(pick);
 
     const notes = element('div', 'amiga__panel-note');
@@ -255,8 +267,8 @@ class AmigaSession {
 
     this.pumpAudio();
     this.present();
-    this.updateDrive();
-    this.offerModifiedDisk();
+    this.updateDrives();
+    for (const unit of [0, 1]) this.offerModifiedDisk(unit);
     this.checkForCrash();
   }
 
@@ -282,61 +294,62 @@ class AmigaSession {
     this.setStatus('CPU ferma: doppio bus error — Reset per ripartire');
   }
 
-  /** The drive light, and where the head is, while anything is going on. */
-  updateDrive() {
-    const drive = this.machine.disk;
-    const on = drive.motor && drive.selected;
-    this.protectButton.textContent = drive.writeProtected ? 'Protetto: sì' : 'Protetto: no';
-    this.drive.hidden = !drive.inserted;
-    if (!drive.inserted) return;
-    const label = drive.label || drive.name;
-    this.driveLabel.textContent =
-      `${on ? '●' : '○'} DF0:  ${label}  ` +
-      `traccia ${String(drive.cylinder).padStart(2, '0')}/${drive.head}` +
-      `${drive.bootable ? '' : '  (non avviabile)'}` +
-      `${drive.modified ? '  ✎ scritto' : ''}`;
+  /** The drive lights, and where each head is, while anything is going on. */
+  updateDrives() {
+    for (const unit of [0, 1]) {
+      const drive = this.machine.drives[unit];
+      const row = this.driveRows[unit];
+      const on = drive.motor && drive.selected;
+      row.protect.textContent = drive.writeProtected ? 'Protetto: sì' : 'Protetto: no';
+      row.label.textContent = drive.inserted
+        ? `${on ? '●' : '○'} ${drive.title}  ${drive.label || drive.name}  ` +
+          `traccia ${String(drive.cylinder).padStart(2, '0')}/${drive.head}` +
+          `${drive.bootable ? '' : '  (non avviabile)'}` +
+          `${drive.modified ? '  ✎ scritto' : ''}`
+        : `○ ${drive.title}  vuoto`;
+    }
   }
 
   /**
    * Hands back a disk the machine has written to, once it has stopped writing.
    *
-   * Called every frame, so all it usually does is notice that nothing has
-   * happened. When something has, it waits for the drive to go quiet and then
-   * downloads the whole .adf — with the writes in it — because a browser tab is
-   * not a shelf and the image in memory is gone the moment the tab is.
+   * Called every frame for every drive, so all it usually does is notice that
+   * nothing has happened. When something has, it waits for the drive to go
+   * quiet and then downloads the whole .adf — with the writes in it — because a
+   * browser tab is not a shelf and the image in memory is gone with the tab.
    */
-  offerModifiedDisk() {
-    const drive = this.machine.disk;
+  offerModifiedDisk(unit) {
+    const drive = this.machine.drives[unit];
 
-    if (drive.foreignWrites !== this.seenForeignWrites) {
-      this.seenForeignWrites = drive.foreignWrites;
+    if (drive.foreignWrites !== this.seenForeignWrites[unit]) {
+      this.seenForeignWrites[unit] = drive.foreignWrites;
       this.setStatus(
-        'Questo disco si scrive da sé, in un formato che non è quello di AmigaDOS: ' +
-          'in un .adf non ci sta, e quel salvataggio va perso',
+        `${drive.title} si scrive da sé, in un formato che non è quello di ` +
+          'AmigaDOS: in un .adf non ci sta, e quel salvataggio va perso',
       );
     }
 
-    if (drive.writeCount !== this.seenWrites) {
-      this.seenWrites = drive.writeCount;
-      this.quietAt = performance.now() + SAVE_QUIET_MS;
+    if (drive.writeCount !== this.seenWrites[unit]) {
+      this.seenWrites[unit] = drive.writeCount;
+      this.quietAt[unit] = performance.now() + SAVE_QUIET_MS;
       return;
     }
-    if (!this.quietAt || performance.now() < this.quietAt) return;
-    this.quietAt = 0;
-    this.saveDisk(true);
+    if (!this.quietAt[unit] || performance.now() < this.quietAt[unit]) return;
+    this.quietAt[unit] = 0;
+    this.saveDisk(unit, true);
   }
 
   /**
-   * The disk in the drive, as a file. Automatic after a write, and on the
-   * button for anyone who wants a copy of where they are.
+   * The disk in a drive, as a file. Automatic after a write, and on the button
+   * for anyone who wants a copy of where they are.
    */
-  saveDisk(automatic = false) {
-    const drive = this.machine?.disk;
+  saveDisk(unit, automatic = false) {
+    const drive = this.machine?.drives[unit];
     if (!drive?.inserted) {
-      this.setStatus('Non c\'è nessun disco nel drive');
+      this.setStatus(`Non c'è nessun disco in ${drive?.title ?? 'DF0:'}`);
       return;
     }
-    if (automatic && drive.writeCount === this.savedWrites) return;
+    if (automatic && drive.writeCount === this.savedWrites[unit]) return;
 
     const name = `${drive.name || drive.label || 'disco'} ${timestamp()}.adf`;
     const url = URL.createObjectURL(new Blob([drive.image], { type: 'application/octet-stream' }));
@@ -348,34 +361,36 @@ class AmigaSession {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30000);
 
-    this.savedWrites = drive.writeCount;
+    this.savedWrites[unit] = drive.writeCount;
     this.setStatus(
       automatic
-        ? `Il disco è stato scritto: scaricato «${name}» — ritrascinalo qui la prossima volta`
+        ? `${drive.title} è stato scritto: scaricato «${name}» — ritrascinalo qui la prossima volta`
         : `Scaricato «${name}»`,
     );
   }
 
   /** The write-protect tab, which on a real disk is a hole with a slider. */
-  toggleWriteProtect() {
-    const drive = this.machine?.disk;
+  toggleWriteProtect(unit) {
+    const drive = this.machine?.drives[unit];
     if (!drive?.inserted) {
-      this.setStatus('Non c\'è nessun disco nel drive');
+      this.setStatus(`Non c'è nessun disco in ${drive?.title ?? 'DF0:'}`);
       return;
     }
     drive.writeProtected = !drive.writeProtected;
-    this.updateDrive();
+    this.updateDrives();
     this.setStatus(
       drive.writeProtected
-        ? 'Linguetta aperta: il disco è protetto e nessuno può scriverci'
-        : 'Linguetta chiusa: il disco si può scrivere',
+        ? `${drive.title} protetto: nessuno può scriverci`
+        : `${drive.title} si può scrivere`,
     );
   }
 
   /** Leaving with a written disk that has not been downloaded loses it. */
   warnUnsaved(event) {
-    const drive = this.machine?.disk;
-    if (!drive?.inserted || drive.writeCount === this.savedWrites) return;
+    const unsaved = (this.machine?.drives ?? []).some(
+      (drive, unit) => drive.inserted && drive.writeCount !== this.savedWrites[unit],
+    );
+    if (!unsaved) return;
     event.preventDefault();
     event.returnValue = '';
   }
@@ -519,7 +534,7 @@ class AmigaSession {
     }
     if (event.code === 'F11') {
       event.preventDefault();
-      this.pickFile();
+      this.pickFile(0);
       return;
     }
     this.audio?.start();
@@ -533,7 +548,8 @@ class AmigaSession {
 
   // -------------------------------------------------------------- the drive
 
-  pickFile() {
+  pickFile(unit = 0) {
+    this.pickTarget = unit;
     this.fileInput.click();
   }
 
@@ -548,10 +564,17 @@ class AmigaSession {
     this.acceptFiles([...event.dataTransfer.files]);
   }
 
-  async acceptFiles(files) {
+  /**
+   * @param {File[]} files
+   * @param {?number} unit which drive to fill, or null to work it out
+   */
+  async acceptFiles(files, unit = null) {
+    let next = unit;
     for (const file of files) {
       try {
-        await this.acceptFile(file);
+        const used = await this.acceptFile(file, next);
+        // Two disks dropped together are disk one and disk two, in that order.
+        if (used !== null) next = Math.min(used + 1, this.machine.drives.length - 1);
       } catch (error) {
         const prefix = error instanceof ADFFormatError ? 'Disco illeggibile' : 'Errore';
         this.setStatus(`${prefix} — ${error.message}`);
@@ -559,7 +582,8 @@ class AmigaSession {
     }
   }
 
-  async acceptFile(file) {
+  /** @returns {?number} the drive the file went into, if it was a disk */
+  async acceptFile(file, unit = null) {
     const bytes = new Uint8Array(await file.arrayBuffer());
 
     if (isEncryptedROM(bytes)) {
@@ -567,7 +591,7 @@ class AmigaSession {
         'Quella ROM è cifrata (formato Cloanto AMIROMTYPE1): serve la versione ' +
           'in chiaro, non quella che viaggia con il suo file di chiavi.',
       );
-      return;
+      return null;
     }
 
     const rom = acceptROMFile(bytes);
@@ -575,45 +599,60 @@ class AmigaSession {
       if (rom.kind === 'extended') {
         this.setStatus('ROM di estensione salvata — riavvia la macchina per usarla');
         if (!this.machine) this.showROMPrompt();
-        return;
+        return null;
       }
       this.setStatus(`Kickstart ${rom.version?.name ?? ''} salvata — accensione…`);
       if (!this.machine) await this.start();
       else this.setStatus('Kickstart salvata: premi Reset per usarla');
-      return;
+      return null;
     }
 
     if (!this.machine) throw new Error(`${file.name} non è una Kickstart`);
-    this.insertDisk(bytes, file.name);
+    return this.insertDisk(unit ?? this.freeDrive(), bytes, file.name);
   }
 
-  /** @param {Uint8Array} bytes a whole .adf */
-  insertDisk(bytes, name) {
+  /**
+   * Which drive a disk dropped on the window goes into: the first empty one,
+   * and DF0: if both are full — a game that wants disk two in DF1: is asking
+   * for a drive that already has disk one in it.
+   */
+  freeDrive() {
+    const empty = this.machine.drives.findIndex((drive) => !drive.inserted);
+    return empty < 0 ? 0 : empty;
+  }
+
+  /**
+   * @param {number} unit
+   * @param {Uint8Array} bytes a whole .adf
+   * @returns {number} the drive it went into
+   */
+  insertDisk(unit, bytes, name) {
     checkADF(bytes);
-    this.machine.disk.insert(bytes, name.replace(/\.adf$/i, ''));
-    this.seenWrites = 0;
-    this.savedWrites = 0;
-    this.quietAt = 0;
+    const drive = this.machine.drives[unit];
+    drive.insert(bytes, name.replace(/\.adf$/i, ''));
+    this.seenWrites[unit] = 0;
+    this.savedWrites[unit] = 0;
+    this.quietAt[unit] = 0;
     const label = volumeName(bytes);
-    this.updateDrive();
+    this.updateDrives();
     this.setStatus(
       isBootable(bytes)
-        ? `${label || name} nel drive — premi Reset per avviarlo`
-        : `${label || name} nel drive (non è un disco avviabile)`,
+        ? `${label || name} in ${drive.title} — premi Reset per avviarlo`
+        : `${label || name} in ${drive.title} (non è un disco avviabile)`,
     );
+    return unit;
   }
 
-  ejectDisk() {
+  ejectDisk(unit) {
+    const drive = this.machine.drives[unit];
     // Whatever was written to it goes with the user, not in the bin.
-    if (this.machine.disk.inserted && this.machine.disk.writeCount !== this.savedWrites) {
-      this.saveDisk(true);
-    }
-    this.machine.disk.eject();
-    this.seenWrites = 0;
-    this.savedWrites = 0;
-    this.quietAt = 0;
-    this.updateDrive();
-    this.setStatus('Disco espulso');
+    if (drive.inserted && drive.writeCount !== this.savedWrites[unit]) this.saveDisk(unit, true);
+    drive.eject();
+    this.seenWrites[unit] = 0;
+    this.savedWrites[unit] = 0;
+    this.quietAt[unit] = 0;
+    this.updateDrives();
+    this.setStatus(`${drive.title} vuoto`);
   }
 
   // ------------------------------------------------------------------ teardown
