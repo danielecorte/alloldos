@@ -107,6 +107,7 @@ export class Amiga {
     });
     this.disk = new DiskDrive({
       write: (addr, value) => this.chipWrite(addr, value),
+      read: (addr) => this.chipRead(addr),
       dmaEnabled: () => this.agnus.dmaOn(DMA_DISK),
       adkcon: () => this.paula.adkcon,
       onBlockFinished: () => this.paula.raise(INT_DSKBLK),

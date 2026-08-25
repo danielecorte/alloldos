@@ -1,12 +1,24 @@
-// DF0: — one 3.5" drive, and the DMA channel that reads it.
+// DF0: — one 3.5" drive, and the DMA channel that reads and writes it.
 //
 // The drive is worked entirely through side doors: CIA-B's port B turns the
 // motor, picks the side and pulses the stepper, CIA-A's port A reads back the
 // four status pins, and Paula's DSKPT/DSKLEN pair streams raw MFM into chip
 // RAM. trackdisk.device does the rest in software, which is why the emulator
 // has to be honest about the flux rather than about the sectors.
+//
+// Writing runs the same way backwards: the machine hands out a whole track of
+// MFM, and the drive reads it back the way a head would to find out which
+// sectors it was.
 
-import { encodeTrack, MFM_TRACK_LENGTH, SYNC, volumeName, isBootable } from './adf.js';
+import {
+  encodeTrack,
+  decodeTrack,
+  applySectors,
+  MFM_TRACK_LENGTH,
+  SYNC,
+  volumeName,
+  isBootable,
+} from './adf.js';
 
 const CIAB_STEP = 0x01;
 const CIAB_DIRECTION = 0x02;
@@ -50,6 +62,7 @@ export class DiskDrive {
   /**
    * @param {object} hooks
    * @param {(addr:number,value:number)=>void} hooks.write chip RAM
+   * @param {(addr:number)=>number} hooks.read chip RAM, for what is written out
    * @param {()=>boolean} hooks.dmaEnabled disk DMA, master switch included
    * @param {()=>number} hooks.adkcon for the word-sync bit
    * @param {()=>void} hooks.onBlockFinished
@@ -61,6 +74,14 @@ export class DiskDrive {
     this.name = '';
     this.label = '';
     this.bootable = false;
+
+    // The write-protect tab, and what has happened since the disk went in.
+    // None of this is machine state: a reset does not push the tab across, and
+    // it certainly does not un-write what has been written.
+    this.writeProtected = false;
+    this.modified = false;
+    this.writeCount = 0;
+    this.foreignWrites = 0;
     this.reset();
   }
 
@@ -88,6 +109,12 @@ export class DiskDrive {
     this.transferWords = 0;
     this.writing = false;
     this.cycleDebt = 0;
+
+    // What is being written out, gathered as it goes past: the machine hands
+    // over MFM a word at a time, and only a whole track's worth of it says
+    // anything about which sectors these are.
+    this.writeBuffer = null;
+    this.writeAt = 0;
   }
 
   /** @param {Uint8Array} bytes a whole .adf */
@@ -99,6 +126,10 @@ export class DiskDrive {
     this.track = null;
     this.trackNumber = -1;
     this.diskChanged = true;
+    this.writeProtected = false;
+    this.modified = false;
+    this.writeCount = 0;
+    this.foreignWrites = 0;
   }
 
   eject() {
@@ -109,15 +140,13 @@ export class DiskDrive {
     this.track = null;
     this.trackNumber = -1;
     this.diskChanged = true;
+    this.modified = false;
+    this.writeCount = 0;
+    this.foreignWrites = 0;
   }
 
   get inserted() {
     return this.image !== null;
-  }
-
-  /** Always: nothing here can write a disk back, so nothing is allowed to try. */
-  get writeProtected() {
-    return true;
   }
 
   // ------------------------------------------------------------- the drive
@@ -241,6 +270,8 @@ export class DiskDrive {
     this.writing = (length & 0x4000) !== 0;
     this.transferWords = words;
     this.cycleDebt = 0;
+    this.writeBuffer = this.writing && words > 0 ? new Uint8Array(words * 2) : null;
+    this.writeAt = 0;
 
     if (!this.writing) {
       const track = this.currentTrack();
@@ -287,9 +318,21 @@ export class DiskDrive {
     if (words > this.transferWords) words = this.transferWords;
 
     if (this.writing) {
-      // The disk is protected, so the bytes go nowhere — but the pointer still
-      // has to walk, because the software looks at where it ended up.
-      this.dskpt = (this.dskpt + words * 2) & 0x1ffffe;
+      // The words go past the head at the same rate they would come off it, and
+      // they are kept: what the machine writes is MFM, and it takes a whole
+      // transfer of it before anything can be said about which sectors it is.
+      let pointer = this.dskpt;
+      for (let i = 0; i < words; i++) {
+        const word = this.hooks.read(pointer);
+        if (this.writeBuffer && this.writeAt + 1 < this.writeBuffer.length) {
+          this.writeBuffer[this.writeAt++] = (word >> 8) & 0xff;
+          this.writeBuffer[this.writeAt++] = word & 0xff;
+        }
+        pointer = (pointer + 2) & 0x1ffffe;
+        this.lastByte = word & 0xff;
+      }
+      this.dskpt = pointer;
+      this.position = (this.position + words * 16) % TRACK_BITS;
     } else {
       const track = this.currentTrack();
       if (!track) {
@@ -313,8 +356,51 @@ export class DiskDrive {
     this.transferWords -= words;
     if (this.transferWords === 0) {
       this.transferring = false;
+      if (this.writing) this.finishWrite();
       this.hooks.onBlockFinished();
     }
+  }
+
+  /**
+   * The end of a write: the MFM that went past the head, back into the image.
+   *
+   * A track is written whole, so the way to find out what was written is to
+   * read it back exactly as the machine would — sync, header, checksums — and
+   * keep the sectors that check out. Each one says which track and which sector
+   * it is, so where it goes in the image is not a matter of where the head
+   * happens to be: it is written on the disk, which is the entire point of a
+   * sector header.
+   *
+   * A track that yields nothing was written in a format of its own, and there
+   * is no room for it in an .adf. That gets counted rather than hidden.
+   */
+  finishWrite() {
+    const buffer = this.writeBuffer;
+    this.writeBuffer = null;
+    if (!buffer || !this.inserted || this.writeProtected) return;
+
+    const sectors = decodeTrack(buffer.subarray(0, this.writeAt));
+    if (sectors.length === 0) {
+      this.foreignWrites++;
+      return;
+    }
+
+    const touched = applySectors(this.image, sectors);
+    this.modified = true;
+    this.writeCount++;
+
+    // The disk under the head has changed, so the encoded copy of it is stale.
+    // The bit the head is on is not: the drive kept turning throughout.
+    if (touched.has(this.trackNumber)) {
+      const at = this.position;
+      this.track = null;
+      this.currentTrack();
+      this.position = at;
+    }
+
+    // Writing to the boot block can make a disk bootable, or stop it being.
+    this.bootable = isBootable(this.image);
+    this.label = volumeName(this.image) || this.label;
   }
 
   /**

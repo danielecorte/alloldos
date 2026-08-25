@@ -437,8 +437,53 @@ check('a dropped .adf goes in the drive', amiga.machine.disk.inserted);
 check('and the drive bar says what is in it', amiga.drive.hidden === false && amiga.driveLabel.textContent.includes('Workbench'));
 check('and that it can be booted from', amiga.status.textContent.includes('Reset'));
 
+// What happens when the machine writes to it. There is nowhere in a browser to
+// put a disk down, so the .adf comes straight back out as a file.
+const downloads = [];
+const realCreateObjectURL = URL.createObjectURL;
+const realCreateElement = document.createElement;
+let lastAnchor = null;
+globalThis.URL.createObjectURL = (blob) => {
+  downloads.push(blob);
+  return 'blob:stub';
+};
+document.createElement = (tag) => {
+  const node = realCreateElement(tag);
+  if (tag === 'a') lastAnchor = node;
+  return node;
+};
+
+const drive = amiga.machine.disk;
+drive.image[123] = 0x77; // where a write would have left its mark
+drive.modified = true;
+drive.writeCount++;
+
+amiga.offerModifiedDisk();
+check('a disk being written to is not handed back mid-write', downloads.length === 0);
+amiga.quietAt = performance.now() - 1; // the drive has gone quiet
+amiga.offerModifiedDisk();
+check('and comes back as a file once the drive stops', downloads.length === 1);
+check('a whole .adf of it', downloads[0]?.size === 901120, `${downloads[0]?.size} byte`);
+check('named after the disk', /^workbench .*\.adf$/.test(lastAnchor?.download ?? ''), lastAnchor?.download);
+check('and the bar says so', amiga.status.textContent.includes('.adf'), amiga.status.textContent);
+amiga.offerModifiedDisk();
+check('the same write is not downloaded twice', downloads.length === 1);
+amiga.updateDrive(); // the drive light is redrawn every frame
+check('the drive light shows the disk has been written to', amiga.driveLabel.textContent.includes('scritto'));
+
+amiga.toggleWriteProtect();
+check('the write-protect tab can be pushed across', drive.writeProtected === true);
+check('and the button says which way it is', amiga.protectButton.textContent.includes('sì'));
+amiga.toggleWriteProtect();
+check('and back', drive.writeProtected === false);
+
+drive.writeCount++; // one more write, still in the machine
 amiga.ejectDisk();
+check('ejecting a written disk hands it back first', downloads.length === 2);
 check('and comes back out again', amiga.machine.disk.inserted === false && amiga.drive.hidden === true);
+
+globalThis.URL.createObjectURL = realCreateObjectURL;
+document.createElement = realCreateElement;
 
 // A file that is neither a ROM nor a disk says so instead of throwing.
 await amiga.acceptFiles([asFile('nonsense.txt', new Uint8Array(64))]);

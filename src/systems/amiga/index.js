@@ -18,6 +18,18 @@ import { checkADF, ADFFormatError, volumeName, isBootable } from './adf.js';
 
 const MAX_CATCHUP_FRAMES = 4; // never try to make up more than this after a stall
 
+/**
+ * How long the drive has to stay quiet before a written disk is handed back.
+ *
+ * There is nowhere here to put a disk down. Everything the machine writes goes
+ * into the image in memory, which survives a reset and a reboot of the game,
+ * and vanishes with the tab — so the moment the writing stops, the .adf comes
+ * back out as a file. Waiting is what keeps one save from becoming six
+ * downloads: a game writing its high scores touches several tracks in a row,
+ * and they are all one save.
+ */
+const SAVE_QUIET_MS = 1500;
+
 class AmigaSession {
   constructor(container, options) {
     this.container = container;
@@ -30,6 +42,13 @@ class AmigaSession {
     this.lastTime = 0;
     this.frameDebt = 0;
     this.mouseRemainder = { x: 0, y: 0 };
+
+    // Writes to the disk, counted three ways: what the drive has done, what has
+    // already gone back to the user as a file, and when the drive last moved.
+    this.seenWrites = 0;
+    this.savedWrites = 0;
+    this.seenForeignWrites = 0;
+    this.quietAt = 0;
     this.build();
   }
 
@@ -56,6 +75,8 @@ class AmigaSession {
     this.bar.append(
       this.button('Inserisci un disco .adf', () => this.pickFile()),
       (this.ejectButton = this.button('Espelli', () => this.ejectDisk())),
+      (this.saveButton = this.button('Salva .adf', () => this.saveDisk())),
+      (this.protectButton = this.button('Protetto: no', () => this.toggleWriteProtect())),
       this.button('Reset', () => this.resetMachine()),
       (this.pauseButton = this.button('Pausa', () => this.togglePause())),
       (this.muteButton = this.button('Audio on', () => this.toggleMute())),
@@ -106,6 +127,7 @@ class AmigaSession {
       [window, 'keydown', (event) => this.onKeyDown(event)],
       [window, 'keyup', (event) => this.onKeyUp(event)],
       [window, 'blur', () => this.machine?.keyboard.releaseAll()],
+      [window, 'beforeunload', (event) => this.warnUnsaved(event)],
       [this.root, 'dragover', (event) => this.onDragOver(event)],
       [this.root, 'dragleave', () => this.root.classList.remove('amiga--dropping')],
       [this.root, 'drop', (event) => this.onDrop(event)],
@@ -234,6 +256,7 @@ class AmigaSession {
     this.pumpAudio();
     this.present();
     this.updateDrive();
+    this.offerModifiedDisk();
     this.checkForCrash();
   }
 
@@ -263,13 +286,98 @@ class AmigaSession {
   updateDrive() {
     const drive = this.machine.disk;
     const on = drive.motor && drive.selected;
+    this.protectButton.textContent = drive.writeProtected ? 'Protetto: sì' : 'Protetto: no';
     this.drive.hidden = !drive.inserted;
     if (!drive.inserted) return;
     const label = drive.label || drive.name;
     this.driveLabel.textContent =
       `${on ? '●' : '○'} DF0:  ${label}  ` +
       `traccia ${String(drive.cylinder).padStart(2, '0')}/${drive.head}` +
-      `${drive.bootable ? '' : '  (non avviabile)'}`;
+      `${drive.bootable ? '' : '  (non avviabile)'}` +
+      `${drive.modified ? '  ✎ scritto' : ''}`;
+  }
+
+  /**
+   * Hands back a disk the machine has written to, once it has stopped writing.
+   *
+   * Called every frame, so all it usually does is notice that nothing has
+   * happened. When something has, it waits for the drive to go quiet and then
+   * downloads the whole .adf — with the writes in it — because a browser tab is
+   * not a shelf and the image in memory is gone the moment the tab is.
+   */
+  offerModifiedDisk() {
+    const drive = this.machine.disk;
+
+    if (drive.foreignWrites !== this.seenForeignWrites) {
+      this.seenForeignWrites = drive.foreignWrites;
+      this.setStatus(
+        'Questo disco si scrive da sé, in un formato che non è quello di AmigaDOS: ' +
+          'in un .adf non ci sta, e quel salvataggio va perso',
+      );
+    }
+
+    if (drive.writeCount !== this.seenWrites) {
+      this.seenWrites = drive.writeCount;
+      this.quietAt = performance.now() + SAVE_QUIET_MS;
+      return;
+    }
+    if (!this.quietAt || performance.now() < this.quietAt) return;
+    this.quietAt = 0;
+    this.saveDisk(true);
+  }
+
+  /**
+   * The disk in the drive, as a file. Automatic after a write, and on the
+   * button for anyone who wants a copy of where they are.
+   */
+  saveDisk(automatic = false) {
+    const drive = this.machine?.disk;
+    if (!drive?.inserted) {
+      this.setStatus('Non c\'è nessun disco nel drive');
+      return;
+    }
+    if (automatic && drive.writeCount === this.savedWrites) return;
+
+    const name = `${drive.name || drive.label || 'disco'} ${timestamp()}.adf`;
+    const url = URL.createObjectURL(new Blob([drive.image], { type: 'application/octet-stream' }));
+    const link = element('a', 'amiga__download');
+    link.href = url;
+    link.download = name;
+    this.root.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+    this.savedWrites = drive.writeCount;
+    this.setStatus(
+      automatic
+        ? `Il disco è stato scritto: scaricato «${name}» — ritrascinalo qui la prossima volta`
+        : `Scaricato «${name}»`,
+    );
+  }
+
+  /** The write-protect tab, which on a real disk is a hole with a slider. */
+  toggleWriteProtect() {
+    const drive = this.machine?.disk;
+    if (!drive?.inserted) {
+      this.setStatus('Non c\'è nessun disco nel drive');
+      return;
+    }
+    drive.writeProtected = !drive.writeProtected;
+    this.updateDrive();
+    this.setStatus(
+      drive.writeProtected
+        ? 'Linguetta aperta: il disco è protetto e nessuno può scriverci'
+        : 'Linguetta chiusa: il disco si può scrivere',
+    );
+  }
+
+  /** Leaving with a written disk that has not been downloaded loses it. */
+  warnUnsaved(event) {
+    const drive = this.machine?.disk;
+    if (!drive?.inserted || drive.writeCount === this.savedWrites) return;
+    event.preventDefault();
+    event.returnValue = '';
   }
 
   // ---------------------------------------------------------------- controls
@@ -483,6 +591,9 @@ class AmigaSession {
   insertDisk(bytes, name) {
     checkADF(bytes);
     this.machine.disk.insert(bytes, name.replace(/\.adf$/i, ''));
+    this.seenWrites = 0;
+    this.savedWrites = 0;
+    this.quietAt = 0;
     const label = volumeName(bytes);
     this.updateDrive();
     this.setStatus(
@@ -493,7 +604,14 @@ class AmigaSession {
   }
 
   ejectDisk() {
+    // Whatever was written to it goes with the user, not in the bin.
+    if (this.machine.disk.inserted && this.machine.disk.writeCount !== this.savedWrites) {
+      this.saveDisk(true);
+    }
     this.machine.disk.eject();
+    this.seenWrites = 0;
+    this.savedWrites = 0;
+    this.quietAt = 0;
     this.updateDrive();
     this.setStatus('Disco espulso');
   }
@@ -510,6 +628,16 @@ class AmigaSession {
     this.audio?.close();
     this.root.remove();
   }
+}
+
+/** When this was, for the name of a file the user will have several of. */
+function timestamp() {
+  const now = new Date();
+  const two = (value) => String(value).padStart(2, '0');
+  return (
+    `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())} ` +
+    `${two(now.getHours())}.${two(now.getMinutes())}`
+  );
 }
 
 function element(tag, className) {

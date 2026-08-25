@@ -27,6 +27,8 @@ import {
 const rowOf = (line) => (line - FIRST_VISIBLE_LINE) * 2 * SCREEN_WIDTH;
 import {
   encodeTrack,
+  decodeTrack,
+  applySectors,
   SECTORS_PER_TRACK,
   BYTES_PER_SECTOR,
   ADF_SIZE,
@@ -731,6 +733,58 @@ section('MFM e immagini .adf');
   check('the volume name is read out of the root block', volumeName(image) === name, volumeName(image));
 }
 
+{
+  // The way back: MFM the machine wrote, read as sectors again.
+  //
+  // This is the whole of saving a game. What comes off the machine is a bit
+  // stream that says nothing about where it belongs — the sector headers in it
+  // do, and they are what puts each 512 bytes back in the right place in the
+  // image.
+  const image = new Uint8Array(ADF_SIZE);
+  for (let i = 0; i < image.length; i++) image[i] = (i * 11 + (i >> 7)) & 0xff;
+
+  const sectors = decodeTrack(encodeTrack(image, 7));
+  check('a written track gives back all eleven sectors', sectors.length === SECTORS_PER_TRACK, `${sectors.length}`);
+  check('all of them from the track they were written to', sectors.every((s) => s.track === 7));
+  check('numbered nought to ten', sectors.map((s) => s.sector).join() === '0,1,2,3,4,5,6,7,8,9,10');
+  check(
+    'and holding the bytes that went in',
+    sectors.every((s) => {
+      const source = (s.track * SECTORS_PER_TRACK + s.sector) * BYTES_PER_SECTOR;
+      return s.data.every((byte, i) => byte === image[source + i]);
+    }),
+  );
+
+  // Put them into an empty image and it is the disk again.
+  const copy = new Uint8Array(ADF_SIZE);
+  const touched = applySectors(copy, sectors);
+  const from = 7 * SECTORS_PER_TRACK * BYTES_PER_SECTOR;
+  const size = SECTORS_PER_TRACK * BYTES_PER_SECTOR;
+  check('putting them back rebuilds the track exactly', copy.subarray(from, from + size).every((b, i) => b === image[from + i]));
+  check('and says which track changed', touched.size === 1 && touched.has(7));
+
+  // A stream that starts three bits off a byte boundary is still readable, and
+  // has to be: a loader that syncs on $4891 leaves every word shifted.
+  const track = encodeTrack(image, 7);
+  const shifted = new Uint8Array(track.length + 1);
+  for (let i = 0; i < track.length; i++) {
+    shifted[i] |= track[i] >> 3;
+    shifted[i + 1] = (track[i] << 5) & 0xff;
+  }
+  check('a stream shifted off the byte boundary decodes too', decodeTrack(shifted).length === SECTORS_PER_TRACK);
+
+  // One flipped bit in the data, and the sector is thrown away rather than
+  // written back over something good.
+  const damaged = encodeTrack(image, 7);
+  damaged[1088 * 3 + 700] ^= 0x40; // a data bit of sector 3
+  const survivors = decodeTrack(damaged);
+  check('a sector with a bad checksum is dropped', survivors.length === SECTORS_PER_TRACK - 1, `${survivors.length}`);
+  check('and it is the damaged one that is missing', !survivors.some((s) => s.sector === 3));
+
+  // Nothing in a track of gap bytes, and nothing said about it either.
+  check('gap bytes decode to nothing at all', decodeTrack(new Uint8Array(MFM_TRACK_LENGTH).fill(0xaa)).length === 0);
+}
+
 // -------------------------------------------------------------- the machine
 
 section('La macchina intera');
@@ -1009,7 +1063,7 @@ const forever = [0x60fe]; // bra to itself
 
   selectAndMotor(true);
   check('with a disk in and the motor on it is ready for real', (amiga.read8(CIAA_PRA) & 0x20) === 0);
-  check('the disk is write protected', (amiga.read8(CIAA_PRA) & 0x08) === 0);
+  check('and the disk goes in unprotected, which is what lets a game save', (amiga.read8(CIAA_PRA) & 0x08) !== 0);
   check('and the head is at track zero', (amiga.read8(CIAA_PRA) & 0x10) === 0);
 
   // Two steps inwards, which is where cylinder 1 and 2 are.
@@ -1084,6 +1138,81 @@ const forever = [0x60fe]; // bra to itself
   amiga.disk.eject();
   selectAndMotor(true);
   check('an empty drive is never ready', (amiga.read8(CIAA_PRA) & 0x20) !== 0);
+}
+
+{
+  // Saving a game: a track written out, and where it ends up.
+  //
+  // trackdisk.device writes whole tracks — it reads one, changes the sectors it
+  // wants, and writes all eleven back — so this is that, done through the DMA
+  // with the write bit in DSKLEN set. What has to come out the far end is an
+  // image with the new bytes in it and nothing else touched.
+  const amiga = new Amiga(buildROM([...forever]));
+  const image = new Uint8Array(ADF_SIZE);
+  for (let i = 0; i < image.length; i++) image[i] = (i * 5) & 0xff;
+  amiga.disk.insert(image, 'prova');
+
+  // What the machine means to leave on track 0: sector 5, rewritten.
+  const wanted = image.slice();
+  const sector5 = 5 * BYTES_PER_SECTOR;
+  for (let i = 0; i < BYTES_PER_SECTOR; i++) wanted[sector5 + i] = (0xa5 + i) & 0xff;
+
+  const mfm = encodeTrack(wanted, 0);
+  const words = mfm.length / 2;
+  const buffer = 0x00030000;
+  for (let i = 0; i < words; i++) amiga.poke16(buffer + i * 2, (mfm[i * 2] << 8) | mfm[i * 2 + 1]);
+
+  amiga.write16(0xdff096, 0x8210); // DMACON: master and disk
+  amiga.write32(0xdff020, buffer); // DSKPT
+  amiga.write16(0xdff024, 0xc000 | words); // DSKLEN: DMA on, WRITE, a whole track
+  amiga.write16(0xdff024, 0xc000 | words);
+  check('a write transfer starts', amiga.disk.transferring && amiga.disk.writing);
+  check('and nothing has reached the disk yet', amiga.disk.writeCount === 0);
+
+  let frames = 0;
+  while (frames < 40 && amiga.disk.transferring) {
+    amiga.runFrame();
+    frames++;
+  }
+  check('the track takes about a revolution to write', frames === 11, `${frames} quadri`);
+  check('the disk interrupt fired at the end of it', (amiga.paula.intreq & 0x0002) !== 0);
+  check('and the drive counted one write', amiga.disk.writeCount === 1);
+  check('the disk knows it has been written to', amiga.disk.modified === true);
+  check('in a format it recognised', amiga.disk.foreignWrites === 0);
+  check(
+    'the sector that changed is in the image',
+    amiga.disk.image.subarray(sector5, sector5 + BYTES_PER_SECTOR).every((b, i) => b === wanted[sector5 + i]),
+  );
+  check(
+    'and every other sector of the disk is untouched',
+    amiga.disk.image.every((b, i) => b === (i >= sector5 && i < sector5 + BYTES_PER_SECTOR ? wanted[i] : image[i])),
+  );
+
+  // Reading it back now has to see the new bytes: the encoded copy of the track
+  // the drive was holding is no longer the track.
+  const reread = amiga.disk.currentTrack();
+  const back = decodeTrack(reread).find((s) => s.sector === 5);
+  check('and the head reads back what was written, not what was there', back !== undefined && back.data.every((b, i) => b === wanted[sector5 + i]));
+
+  // Now the tab, across. The transfer still happens — the drive has no idea —
+  // but nothing of it reaches the disk.
+  amiga.disk.writeProtected = true;
+  const before = amiga.disk.image.slice();
+  for (let i = 0; i < BYTES_PER_SECTOR; i++) wanted[sector5 + i] = 0x11;
+  const second = encodeTrack(wanted, 0);
+  for (let i = 0; i < words; i++) amiga.poke16(buffer + i * 2, (second[i * 2] << 8) | second[i * 2 + 1]);
+  amiga.write32(0xdff020, buffer);
+  amiga.write16(0xdff024, 0xc000 | words);
+  amiga.write16(0xdff024, 0xc000 | words);
+  for (let i = 0; i < 40 && amiga.disk.transferring; i++) amiga.runFrame();
+  check('a protected disk still takes the transfer', amiga.disk.transferring === false);
+  check('but keeps every byte it had', amiga.disk.image.every((b, i) => b === before[i]));
+  check('and counts no write', amiga.disk.writeCount === 1);
+
+  // A reset is not an eject: the machine forgets everything, the disk does not.
+  amiga.reset();
+  check('a reset leaves the disk in the drive', amiga.disk.inserted);
+  check('with the writes still in it', amiga.disk.modified && amiga.disk.image.every((b, i) => b === before[i]));
 }
 
 {

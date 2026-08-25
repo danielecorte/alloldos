@@ -242,7 +242,26 @@ la direzione su un altro piedino, e le quattro linee di stato (/RDY, /TK0,
 /RDY fa anche da identificazione del drive, che è il modo in cui il ROM scopre
 che al connettore c'è un 3,5" da 880 KB.
 
-DF0: è **sempre protetto in scrittura**: qui non si scrive su nessun disco.
+### Scrivere sui dischi
+
+DF0: si scrive. Quando il gioco salva, la DMA butta fuori un'intera traccia di
+MFM: l'emulatore la rilegge esattamente come farebbe la testina — sync,
+intestazione, i due checksum — e i settori che tornano dicono da soli a quale
+traccia e a quale posto appartengono, così finiscono nell'immagine `.adf` che sta
+in memoria. Un settore con un checksum sbagliato viene buttato via invece che
+riscritto sopra qualcosa di buono.
+
+Quell'immagine sopravvive al **Reset** e al riavvio del gioco, ma non alla
+chiusura della scheda: qui non c'è nessun posto dove posare un floppy. Quindi,
+appena il drive smette di scrivere, il `.adf` aggiornato **viene scaricato da
+solo** — la prossima volta ritrascinalo sulla finestra e i salvataggi sono lì.
+C'è anche il bottone **Salva .adf** per farsene una copia quando si vuole, e
+**Protetto** per chiudere la linguetta, che è l'unico modo di impedire a un gioco
+di scrivere.
+
+Un gioco che si formatta i dischi da sé, con un formato tutto suo invece di
+quello di AmigaDOS, non ha dove andare in un `.adf`: la barra lo dice, e quel
+salvataggio si perde.
 
 ### Tastiera e mouse
 
