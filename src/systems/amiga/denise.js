@@ -38,6 +38,12 @@ export class Denise {
     this.spritePixel = new Uint8Array(SCREEN_WIDTH); // colour register, 0 = none
     this.spritePair = new Uint8Array(SCREEN_WIDTH);
 
+    // What the collision hardware looks at, which is not what the screen shows:
+    // the raw bitplane bits at each pixel, and every sprite pair that is there
+    // rather than only the one in front.
+    this.planeBits = new Uint8Array(SCREEN_WIDTH);
+    this.spritePairMask = new Uint8Array(SCREEN_WIDTH);
+
     // Sprite registers, and where the fetched data for this line came from.
     this.sprPos = new Uint16Array(8);
     this.sprCtl = new Uint16Array(8);
@@ -52,6 +58,8 @@ export class Denise {
     this.bplcon0 = 0;
     this.bplcon1 = 0;
     this.bplcon2 = 0;
+    this.clxcon = 0;
+    this.clxdat = 0;
     this.colors.fill(0);
     this.sprPos.fill(0);
     this.sprCtl.fill(0);
@@ -144,6 +152,9 @@ export class Denise {
     this.playfield.fill(0);
     this.playfieldKind.fill(0);
     this.spritePixel.fill(0);
+    this.planeBits.fill(0);
+    this.spritePairMask.fill(0);
+    this.spriteOnLine = false;
     if (words > 0) this.decodePlayfield(planes, words, ddfstrt, window);
     this.decodeSprites();
   }
@@ -188,6 +199,10 @@ export class Denise {
           if (plane & 1) even |= value << (plane >> 1);
           else odd |= value << (plane >> 1);
         }
+        // The same bits again, each left where its own plane number puts it:
+        // that is the shape the collision hardware compares against CLXCON.
+        const oddBits = index & 0x15;
+        const evenBits = index & 0x2a;
 
         for (let sub = 0; sub < step; sub++) {
           const at = base + bit * step + sub;
@@ -197,19 +212,27 @@ export class Denise {
           if (dual) {
             const x1 = at + scrollOdd;
             const x2 = at + scrollEven;
-            if (odd && x1 >= 0 && x1 < SCREEN_WIDTH && x1 >= clipLeft && x1 < clipRight) {
-              this.playfield[x1] = odd;
-              this.playfieldKind[x1] = 1;
+            if (x1 >= 0 && x1 < SCREEN_WIDTH && x1 >= clipLeft && x1 < clipRight) {
+              // Each playfield is scrolled on its own, so the six planes that
+              // meet at one pixel of the screen were never fetched together:
+              // the odd ones arrive here and the even ones a few pixels along.
+              this.planeBits[x1] = (this.planeBits[x1] & 0x2a) | oddBits;
+              if (odd) {
+                this.playfield[x1] = odd;
+                this.playfieldKind[x1] = 1;
+              }
             }
-            if (even && x2 >= 0 && x2 < SCREEN_WIDTH && x2 >= clipLeft && x2 < clipRight) {
+            if (x2 >= 0 && x2 < SCREEN_WIDTH && x2 >= clipLeft && x2 < clipRight) {
+              this.planeBits[x2] = (this.planeBits[x2] & 0x15) | evenBits;
               // Playfield two draws from colours 8 to 15.
-              if (this.playfieldKind[x2] === 0 || !this.playfieldOneInFront()) {
+              if (even && (this.playfieldKind[x2] === 0 || !this.playfieldOneInFront())) {
                 this.playfield[x2] = even + 8;
                 this.playfieldKind[x2] = 2;
               }
             }
           } else {
             this.playfield[x] = index;
+            this.planeBits[x] = index;
             this.playfieldKind[x] = index === 0 ? 0 : 2;
           }
         }
@@ -261,15 +284,27 @@ export class Denise {
       const dataC = partnerAttached ? this.sprDataA[index | 1] : 0;
       const dataD = partnerAttached ? this.sprDataB[index | 1] : 0;
 
+      // The odd sprite of a pair only counts for collisions if CLXCON says so;
+      // the even one always does. Attached or not, the two sprites are two
+      // streams of data, and the collision hardware ORs them under that rule.
+      const oddCounts = (this.clxcon & (0x1000 << pair)) !== 0;
+      const thisIsOdd = (index & 1) !== 0;
+
       for (let bit = 0; bit < 16; bit++) {
         const shift = 15 - bit;
-        let color =
+        const own =
           (((dataA >> shift) & 1) << 0) |
           (((dataB >> shift) & 1) << 1);
-        if (partnerAttached) {
-          color |= (((dataC >> shift) & 1) << 2) | (((dataD >> shift) & 1) << 3);
-        }
+        const partner = partnerAttached
+          ? (((dataC >> shift) & 1) << 0) | (((dataD >> shift) & 1) << 1)
+          : 0;
+        let color = own;
+        if (partnerAttached) color |= partner << 2;
         if (color === 0) continue;
+
+        const collides = thisIsOdd
+          ? oddCounts && own !== 0
+          : own !== 0 || (oddCounts && partner !== 0);
 
         const register = partnerAttached ? 16 + color : 16 + pair * 4 + color;
         // A sprite pixel is one lores pixel: two of ours.
@@ -279,6 +314,10 @@ export class Denise {
           if (x < 0 || x >= SCREEN_WIDTH) continue;
           this.spritePixel[x] = register;
           this.spritePair[x] = pair;
+          if (collides) {
+            this.spritePairMask[x] |= 1 << pair;
+            this.spriteOnLine = true;
+          }
         }
       }
     }
@@ -297,6 +336,10 @@ export class Denise {
     if (target <= this.renderedX) return;
     const from = Math.max(0, this.renderedX);
     this.renderedX = target;
+
+    // Collisions happen wherever the pixels are serialised, screen or no
+    // screen: a line above the display window collides just as well.
+    this.detectCollisions(from, target);
     if (this.rowBase < 0) return;
 
     const background = this.palette[0];
@@ -318,6 +361,62 @@ export class Denise {
       this.framebuffer[this.rowBase + x] = color;
       if (this.rowSpan === 2) this.framebuffer[this.rowBase + SCREEN_WIDTH + x] = color;
     }
+  }
+
+  /**
+   * Who touched whom, pixel by pixel, into CLXDAT.
+   *
+   * A playfield is "there" at a pixel when every bitplane CLXCON has enabled
+   * carries the value CLXCON asks for; playfield one is the odd-numbered
+   * planes and playfield two the even ones. A plane that is not enabled cannot
+   * stop a collision — which is why a machine that has never written CLXCON
+   * collides everywhere, all the time, and why the register is read and
+   * cleared rather than watched.
+   *
+   * Sprites come in pairs, because the collision circuit has four inputs and
+   * not eight: the even sprite of a pair always counts and the odd one only if
+   * its ENSP bit is set, and what lands here is every pair present at the
+   * pixel — not just the one drawn in front, which is a different question.
+   */
+  detectCollisions(from, to) {
+    const enabled = (this.clxcon >> 6) & 0x3f; // ENBP1..6
+    const match = this.clxcon & 0x3f; // MVBP1..6
+    const oddPlanes = enabled & 0x15; // planes 1, 3, 5 — playfield one
+    const evenPlanes = enabled & 0x2a; // planes 2, 4, 6 — playfield two
+    const sprites = this.spriteOnLine;
+
+    // With no sprite anywhere on the line only bit 0 can still change, and once
+    // it is set there is nothing left to look for until someone reads it.
+    if (!sprites && (this.clxdat & 0x0001) !== 0) return;
+
+    for (let x = from; x < to; x++) {
+      const bits = this.planeBits[x] ^ match;
+      const pf1 = (bits & oddPlanes) === 0;
+      const pf2 = (bits & evenPlanes) === 0;
+      if (pf1 && pf2) this.clxdat |= 0x0001;
+
+      const pairs = sprites ? this.spritePairMask[x] : 0;
+      if (pairs === 0) continue;
+      if (pf1) this.clxdat |= (pairs & 0x0f) << 1;
+      if (pf2) this.clxdat |= (pairs & 0x0f) << 5;
+
+      // Two pairs at the same pixel are a sprite-to-sprite collision, one bit
+      // for each of the six ways of picking two out of four.
+      if ((pairs & (pairs - 1)) === 0) continue;
+      if ((pairs & 0x3) === 0x3) this.clxdat |= 0x0200; // 0 and 1
+      if ((pairs & 0x5) === 0x5) this.clxdat |= 0x0400; // 0 and 2
+      if ((pairs & 0x9) === 0x9) this.clxdat |= 0x0800; // 0 and 3
+      if ((pairs & 0x6) === 0x6) this.clxdat |= 0x1000; // 1 and 2
+      if ((pairs & 0xa) === 0xa) this.clxdat |= 0x2000; // 1 and 3
+      if ((pairs & 0xc) === 0xc) this.clxdat |= 0x4000; // 2 and 3
+    }
+  }
+
+  /** CLXDAT is read and cleared: what it says is what has happened since. */
+  readCLXDAT() {
+    const value = this.clxdat & 0x7fff;
+    this.clxdat = 0;
+    return value;
   }
 
   /**
@@ -374,6 +473,9 @@ export class Denise {
         break;
       case 0x104:
         this.bplcon2 = value;
+        break;
+      case 0x098:
+        this.clxcon = value;
         break;
       default:
         break;

@@ -378,7 +378,11 @@ export class Amiga {
       case 0x00c:
         return this.keyboard.joy1dat;
       case 0x00e:
-        return 0x0000; // collisions, which nothing here reports
+        // CLXDAT, read and cleared. The beam is caught up first: a program that
+        // reads it mid-line is asking about the pixels drawn so far, and on a
+        // real machine those have already been through the collision circuit.
+        this.denise.renderUpTo(this.hpos);
+        return this.denise.readCLXDAT();
       case 0x012:
       case 0x014:
         return 0x0000;
@@ -401,7 +405,12 @@ export class Amiga {
    */
   writeCustom(offset, value) {
     const word = value & 0xffff;
-    if (offset >= 0x180 || (offset >= 0x100 && offset <= 0x106) || (offset >= 0x140 && offset < 0x180)) {
+    if (
+      offset >= 0x180 ||
+      offset === 0x098 || // CLXCON: what counts as a collision
+      (offset >= 0x100 && offset <= 0x106) ||
+      (offset >= 0x140 && offset < 0x180)
+    ) {
       this.denise.writeRegister(offset, word);
       return;
     }
@@ -416,7 +425,6 @@ export class Amiga {
     if (this.paula.writeRegister(offset, word)) return;
     if (offset === 0x034) return; // POTGO: the pot counters nothing here counts
     if (offset === 0x032) return; // SERPER
-    if (offset === 0x098) return; // CLXCON
   }
 
   // ------------------------------------------------------------------ frame

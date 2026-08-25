@@ -206,6 +206,11 @@ class AboutPage {
         di BPLCON2, e la finestra di visualizzazione.</li>
         <li><b>Paula</b>: gli interrupt di tutta la macchina, e quattro canali
         audio in DMA — 0 e 3 a sinistra, 1 e 2 a destra, come l'originale.</li>
+        <li>Le <b>collisioni</b> in hardware: CLXDAT dice chi ha toccato chi,
+        con le regole di CLXCON — quali bitplane contano e con che valore, e
+        quali sprite dispari partecipano. Un piano disabilitato non può
+        impedire una collisione, che è perché una macchina che non ha mai
+        scritto CLXCON collide di continuo.</li>
         <li>Due <b>CIA 8520</b>: timer, i contatori a 24 bit agganciati al
         quadro e alla riga, la tastiera seriale, la linea di overlay della ROM.</li>
         <li>I due <b>drive</b>, <b>DF0:</b> e <b>DF1:</b>: motore, testina,
@@ -248,7 +253,7 @@ class AboutPage {
       <ul class="about__list">
         <li>I <b>blit non istantanei</b>: qui finiscono tutti in un colpo. Chi
         aspetta BBUSY o l'interrupt non se ne accorge, chi conta i cicli sì.</li>
-        <li>I <b>collision detect</b> e le <b>porte pot</b>.</li>
+        <li>Le <b>porte pot</b>, che leggono i potenziometri dei paddle.</li>
         <li>L'hard disk, e le macchine NTSC: questa è PAL e basta.</li>
       </ul>
     `;

@@ -311,6 +311,31 @@ hash e la catena dei blocchi. Se il file che esce è quello nuovo e le somme di
 controllo tornano ancora, allora salvare funziona davvero; altrimenti sono solo
 settori che sono cambiati.
 
+### Le collisioni (CLXDAT)
+
+Denise conta da sé chi ha toccato chi, mentre serializza i pixel, e i giochi ci
+leggono sopra: `CLXDAT` (`$dff00e`) dice in sedici bit quali sprite si sono
+toccati fra loro, quali hanno toccato quale campo grafico, e se i due campi si
+sono sovrapposti. Si legge **e si azzera**: quello che dice è quello che è
+successo da quando l'hai letto l'ultima volta.
+
+Chi decide cosa conta è `CLXCON` (`$dff098`), e ha due mezze parole:
+**ENBP1-6** dice quali bitplane partecipano, **MVBP1-6** dice che valore devono
+avere per contare come "c'è qualcosa qui". Playfield uno sono i piani dispari,
+playfield due i pari. La riga che sorprende, e che sta scritta
+nell'hardware manual, è questa: *un bitplane disabilitato non può impedire una
+collisione*. Cioè se non abiliti niente, la collisione è continua — ed è il
+motivo per cui una macchina appena accesa, che `CLXCON` non l'ha mai scritto,
+segnala collisioni ovunque e sempre. Non è un difetto dell'emulatore: è la
+ragione per cui i giochi la prima cosa che fanno è scriverci dentro quali piani
+gli interessano (Menace abilitava solo il piano 5, quello degli alieni, per non
+prendersi collisioni con lo sfondo).
+
+Gli sprite entrano a coppie, perché il circuito ha quattro ingressi e non otto:
+lo sprite pari della coppia conta sempre, il dispari solo se il suo bit **ENSP**
+è acceso. Ed è la posizione a contare, non chi si vede: due sprite che si
+sovrappongono collidono anche se uno dei due è nascosto dietro il campo grafico.
+
 ### Tastiera e mouse
 
 La tastiera è **posizionale**: ogni tasto del PC va sul tasto che sta nello
@@ -473,7 +498,7 @@ src/systems/amiga/    l'Amiga 500
   machine.js          Chip RAM, Kickstart, overlay, bus, e il giro di un frame
   agnus.js            beam, DMA di bitplane e sprite, e il copper
   blitter.js          quattro canali, 256 minterm, area fill, linee
-  denise.js           bitplane, sprite, priorità, HAM, EHB, e i pixel
+  denise.js           bitplane, sprite, priorità, HAM, EHB, collisioni, pixel
   paula.js            interrupt di tutta la macchina, e quattro voci in DMA
   cia.js              8520: timer, TOD a 24 bit, tastiera seriale, overlay
   disk.js             DF0: e DF1:, e l'unico canale DMA che li legge

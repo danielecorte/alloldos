@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { CPU68000 } from '../src/systems/amiga/cpu68000.js';
 import { Amiga, CHIP_RAM_SIZE } from '../src/systems/amiga/machine.js';
 import {
+  Denise,
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
   FIRST_VISIBLE_LINE,
@@ -786,6 +787,132 @@ section('MFM e immagini .adf');
   check('gap bytes decode to nothing at all', decodeTrack(new Uint8Array(MFM_TRACK_LENGTH).fill(0xaa)).length === 0);
 }
 
+// ------------------------------------------------------------- collisions
+
+section('Le collisioni (CLXDAT)');
+
+{
+  // Denise on its own, one line at a time.
+  //
+  // The collision circuit is not about what the screen shows: it compares the
+  // raw bitplane bits against CLXCON and looks at every sprite pair present at
+  // a pixel, whoever ended up in front. So it is tested where it lives.
+  const WINDOW = { hstart: 0x81, hstop: 0x1c1 };
+  const DDFSTRT = 0x38;
+
+  /** One line of a lores screen, with the planes it is given, run past the beam. */
+  const runLine = (denise, planes, words = 1) => {
+    denise.startLine(FIRST_VISIBLE_LINE + 10, planes, words, DDFSTRT, WINDOW, 0);
+    denise.endLine();
+  };
+  const emptyPlanes = () => Array.from({ length: 6 }, () => new Uint16Array(128));
+
+  /** Puts a sprite where a known screen pixel is, and arms it. */
+  const placeSprite = (denise, index, hstart, bits = 0xffff) => {
+    const at = 0x140 + index * 8;
+    denise.writeRegister(at, (hstart >> 1) & 0xff); // SPRxPOS
+    denise.writeRegister(at + 2, hstart & 1); // SPRxCTL: the low bit of hstart
+    denise.writeRegister(at + 6, 0); // SPRxDATB
+    denise.writeRegister(at + 4, bits); // SPRxDATA arms it
+  };
+
+  {
+    // A machine that has never written CLXCON collides everywhere: a disabled
+    // bitplane cannot prevent a collision, and all six disabled means nothing
+    // can. This is the hardware's own note, and it is why the register is read
+    // and cleared rather than watched.
+    const denise = new Denise();
+    denise.writeRegister(0x100, 0x1000); // BPLCON0: one bitplane
+    runLine(denise, emptyPlanes());
+    check('with CLXCON untouched everything collides with everything', (denise.clxdat & 1) !== 0);
+    check('and reading CLXDAT gives it back', (denise.readCLXDAT() & 1) !== 0);
+    check('and clears it', denise.clxdat === 0);
+  }
+
+  {
+    // Playfield one against playfield two, which is what CLXDAT bit 0 is for.
+    // Both planes enabled, both looking for a set bit: a collision is a pixel
+    // where the two playfields are both drawing.
+    const denise = new Denise();
+    denise.writeRegister(0x100, 0x2400); // BPLCON0: two planes, dual playfield
+    denise.writeRegister(0x098, 0x00c3); // CLXCON: ENBP1|ENBP2, MVBP1|MVBP2
+
+    const apart = emptyPlanes();
+    apart[0][0] = 0xff00; // playfield one on the left half of the word
+    apart[1][0] = 0x00ff; // playfield two on the right half
+    runLine(denise, apart);
+    check('two playfields that never meet do not collide', (denise.clxdat & 1) === 0);
+
+    const over = emptyPlanes();
+    over[0][0] = 0xff00;
+    over[1][0] = 0x0ff0; // now they share four pixels
+    runLine(denise, over);
+    check('and where they overlap they do', (denise.clxdat & 1) !== 0);
+  }
+
+  {
+    // A sprite against the playfield. Only bitplane 1 is enabled, so playfield
+    // one is "where plane 1 is set" — and playfield two, having no enabled
+    // planes at all, is everywhere.
+    const denise = new Denise();
+    denise.writeRegister(0x100, 0x1000); // one bitplane
+    denise.writeRegister(0x098, 0x0041); // CLXCON: ENBP1, MVBP1
+
+    const planes = emptyPlanes();
+    planes[0][0] = 0xffff; // hires x 42 to 73, which is the first fetched word
+    placeSprite(denise, 0, 130); // hires x 44 onwards: on top of it
+    runLine(denise, planes);
+    check('a sprite on the playfield is a playfield-one collision', (denise.clxdat & 0x0002) !== 0);
+    check(
+      'and playfield two collides too, having no enabled planes to stop it',
+      (denise.clxdat & 0x0020) !== 0,
+    );
+    denise.readCLXDAT();
+
+    // The same sprite, moved off the drawn part of the line.
+    placeSprite(denise, 0, 300); // hires x 384, where no plane is set
+    runLine(denise, planes);
+    check('a sprite off the playfield does not', (denise.clxdat & 0x0002) === 0);
+  }
+
+  {
+    // Sprite against sprite, which is the collision games actually use.
+    const denise = new Denise();
+    denise.writeRegister(0x100, 0x1000);
+    denise.writeRegister(0x098, 0x0041);
+
+    placeSprite(denise, 0, 130); // pair 0
+    placeSprite(denise, 4, 130); // pair 2, in the same place
+    runLine(denise, emptyPlanes());
+    check('two sprites in the same place collide', (denise.clxdat & 0x0400) !== 0);
+    check('and the pairs that were not there do not', (denise.clxdat & 0x2800) === 0);
+    denise.readCLXDAT();
+
+    placeSprite(denise, 4, 300); // pair 2, well away
+    runLine(denise, emptyPlanes());
+    check('two sprites apart do not', (denise.clxdat & 0x0400) === 0);
+  }
+
+  {
+    // The odd sprite of a pair only counts if CLXCON says so. This is the bit
+    // that trips people up: sprite 1 is invisible to the collision circuit
+    // until ENSP1 is set, however plainly it is on the screen.
+    const denise = new Denise();
+    denise.writeRegister(0x100, 0x1000);
+    denise.writeRegister(0x098, 0x0041); // no ENSP bits
+    placeSprite(denise, 1, 130); // the odd sprite of pair 0
+    placeSprite(denise, 2, 130); // the even sprite of pair 1
+    runLine(denise, emptyPlanes());
+    check('an odd sprite is not counted until it is enabled', (denise.clxdat & 0x0200) === 0);
+
+    denise.writeRegister(0x098, 0x1041); // ENSP1 as well
+    placeSprite(denise, 1, 130);
+    placeSprite(denise, 2, 130);
+    runLine(denise, emptyPlanes());
+    check('and is counted once ENSP1 is set', (denise.clxdat & 0x0200) !== 0);
+  }
+}
+
 // -------------------------------------------------------------- the machine
 
 section('La macchina intera');
@@ -1388,6 +1515,21 @@ function selectDrive(amiga, unit, motorOn = true) {
   selectDrive(amiga, 0, false);
   check('and stops when it is selected again with the motor line high', amiga.drives[0].motor === false);
   check('while DF1: keeps turning', amiga.drives[1].motor === true);
+}
+
+{
+  // And through the bus, which is how a game gets at it: CLXCON is a write-only
+  // register in Denise, CLXDAT a read-only one that clears itself.
+  const amiga = new Amiga(buildROM([...forever]));
+  amiga.write16(0xdff098, 0x00c3); // two planes enabled, both looking for a 1
+  amiga.runFrame();
+  check('a blank screen with real match values collides with nothing', amiga.read16(0xdff00e) === 0);
+
+  amiga.write16(0xdff098, 0x0000); // nothing enabled: collisions everywhere
+  amiga.runFrame();
+  const first = amiga.read16(0xdff00e);
+  check('and with nothing enabled it collides constantly', (first & 1) !== 0, hex(first, 4));
+  check('reading it clears it', (amiga.read16(0xdff00e) & 1) === 0);
 }
 
 {
