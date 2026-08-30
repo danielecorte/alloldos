@@ -15,6 +15,11 @@ Ce ne sono due che partono davvero:
   `.adf`. Ci gira sopra un
   sistema operativo vero: **AROS m68k** arriva alla sua schermata di avvio.
 
+E ce n'è una terza in costruzione: un **PC 286** con scheda XT, di cui per ora
+c'è il processore e la scheda madre. Non si accende ancora dal menu, ma il BIOS
+libero **GLaBIOS** ci gira sopra e arriva in fondo al suo POST — 640 KB contati,
+scheda video riconosciuta, orologio che batte.
+
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
 eseguono il loro firmware. Il firmware però non è incluso — è di chi lo ha
 scritto — quindi al primo avvio la macchina te lo chiede e tu glielo trascini
@@ -84,6 +89,14 @@ AROS è divisa in due: la Kickstart vera e propria, e una **ROM di estensione**
 con dentro il resto del sistema. Va in `roms/amiga/extended.rom`, o trascinata
 anche lei — la macchina la mette nel secondo zoccolo, a `$e00000`, che è dove
 l'A600, l'A1200 e il CDTV tengono la loro.
+
+**Il PC** è il caso fortunato: il suo firmware è software libero. GLaBIOS è un
+BIOS per PC scritto da zero, in GPLv3, che avvia macchine vere — ed è l'unico
+BIOS PC libero e completo che esista. `npm run fetch-roms` scarica gli otto KB
+di `GLABIOS_0.4.2_8T.ROM` in `roms/pc/glabios.rom`. Fra le dieci varianti
+pubblicate serve quella: il build per 8088 — un 286 esegue tutto quello che
+esegue un 8088, mentre i build "V20" usano le istruzioni in più del NEC V20, che
+il 286 non ha — nella versione Turbo, che è quella per i cloni generici.
 
 Quello che trascini resta nel tuo browser e non va da nessuna parte: alloldos
 non ha un server a cui mandarlo.
@@ -464,6 +477,45 @@ delle due si vede finché non provi a far girare del software vero:
   tronchi, ogni riga dello schermo pesca due byte più indietro di quella sopra,
   e il risultato è un Workbench perfettamente leggibile — in diagonale.
 
+## PC 286
+
+La macchina in costruzione. Non è un AT: è una **scheda XT con sopra un 286**,
+che è una macchina che nel 1988 si poteva davvero comprare, e che qui è una
+scelta obbligata — GLaBIOS è un BIOS XT, e un BIOS AT libero non esiste. Il 286
+è il set di istruzioni, che è quello che il software controlla; il resto della
+scheda è quello che GLaBIOS sa avviare.
+
+C'è: il processore in modo reale (`cpu286.js`, con i dettagli da cui un
+programma capisce di non essere su un 8086), la mappa di memoria con i 640 KB al
+loro posto e il BIOS in cima, l'8259 delle interruzioni, i tre contatori
+dell'8253, l'8255 con gli interruttori a slitta, l'8237 del DMA con il rinfresco
+della memoria che gira davvero, la tastiera XT e la metà testo della scheda
+video.
+
+Manca: il controllore del disco — che è il pezzo dopo, quello che porterà su
+FreeDOS — la VGA con il suo BIOS di scheda, e il suono.
+
+Il POST di GLaBIOS oggi arriva in fondo e dice quello che trova:
+
+```
+GLaBIOS [.] Reboot the Past
+(C) 2022-26 640KB Released under GPLv3
+
+Boot   [ COLD ]
+RAM    [ 640 KB OK ]            Video  [ CGA ]
+CPU    [ 8088 ]                 FPU    [ None ]
+LPT    [ None ]                 COM    [ None ]
+FDD    [ 0 ]
+
+POST Error 1000
+FDC
+```
+
+L'errore è il controllore che non c'è ancora, e `CPU [ 8088 ]` non è uno
+sbaglio: GLaBIOS distingue solo l'8088 dal NEC V20, e chiama 8088 tutto il
+resto. Le prove stanno in `scripts/pctest.mjs` — prima il processore un'opcode
+per volta, poi i chip, poi la macchina intera con dentro il BIOS vero.
+
 ## Schermo intero
 
 Il pulsante **Schermo intero** nella barra, o un doppio clic sull'immagine. A
@@ -506,6 +558,16 @@ src/systems/amiga/    l'Amiga 500
   keyboard.js         tastiera posizionale e contatori del mouse
   roms.js             dove trovare la Kickstart
   index.js            la sessione: canvas, audio, dischi, mouse, comandi
+src/systems/pc/       il PC 286, in costruzione
+  cpu286.js           l'80286 in modo reale, con le istruzioni del 186
+  machine.js          la scheda: mappa di memoria, porte, e il tempo che passa
+  pic.js              8259: chi parla e quando
+  pit.js              8253: il tic a 18,2 Hz, il rinfresco e l'altoparlante
+  ppi.js              8255: tastiera, interruttori a slitta, altoparlante
+  dma.js              8237: quattro canali, pagine, e il rinfresco della RAM
+  cga.js              la scheda video, per la metà che c'è: il testo
+  keyboard.js         la tastiera XT, con il suo filo di clock
+  roms.js             dove trovare GLaBIOS
 ```
 
 Le due macchine sono costruite allo stesso modo: la CPU esegue i cicli di una

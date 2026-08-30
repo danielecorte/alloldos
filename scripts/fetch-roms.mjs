@@ -16,13 +16,16 @@ import { fileURLToPath } from 'node:url';
 // two must not be able to drift apart.
 import { ROM_SPECS, ROM_SOURCE_URL } from '../src/systems/c64/roms.js';
 import { AMIGA_FOREVER_URL, AROS_URL } from '../src/systems/amiga/roms.js';
+import { BIOS_SPEC, GLABIOS_URL } from '../src/systems/pc/roms.js';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const DEST = join(ROOT, 'roms', 'c64');
 const AMIGA_DEST = join(ROOT, 'roms', 'amiga');
+const PC_DEST = join(ROOT, 'roms', 'pc');
 
 await mkdir(DEST, { recursive: true });
 await mkdir(AMIGA_DEST, { recursive: true });
+await mkdir(PC_DEST, { recursive: true });
 
 for (const rom of ROM_SPECS) {
   const target = join(DEST, rom.file);
@@ -152,3 +155,40 @@ AROS's is the one alloldos is tested against, and it also travels inside FS-UAE:
 installing that (\`apt install fs-uae\`, or the download from fs-uae.net) puts
 aros-amiga-m68k-rom.bin somewhere this script will find on the next run.`);
 }
+
+// ---------------------------------------------------------------------- the PC
+
+// The one machine here whose firmware is free software and can simply be
+// downloaded: GLaBIOS is a PC BIOS written from scratch under the GPL, and the
+// build this fetches is the 8088 one, which a 286 runs as it stands.
+
+const biosPath = join(PC_DEST, BIOS_SPEC.file);
+let haveBIOS = false;
+if (!process.argv.includes('--force')) {
+  try {
+    await access(biosPath);
+    haveBIOS = true;
+    console.log(`\n· ${BIOS_SPEC.file} already present, skipping (use --force to refetch)`);
+  } catch {
+    /* not there yet, download it */
+  }
+}
+
+if (!haveBIOS) {
+  process.stdout.write(`\n\u2193 ${BIOS_SPEC.file} \u2026 `);
+  try {
+    const res = await fetch(BIOS_SPEC.source, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length !== BIOS_SPEC.size) throw new Error(`expected ${BIOS_SPEC.size} bytes, got ${bytes.length}`);
+    await writeFile(biosPath, bytes);
+    console.log(`ok (${bytes.length} bytes)`);
+    haveBIOS = true;
+  } catch (error) {
+    console.log(`FAILED (${error.message})`);
+    console.error(`  could not fetch ${BIOS_SPEC.source}`);
+    process.exitCode = 1;
+  }
+}
+
+if (haveBIOS) console.log(`  ${GLABIOS_URL} \u2014 GPLv3, and it boots real hardware too`);

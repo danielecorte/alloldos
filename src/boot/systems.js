@@ -46,12 +46,12 @@ export const SYSTEMS = [
     available: false,
   },
   {
-    id: 'msdos',
-    label: 'MS-DOS 6.22 — COMMAND.COM',
-    year: 1994,
-    cpu: 'Intel 8086 e successori',
+    id: 'pc',
+    label: 'PC 286 — GLaBIOS / FreeDOS',
+    year: 1988,
+    cpu: 'Intel 80286 @ 8 MHz',
     memory: '640 KB convenzionali',
-    notes: 'Richiede un emulatore x86 e un disco di avvio.',
+    notes: 'Scheda XT, BIOS libero, VGA: la macchina su cui gira tutto il DOS.',
     available: false,
   },
   // Not a machine, but it boots like one — the way GRUB keeps its own entries

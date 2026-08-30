@@ -11,6 +11,7 @@
 
 import { ROM_SPECS, romDownloadLink } from '../systems/c64/roms.js';
 import { AMIGA_FOREVER_URL, AROS_URL } from '../systems/amiga/roms.js';
+import { GLABIOS_URL } from '../systems/pc/roms.js';
 
 const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
@@ -255,6 +256,49 @@ class AboutPage {
         aspetta BBUSY o l'interrupt non se ne accorge, chi conta i cicli sì.</li>
         <li>Le <b>porte pot</b>, che leggono i potenziometri dei paddle.</li>
         <li>L'hard disk, e le macchine NTSC: questa è PAL e basta.</li>
+      </ul>
+
+      <h2 class="about__section">PC 286</h2>
+      <p>La macchina in costruzione, e l'unica qui il cui firmware è software
+      libero. Non è un AT: è una <b>scheda XT con sopra un 286</b> — una
+      macchina che nel 1988 si poteva davvero comprare, e che qui è una scelta
+      obbligata. <a class="about__link" href="${GLABIOS_URL}" target="_blank" rel="noopener noreferrer">GLaBIOS</a>
+      è l'unico BIOS per PC libero e completo che esista, ed è un BIOS XT; un
+      BIOS AT libero non c'è. Il 286 è il set di istruzioni, che è quello che il
+      software guarda; la scheda intorno è quella che il BIOS sa avviare.</p>
+      <p>Dal menu non si accende ancora, ma il BIOS ci gira sopra e arriva in
+      fondo al suo POST: conta i 640 KB uno per uno, riconosce la scheda video
+      dagli interruttori a slitta, controlla che il DMA stia rinfrescando la
+      memoria, e alla fine chiede un tasto. L'unico guaio che trova è il
+      controllore del disco, che è il pezzo dopo.</p>
+
+      <h3 class="about__heading">Cosa è stato fatto</h3>
+      <ul class="about__list">
+        <li>L'<b>80286</b> in modo reale, con i dettagli da cui un programma
+        capisce di non essere su un 8086: i quattro bit alti di FLAGS spenti, i
+        contatori di scorrimento mascherati a cinque bit, e le istruzioni del
+        186 — PUSHA, ENTER, BOUND, IMUL con immediato.</li>
+        <li>La <b>mappa di memoria</b> del PC, che è rimasta la stessa per
+        quarant'anni: 640 KB in fondo, le schede da A0000 a EFFFF, il BIOS in
+        cima.</li>
+        <li>L'<b>8259</b> delle interruzioni, i tre contatori dell'<b>8253</b> —
+        il tic a 18,2 Hz, il rinfresco della memoria e l'altoparlante — e
+        l'<b>8255</b> con la tastiera e gli interruttori a slitta.</li>
+        <li>L'<b>8237</b> del DMA, con i registri di pagina e la giunzione a
+        64 KB che non riporta, e il conteggio del rinfresco che gira davvero.</li>
+        <li>La <b>tastiera XT</b> con il suo filo di clock, e la metà testo
+        della scheda video — memoria a B800 e il registro di stato che segue il
+        pennello, che è quello che il BIOS aspetta prima di ogni carattere.</li>
+      </ul>
+
+      <h3 class="about__heading">Cosa manca</h3>
+      <ul class="about__list">
+        <li>Il <b>controllore del disco</b>, che è quello che porterà su
+        <b>FreeDOS</b>.</li>
+        <li>La <b>VGA</b> con il suo BIOS di scheda, e quindi il video sullo
+        schermo: per ora il testo si legge solo dalle prove.</li>
+        <li>Il <b>suono</b>, e il modo protetto — che il DOS non usa, e che
+        Windows 3 e i DOS extender sono un altro progetto.</li>
       </ul>
     `;
   }

@@ -85,6 +85,7 @@ export class CPU286 {
     this.of = 0;
 
     this.halted = false;
+    this.stiDelay = 0;
     this.segmentOverride = -1;
     this.repeat = 0; // 0 nessuno, 0xf2 REPNE, 0xf3 REP/REPE
     this.instructions = 0;
@@ -683,7 +684,12 @@ export class CPU286 {
    * ciclo invece che con un `if`.
    */
   step() {
-    if (this.halted) return 1;
+    if (this.halted) {
+      // Ferma: non si esegue niente, ma il rinvio della STI deve comunque
+      // scadere, altrimenti `sti` seguito da `hlt` non si sveglierebbe mai.
+      if (this.stiDelay) this.stiDelay--;
+      return 1;
+    }
 
     this.segmentOverride = -1;
     this.repeat = 0;

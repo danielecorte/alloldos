@@ -1,12 +1,28 @@
 #!/usr/bin/env node
-// Prove per l'x86: piccoli programmi assemblati a mano, eseguiti sul core.
+// Prove per il PC: prima il processore, poi i chip intorno, poi la macchina
+// intera con dentro un BIOS vero.
 //
 // Un processore non si prova guardandolo: si prova facendogli fare qualcosa e
-// controllando dov'è finito. Ogni prova qui è un pugno di byte — gli stessi che
-// avrebbe sputato un assemblatore del 1985 — caricati a 1000:0000 e lasciati
-// correre fino a HLT.  Si esegue con `node scripts/pctest.mjs`.
+// controllando dov'è finito. Ogni prova della prima metà è un pugno di byte —
+// gli stessi che avrebbe sputato un assemblatore del 1985 — caricati a
+// 1000:0000 e lasciati correre fino a HLT. La seconda metà accende invece la
+// scheda madre e ci fa girare GLaBIOS, che di questo emulatore non sa niente:
+// se il POST arriva in fondo, la scheda è quella che si aspettava.
+//
+// Si esegue con `node scripts/pctest.mjs`.
+
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { CPU286, AX, CX, DX, BX, SP, BP, SI, DI, ES, CS, SS, DS } from '../src/systems/pc/cpu286.js';
+import { PIC8259 } from '../src/systems/pc/pic.js';
+import { PIT8253, PIT_CLOCK } from '../src/systems/pc/pit.js';
+import { DMA8237 } from '../src/systems/pc/dma.js';
+import { PPI8255, VIDEO_CGA_80 } from '../src/systems/pc/ppi.js';
+import { XTKeyboard } from '../src/systems/pc/keyboard.js';
+import { CGA, DOTS_PER_LINE, LINES_PER_FRAME } from '../src/systems/pc/cga.js';
+import { PC, CPU_CLOCK, FPS } from '../src/systems/pc/machine.js';
 
 let failures = 0;
 
@@ -369,6 +385,262 @@ section('Il decimale, che serviva ai soldi');
   // mov ax,$0007 / mov bl,3 / mul bl / aam — ventuno diventa due e uno.
   const box = run([0xb8, 0x07, 0x00, 0xb3, 0x03, 0xf6, 0xe3, 0xd4, 0x0a, HLT]);
   check('AAM divide per dieci e mette le cifre in AH e AL', box.cpu.r[AX] === 0x0201, hex(box.cpu.r[AX]));
+}
+
+// ------------------------------------------------------------- i chip
+
+section('Il controllore delle interruzioni (8259)');
+
+{
+  const pic = new PIC8259();
+  // La sequenza con cui ogni BIOS lo sveglia: ICW1 su 20h, poi vettore e modo.
+  pic.write(0x20, 0x13);
+  pic.write(0x21, 0x08);
+  pic.write(0x21, 0x0d);
+  pic.write(0x21, 0xfe); // tutto mascherato tranne la IRQ 0
+  pic.pulse(0);
+  check('la IRQ 0 arriva alla porta e chiede il vettore 8', pic.request() === 0);
+  check('e il vettore è quello che ha detto il BIOS', pic.acknowledge(0) === 8);
+  check('mentre è in servizio non passa nient\'altro', (pic.pulse(1), pic.request()) === -1);
+  pic.write(0x20, 0x20); // fine interruzione
+  check('la maschera lascia fuori chi non è stato aperto', pic.request() === -1, 'IRQ 1 mascherata');
+  pic.write(0x21, 0xfc);
+  check('e appena si apre, la richiesta rimasta in attesa passa', pic.request() === 1);
+}
+
+{
+  const pic = new PIC8259();
+  pic.write(0x20, 0x13);
+  pic.write(0x21, 0x08);
+  pic.write(0x21, 0x0d);
+  pic.write(0x21, 0x00);
+  pic.setLine(3, true);
+  pic.acknowledge(pic.request());
+  pic.setLine(3, false);
+  pic.setLine(3, true);
+  check('il chip scatta sul fronte, non sul livello', pic.irr === 0x08, 'una riga tenuta alta non ricarica');
+}
+
+section('I contatori (8253)');
+
+{
+  let ticks = 0;
+  const pit = new PIT8253({ onChannel0: (edges) => (ticks += edges) });
+  pit.write(0x43, 0x36); // contatore 0, due byte, modo 3
+  pit.write(0x40, 0x00);
+  pit.write(0x40, 0x00);
+  pit.advance(PIT_CLOCK); // un secondo di quarzo
+  check('il tic di sistema batte 18 volte al secondo', ticks === 18, `${ticks} tic`);
+}
+
+{
+  const pit = new PIT8253({});
+  pit.write(0x43, 0x74); // contatore 1, due byte, modo 2
+  pit.write(0x41, 0x74);
+  pit.write(0x41, 0x74);
+  pit.write(0x43, 0x54); // e poi lo stesso contatore a un byte solo
+  pit.write(0x41, 18);
+  check('un carico a un byte azzera la metà alta', pit.channels[1].period === 18, `${pit.channels[1].period}`);
+  pit.advance(9);
+  pit.write(0x43, 0x40); // latch del contatore 1
+  const low = pit.read(0x41);
+  check('il latch congela il valore di quel momento', low === 9, `${low}`);
+}
+
+section('Il DMA (8237)');
+
+{
+  const memory = new Uint8Array(0x100000);
+  const dma = new DMA8237({ read8: (a) => memory[a], write8: (a, v) => (memory[a] = v) });
+
+  // La prova che il BIOS fa all'accensione: un bit che cammina su tutti e otto
+  // i registri, riletto due volte perché il bistabile torni dov'era.
+  dma.write(0x0d, 0);
+  let walked = true;
+  for (let start = 1; start < 256; start <<= 1) {
+    let bit = start;
+    for (let port = 0; port < 8; port++) {
+      dma.write(port, bit);
+      dma.write(port, bit);
+      bit = ((bit << 1) | (bit >> 7)) & 0xff;
+    }
+    bit = start;
+    for (let port = 0; port < 8; port++) {
+      if (dma.read(port) !== bit || dma.read(port) !== bit) walked = false;
+      bit = ((bit << 1) | (bit >> 7)) & 0xff;
+    }
+  }
+  check('i registri di indirizzo e conteggio si rileggono come scritti', walked);
+
+  dma.write(0x0c, 0);
+  dma.writePage(0x87, 1); // pagina 1: il secondo blocco da 64 KB
+  dma.write(0x00, 0xfe);
+  dma.write(0x00, 0xff);
+  dma.write(0x0b, 0x48); // canale 0, singolo, lettura dalla memoria
+  dma.write(0x01, 1);
+  dma.write(0x01, 0);
+  dma.write(0x0a, 0x00); // via la maschera
+  memory[0x1fffe] = 0x2a;
+  memory[0x1ffff] = 0x2b;
+  check('un trasferimento legge dove dicono pagina e indirizzo', dma.transfer(0) === 0x2a);
+  check('e va avanti da solo', dma.transfer(0) === 0x2b);
+  check('alla fine del blocco alza il fine conteggio', dma.terminalCount(0));
+  check('e senza auto-inizializzazione si rimette in maschera', (dma.mask & 1) === 1);
+}
+
+{
+  const dma = new DMA8237({ read8: () => 0, write8: () => {} });
+  dma.write(0x0c, 0);
+  dma.write(0x01, 0xff);
+  dma.write(0x01, 0xff);
+  dma.write(0x0b, 0x58); // canale 0, auto-inizializzazione: il rinfresco
+  dma.write(0x0a, 0x00);
+  dma.refresh(0x10000);
+  check('il rinfresco arriva a fine conteggio dopo 65536 colpi', dma.terminalCount(0));
+  check('e riparte da solo, senza che nessuno lo riprogrammi', (dma.mask & 1) === 0);
+}
+
+section('Gli interruttori e la tastiera');
+
+{
+  let speaker = null;
+  const keyboard = new XTKeyboard({});
+  const ppi = new PPI8255(
+    {
+      readKeyboard: () => keyboard.read(),
+      setKeyboardLines: (held, cleared) => keyboard.setLines(held, cleared),
+      timer2Output: () => 0,
+      setSpeaker: (gate, data) => (speaker = { gate, data }),
+    },
+    { floppies: 2, video: VIDEO_CGA_80 },
+  );
+
+  ppi.write(0x61, 0x00); // bit 3 basso: la metà bassa degli interruttori
+  check('la metà bassa dice quanta memoria e se c\'è un disco', ppi.read(0x62) === 0x0d, hex(ppi.read(0x62), 2));
+  ppi.write(0x61, 0x08); // bit 3 alto: la metà alta
+  check('la metà alta dice video e numero di lettori', ppi.read(0x62) === 0x06, hex(ppi.read(0x62), 2));
+
+  ppi.write(0x61, 0x03);
+  check('i due bit bassi della 61h sono l\'altoparlante', speaker.gate && speaker.data);
+
+  // La sequenza di reset della tastiera: clock a terra, poi libero.
+  ppi.write(0x61, 0x88); // clock a terra (bit 6 = 0), registro azzerato
+  ppi.write(0x61, 0xc8); // clock libero: la tastiera riparte
+  ppi.write(0x61, 0x48); // e il registro si riapre
+  check('la tastiera riavviata dice che sta bene', ppi.read(0x60) === 0xaa, hex(ppi.read(0x60), 2));
+
+  keyboard.press(0x1e);
+  check('finché nessuno dice "preso", il byte di prima resta lì', ppi.read(0x60) === 0xaa);
+  ppi.write(0x61, 0xc8); // "preso"
+  ppi.write(0x61, 0x48);
+  check('e dopo arriva il tasto', ppi.read(0x60) === 0x1e, hex(ppi.read(0x60), 2));
+  keyboard.release(0x1e);
+  ppi.write(0x61, 0xc8);
+  ppi.write(0x61, 0x48);
+  check('il rilascio è lo stesso codice con il bit alto acceso', ppi.read(0x60) === 0x9e, hex(ppi.read(0x60), 2));
+}
+
+section('Il pennello (CGA)');
+
+{
+  const cga = new CGA();
+  const dotsPerFrame = DOTS_PER_LINE * LINES_PER_FRAME;
+  let displaying = 0;
+  let blanking = 0;
+  let vsync = 0;
+  for (let dot = 0; dot < dotsPerFrame; dot += 8) {
+    const status = cga.status;
+    if (status & 0x01) blanking++;
+    else displaying++;
+    if (status & 0x08) vsync++;
+    cga.advance(8);
+  }
+  check('in un quadro il bit di ritorno cambia davvero', displaying > 0 && blanking > 0, `${displaying} dentro, ${blanking} fuori`);
+  check('e il ritorno verticale dura una manciata di righi', vsync > 0 && vsync < blanking, `${vsync} letture in ritorno verticale`);
+  check('dopo un quadro intero il pennello è tornato dov\'era', cga.dot === 0);
+
+  cga.writeMemory(0, 0x41);
+  cga.writeMemory(1, 0x07);
+  check('la memoria è la pagina: un byte è un carattere', cga.text()[0] === 'A');
+  check('e si ripete ogni sedici KB', cga.readMemory(0x4000) === 0x41);
+}
+
+section('La scheda');
+
+{
+  const bios = new Uint8Array(0x2000).fill(0xcc);
+  bios[0x1ff0] = 0xea; // il salto che il 286 trova all'accensione
+  const pc = new PC(bios);
+  pc.ram[0x400] = 0x5a;
+  check('i 640 KB stanno in fondo', pc.read8(0x400) === 0x5a);
+  check('il BIOS sta in cima, a F000:E000', pc.read8(0xffff0) === 0xea);
+  pc.write8(0xb8000, 0x41);
+  check('la scheda video risponde a B800', pc.cga.readMemory(0) === 0x41);
+  check('e riappare quattro pagine più su', pc.read8(0xbc000) === 0x41);
+  check('sopra la memoria non c\'è nessuno, e il bus resta alto', pc.read8(0xa0000) === 0xff);
+  check('e le porte dove non c\'è una scheda pure', pc.inb(0x3f8) === 0xff, 'la prima seriale che non c\'è');
+
+  // Il processore parte da dove parte, e non da dove gli pare.
+  check('il 286 si sveglia a F000:FFF0', pc.location === 'f000:fff0');
+}
+
+// -------------------------------------------------------- l'avvio vero
+
+const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
+const biosPath = join(ROOT, 'roms', 'pc', 'glabios.rom');
+
+if (!existsSync(biosPath)) {
+  console.log(`
+Nessun BIOS in roms/pc: la prova di avvio vero è stata saltata.
+GLaBIOS è libero e si prende con \`npm run fetch-roms\`.`);
+} else {
+  section('Avvio vero');
+
+  // Tutto quello che c'è sopra dice che i chip fanno quello che dice il
+  // manuale. Questo dice l'unica cosa che conta davvero: che un BIOS scritto
+  // per questa macchina, da qualcuno che non ha mai visto questo emulatore,
+  // ci si accende sopra e la trova come se la aspetta.
+  const pc = new PC(new Uint8Array(readFileSync(biosPath)));
+  for (let frame = 0; frame < 1800 && !pc.cga.text().join('\n').includes('Any Key'); frame++) {
+    pc.runFrame();
+  }
+  const screen = pc.cga.text();
+  const shown = screen.join('\n');
+
+  check('il BIOS si presenta', shown.includes('GLaBIOS'), screen[1]);
+  check('e ha contato tutti i 640 KB', /RAM\s+\[ 640 KB OK \]/.test(shown), screen[5]);
+  check('ha riconosciuto la scheda video dagli interruttori', shown.includes('Video  [ CGA ]'));
+  check('e il POST è arrivato in fondo', shown.includes('Any Key'));
+
+  // Il rinfresco della memoria non è una formalità: il BIOS controlla che il
+  // canale 0 del DMA sia arrivato in fondo al suo conto, che è l'unico modo
+  // che ha di sapere che la RAM non si sta dimenticando di sé stessa.
+  check('nessun errore di DMA: la memoria si sta rinfrescando', !shown.includes('DMA'));
+  check('e nessuno di memoria', !shown.includes('MEM'));
+
+  const timer = () => pc.ram[0x46c] | (pc.ram[0x46d] << 8);
+  const before = timer();
+  const from = pc.cycles;
+  for (let frame = 0; frame < FPS; frame++) pc.runFrame();
+  const rate = (timer() - before) / ((pc.cycles - from) / CPU_CLOCK);
+  check(
+    'l\'orologio del BIOS batte 18,2 volte al secondo',
+    Math.abs(rate - 18.2) < 0.5,
+    `${rate.toFixed(1)} tic al secondo`,
+  );
+
+  // L'unico guaio che il POST trova è il controllore del disco, che non c'è
+  // ancora: è il pezzo dopo, ed è quello che porterà su un sistema operativo.
+  check('l\'unico pezzo che manca è il controllore del disco', shown.includes('FDC'), screen[10]);
+
+  pc.keyboard.press(0x39); // barra spaziatrice
+  for (let frame = 0; frame < 10; frame++) pc.runFrame();
+  pc.keyboard.release(0x39);
+  for (let frame = 0; frame < 600; frame++) pc.runFrame();
+  check(
+    'un tasto arriva al BIOS, che prova ad avviare e non trova niente',
+    pc.cga.text().join('\n').includes('Disk Boot Fail'),
+  );
 }
 
 console.log(failures === 0 ? '\nPC OK.' : `\n${failures} problema/i.`);
