@@ -15,6 +15,10 @@ const BOOT_FAST_FORWARD = 400; // frames we are willing to skip through on load
 const WARP_FRAMES = 24; // frames per animation frame while winding a tape
 const JOYSTICK_HINT_POLLS = 30; // port reads before offering to plug a stick in
 
+/** La striscia in fondo che richiama la barra, e quanto resta in vista da sé. */
+const CONTROLS_EDGE = 60;
+const CONTROLS_FLASH = 2500;
+
 const TYPE_LOAD = [0x4c, 0x4f, 0x41, 0x44, 0x0d];
 const TYPE_RUN = [0x52, 0x55, 0x4e, 0x0d];
 
@@ -92,7 +96,12 @@ class C64Session {
       this.fileInput.value = '';
     });
 
-    this.root.append(stage, this.bar, this.tapeBar, this.probe, this.fileInput);
+    // Barra, registratore e diagnostica stanno insieme: a schermo intero escono
+    // di scena insieme, e l'immagine si prende tutta l'altezza.
+    this.controls = element('div', 'c64__controls');
+    this.controls.append(this.bar, this.tapeBar, this.probe);
+
+    this.root.append(stage, this.controls, this.fileInput);
     this.container.append(this.root);
 
     this.bindEvents();
@@ -122,6 +131,7 @@ class C64Session {
       [this.root, 'drop', (event) => this.onDrop(event)],
       [this.root, 'pointerdown', () => this.audio?.start()],
       [this.canvas, 'dblclick', () => this.toggleFullscreen()],
+      [this.root, 'mousemove', (event) => this.onPointerHover(event)],
       // Fullscreen can also be left with Escape or the browser's own button, so
       // the button's label follows the browser rather than our own clicks.
       [document, 'fullscreenchange', () => this.onFullscreenChange()],
@@ -438,6 +448,39 @@ class C64Session {
     return document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
   }
 
+  get isFullscreen() {
+    return this.fullscreenElement === this.root;
+  }
+
+  /**
+   * A schermo intero la barra scivola fuori dal fondo: torna quando il
+   * puntatore scende in fondo allo schermo, e si fa vedere un momento da sé
+   * appena si entra, per dire che c'è ancora.
+   *
+   * @param {number} [hideAfter] millisecondi dopo i quali sparisce da sé
+   */
+  showControls(hideAfter = 0) {
+    clearTimeout(this.controlsTimer);
+    this.controlsTimer = null;
+    this.root.classList.add('c64--controls-shown');
+    if (!hideAfter) return;
+    this.controlsTimer = setTimeout(() => this.hideControls(), hideAfter);
+    this.controlsTimer?.unref?.();
+  }
+
+  hideControls() {
+    clearTimeout(this.controlsTimer);
+    this.controlsTimer = null;
+    this.root.classList.remove('c64--controls-shown');
+  }
+
+  onPointerHover(event) {
+    if (!this.isFullscreen) return;
+    const height = window.innerHeight ?? 0;
+    if (height && event.clientY >= height - CONTROLS_EDGE) this.showControls();
+    else if (!this.controlsTimer) this.hideControls();
+  }
+
   /**
    * The whole machine goes fullscreen — picture and bar together — so the
    * controls, the tape counter and the status line stay reachable. Also on a
@@ -465,9 +508,11 @@ class C64Session {
 
   /** Follows the browser: Escape and its own controls change this too. */
   onFullscreenChange() {
-    const full = this.fullscreenElement === this.root;
+    const full = this.isFullscreen;
     this.fullscreenButton.textContent = full ? 'Finestra' : 'Schermo intero';
     this.root.classList.toggle('c64--fullscreen', full);
+    if (full) this.showControls(CONTROLS_FLASH);
+    else this.hideControls();
     this.root.focus(); // entering and leaving both move focus off the machine
   }
 
@@ -677,6 +722,7 @@ class C64Session {
   dispose() {
     this.running = false;
     cancelAnimationFrame(this.rafHandle);
+    clearTimeout(this.controlsTimer);
     for (const [target, type, handler] of this.listeners ?? []) {
       target.removeEventListener(type, handler);
     }

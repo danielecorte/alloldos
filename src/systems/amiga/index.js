@@ -30,6 +30,14 @@ const MAX_CATCHUP_FRAMES = 4; // never try to make up more than this after a sta
  */
 const SAVE_QUIET_MS = 1500;
 
+/**
+ * La striscia in fondo allo schermo che richiama la barra dei comandi, e quanto
+ * la barra resta in vista quando si mostra da sé. Sessanta pixel sono un bordo
+ * che si trova senza cercarlo e che non si attraversa per sbaglio.
+ */
+const CONTROLS_EDGE = 60;
+const CONTROLS_FLASH = 2500;
+
 class AmigaSession {
   constructor(container, options) {
     this.container = container;
@@ -99,7 +107,12 @@ class AmigaSession {
       this.fileInput.value = '';
     });
 
-    this.root.append(stage, this.bar, ...this.driveRows.map((row) => row.row), this.fileInput);
+    // Barra e cassetti stanno insieme, perché a schermo intero escono di scena
+    // insieme: quello che si guarda è la macchina, non i suoi pulsanti.
+    this.controls = element('div', 'amiga__controls');
+    this.controls.append(this.bar, ...this.driveRows.map((row) => row.row));
+
+    this.root.append(stage, this.controls, this.fileInput);
     this.container.append(this.root);
 
     this.bindEvents();
@@ -148,7 +161,7 @@ class AmigaSession {
       [this.canvas, 'mouseup', (event) => this.onMouseButton(event, false)],
       [this.canvas, 'mousemove', (event) => this.onMouseMove(event)],
       [this.canvas, 'contextmenu', (event) => event.preventDefault()],
-      [this.canvas, 'dblclick', () => this.toggleFullscreen()],
+      [this.root, 'mousemove', (event) => this.onPointerHover(event)],
       [document, 'pointerlockchange', () => this.onPointerLockChange()],
       [document, 'fullscreenchange', () => this.onFullscreenChange()],
       [document, 'webkitfullscreenchange', () => this.onFullscreenChange()],
@@ -470,7 +483,14 @@ class AmigaSession {
   onPointerLockChange() {
     const locked = this.pointerLocked;
     this.mouseButton.textContent = locked ? 'Rilascia il mouse' : 'Cattura il mouse';
-    if (locked) this.setStatus('Mouse catturato — premi Esc per riprenderlo');
+    if (locked) {
+      this.setStatus('Mouse catturato — premi Esc per riprenderlo');
+      if (this.isFullscreen) this.hideControls();
+      return;
+    }
+    // Il mouse è tornato a chi lo muove: se siamo a schermo intero è quasi
+    // sempre perché si voleva qualcosa dalla barra.
+    if (this.isFullscreen) this.showControls(CONTROLS_FLASH);
   }
 
   onMouseMove(event) {
@@ -500,6 +520,45 @@ class AmigaSession {
     return document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
   }
 
+  get isFullscreen() {
+    return this.fullscreenElement === this.root;
+  }
+
+  /**
+   * A schermo intero la barra scivola fuori dal fondo e l'immagine si prende
+   * tutta l'altezza. Torna quando il puntatore scende in fondo allo schermo, e
+   * torna da sola quando il mouse smette di essere catturato — cioè premendo
+   * Esc, che è il modo di riaverla senza sapere niente di tutto questo.
+   *
+   * @param {number} [hideAfter] millisecondi dopo i quali sparisce da sé; 0 la
+   *   lascia dov'è finché non è il puntatore a mandarla via
+   */
+  showControls(hideAfter = 0) {
+    clearTimeout(this.controlsTimer);
+    this.controlsTimer = null;
+    this.root.classList.add('amiga--controls-shown');
+    if (!hideAfter) return;
+    this.controlsTimer = setTimeout(() => this.hideControls(), hideAfter);
+    this.controlsTimer?.unref?.();
+  }
+
+  hideControls() {
+    clearTimeout(this.controlsTimer);
+    this.controlsTimer = null;
+    this.root.classList.remove('amiga--controls-shown');
+  }
+
+  /**
+   * Il puntatore che si muove a schermo intero. Se il mouse è catturato non
+   * conta: quello è dell'Amiga, e il doppio clic serve al Workbench, non a noi.
+   */
+  onPointerHover(event) {
+    if (!this.isFullscreen || this.pointerLocked) return;
+    const height = window.innerHeight ?? 0;
+    if (height && event.clientY >= height - CONTROLS_EDGE) this.showControls();
+    else if (!this.controlsTimer) this.hideControls();
+  }
+
   toggleFullscreen() {
     if (this.fullscreenElement) {
       const exit = document.exitFullscreen ?? document.webkitExitFullscreen;
@@ -517,9 +576,13 @@ class AmigaSession {
   }
 
   onFullscreenChange() {
-    const full = this.fullscreenElement === this.root;
+    const full = this.isFullscreen;
     this.fullscreenButton.textContent = full ? 'Finestra' : 'Schermo intero';
     this.root.classList.toggle('amiga--fullscreen', full);
+    // Entrando, la barra si fa vedere un momento e poi se ne va: è il solo modo
+    // di dire che c'è ancora, e dov'è, a chi non lo sa.
+    if (full) this.showControls(CONTROLS_FLASH);
+    else this.hideControls();
     this.root.focus();
   }
 
@@ -660,6 +723,7 @@ class AmigaSession {
   dispose() {
     this.running = false;
     cancelAnimationFrame(this.rafHandle);
+    clearTimeout(this.controlsTimer);
     for (const [target, type, handler] of this.listeners ?? []) {
       target.removeEventListener(type, handler);
     }

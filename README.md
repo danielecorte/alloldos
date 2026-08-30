@@ -518,12 +518,24 @@ per volta, poi i chip, poi la macchina intera con dentro il BIOS vero.
 
 ## Schermo intero
 
-Il pulsante **Schermo intero** nella barra, o un doppio clic sull'immagine. A
-schermo intero ci va la macchina intera, barra compresa: i pulsanti, il
-contatore del nastro e la riga di stato restano dove sono, e il quadro si
-prende tutta l'altezza rimasta mantenendo le proporzioni dei pixel PAL. Si esce
-col pulsante, che nel frattempo è diventato **Finestra**, o come si esce da
-qualsiasi schermo intero. Comunque tu esca, l'etichetta del pulsante lo sa:
+Il pulsante **Schermo intero** nella barra — e sul C64 anche un doppio clic
+sull'immagine. Sull'Amiga no, e per un motivo: lì il doppio clic è della
+macchina, apre i cassetti del Workbench e fa partire i giochi, e non può
+buttarti fuori dallo schermo intero mentre giochi.
+
+A schermo intero ci va la macchina intera, ma **la barra si toglie di mezzo**:
+scivola sotto il bordo, il quadro si prende tutta l'altezza mantenendo le
+proporzioni dei pixel PAL, e i comandi tornano quando servono. Tornano in tre
+modi, tutti senza doverli sapere:
+
+- appena entri, la barra si fa vedere un paio di secondi e poi se ne va — così
+  sai che c'è ancora, e dov'è;
+- quando porti il puntatore in fondo allo schermo, e sparisce quando lo togli;
+- sull'Amiga, appena il mouse smette di essere catturato: cioè premendo **Esc**,
+  che è la stessa cosa che si preme per riprendersi il puntatore.
+
+Si esce col pulsante, che nel frattempo è diventato **Finestra**, o come si esce
+da qualsiasi schermo intero. Comunque tu esca, l'etichetta del pulsante lo sa:
 segue il browser, non i nostri clic.
 
 ## Com'è fatto

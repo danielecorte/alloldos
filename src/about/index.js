@@ -133,8 +133,9 @@ class AboutPage {
         <li><b>Tastiera simbolica</b> — il carattere che digiti è il carattere
         che arriva al C64 — e <b>joystick</b> su entrambe le porte, con la
         macchina che guarda quale porta il gioco interroga e te lo dice.</li>
-        <li><b>Schermo intero</b>, e una diagnostica che mostra in diretta in
-        quale cella della matrice finisce ogni tasto.</li>
+        <li><b>Schermo intero</b> con la barra che si toglie di mezzo — torna
+        portando il puntatore in fondo allo schermo — e una diagnostica che
+        mostra in diretta in quale cella della matrice finisce ogni tasto.</li>
         <li>Una <b>suite di prove</b> che accende la macchina, ci batte i tasti,
         registra un nastro e glielo fa rileggere, e infine <b>gioca davvero</b> a
         un gioco: tiene premuta una direzione e controlla dove finisce il
@@ -225,7 +226,10 @@ class AboutPage {
         drive tace, l'<code>.adf</code> aggiornato viene scaricato: qui non c'è
         nessuno scaffale dove posare un floppy.</li>
         <li><b>Mouse</b> con il puntatore agganciato alla finestra: l'Amiga non
-        sa dove sia il mouse, conta solo di quanto è girata la pallina.</li>
+        sa dove sia il mouse, conta solo di quanto è girata la pallina. Il
+        doppio clic è tutto suo — apre i cassetti del Workbench — e infatti a
+        schermo intero non fa nient'altro; la barra torna con <b>Esc</b>, che è
+        anche il tasto che ti ridà il puntatore.</li>
         <li><b>Joystick</b> nella porta 2, su richiesta, con frecce e spazio. La
         porta è nata per un mouse, quindi su e giù non sono bit: escono da uno
         XOR fra bit vicini, ed è per quello che ogni gioco li legge con uno

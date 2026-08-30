@@ -26,11 +26,15 @@ class StubElement {
     this.value = '';
     this.style = {};
     this.dataset = {};
+    this.classes = new Set();
     this.classList = {
-      add: () => {},
-      remove: () => {},
-      toggle: () => {},
-      contains: () => false,
+      add: (name) => this.classes.add(name),
+      remove: (name) => this.classes.delete(name),
+      toggle: (name, on) => {
+        if (on ?? !this.classes.has(name)) this.classes.add(name);
+        else this.classes.delete(name);
+      },
+      contains: (name) => this.classes.has(name),
     };
   }
 
@@ -96,6 +100,8 @@ const windowStub = {
   },
   setInterval: () => 0,
   clearInterval: () => {},
+  innerHeight: 800,
+  innerWidth: 1200,
   // AudioContext is attached below, once the class exists.
 };
 
@@ -349,10 +355,23 @@ document.exitFullscreen();
 check('leaving fullscreen is noticed even when the browser does it', document.fullscreenElement === null);
 check('and the button says so again', session.fullscreenButton.textContent === 'Schermo intero');
 
-// A double click on the picture is the other way in.
+// A double click on the picture is the other way in. The C64 has no mouse of
+// its own, so the gesture is free; on the Amiga it is not, and it is gone there.
 session.canvas.dispatch('dblclick');
 check('a double click on the picture does it too', document.fullscreenElement === session.root);
+
+// The bar hides itself in fullscreen and comes back at the bottom edge.
+check('entering fullscreen shows the bar, to say where it went', session.root.classes.has('c64--controls-shown'));
+session.hideControls();
+session.root.dispatch('mousemove', { clientY: 400 });
+check('the bar stays away while the pointer is on the picture', !session.root.classes.has('c64--controls-shown'));
+session.root.dispatch('mousemove', { clientY: 780 });
+check('and comes back when it goes down to the edge', session.root.classes.has('c64--controls-shown'));
+session.root.dispatch('mousemove', { clientY: 100 });
+check('then goes away again on its own', !session.root.classes.has('c64--controls-shown'));
+check('and the bar itself is where it always was', session.controls.children.includes(session.bar));
 document.exitFullscreen();
+check('out of fullscreen nothing is hidden any more', !session.root.classes.has('c64--controls-shown'));
 
 // The panel someone without the ROMs lands on. No local run ever shows it —
 // the ROMs are right there in roms/ — but on a public page it is the first
@@ -542,6 +561,27 @@ check('and the button takes it out again', amiga.joystickButton.textContent === 
 sendKey('keydown', 'KeyA', 'a');
 const queued = amiga.machine.keyboard.queue;
 check('a key press is queued as an Amiga key code', queued[queued.length - 1] === (~(0x20 << 1) & 0xff), String(queued[queued.length - 1]));
+
+// The double click belongs to the Amiga: it opens drawers, picks up icons and
+// starts games, and it must not throw the screen back into a window.
+document.exitPointerLock();
+amiga.toggleFullscreen();
+amiga.canvas.dispatch('dblclick');
+check('a double click no longer drops out of fullscreen', document.fullscreenElement === amiga.root);
+
+amiga.hideControls();
+amiga.root.dispatch('mousemove', { clientY: 780 });
+check('the bar comes back at the bottom edge', amiga.root.classes.has('amiga--controls-shown'));
+
+// With the mouse captured the pointer is the Amiga's, and the edge means
+// nothing: the way back to the bar is Escape, which lets the pointer go.
+amiga.captureMouse();
+check('capturing the mouse takes the bar away', !amiga.root.classes.has('amiga--controls-shown'));
+amiga.root.dispatch('mousemove', { clientY: 799 });
+check('and the edge does not bring it back while the Amiga has the pointer', !amiga.root.classes.has('amiga--controls-shown'));
+document.exitPointerLock();
+check('letting the pointer go brings the bar back', amiga.root.classes.has('amiga--controls-shown'));
+document.exitFullscreen();
 
 amiga.dispose();
 check('the Amiga shuts down cleanly', amiga.running === false);

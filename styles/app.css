@@ -369,11 +369,37 @@ body[data-screen='c64'] {
   box-shadow: 0 0 0 3px #b8c76f, 0 1.5rem 4rem rgb(0 0 0 / 60%);
 }
 
-/* Fullscreen. The element that fills the screen is the whole machine, bar and
-   all, so the picture gets the height that is left and the padding goes: on a
-   16:9 screen those two centimetres of margin are two centimetres of C64. */
+/* Bar, tape transport and key probe in one column, because in fullscreen they
+   leave together. */
+.c64__controls {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Fullscreen. The element that fills the screen is the whole machine, but the
+   bar slides out from under the bottom edge: the picture takes all the height
+   there is, and on a 16:9 screen those two centimetres of margin were two
+   centimetres of C64. The controls come back when the pointer goes down to the
+   edge looking for them. */
 .c64--fullscreen {
   background: #1b1636;
+  position: relative;
+}
+
+.c64--fullscreen .c64__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  transform: translateY(100%);
+  transition: transform 160ms ease-out;
+  box-shadow: 0 -1rem 2.5rem rgb(0 0 0 / 55%);
+}
+
+.c64--fullscreen.c64--controls-shown .c64__controls {
+  transform: none;
 }
 
 .c64--fullscreen .c64__stage {
@@ -555,8 +581,33 @@ body[data-screen='amiga'] {
   box-shadow: 0 0 0 3px var(--amiga-orange), 0 1.5rem 4rem rgb(0 0 0 / 60%);
 }
 
+.amiga__controls {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
 .amiga--fullscreen {
   background: #10141c;
+  position: relative;
+}
+
+/* Same as the C64: in fullscreen the bar and the two drive rows slide out under
+   the bottom edge. It matters twice as much here, because the mouse belongs to
+   the Amiga — whoever captured it gets the bar back by pressing Escape. */
+.amiga--fullscreen .amiga__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  transform: translateY(100%);
+  transition: transform 160ms ease-out;
+  box-shadow: 0 -1rem 2.5rem rgb(0 0 0 / 55%);
+}
+
+.amiga--fullscreen.amiga--controls-shown .amiga__controls {
+  transform: none;
 }
 
 .amiga--fullscreen .amiga__stage {
@@ -700,5 +751,13 @@ body[data-screen='amiga'] {
     margin-left: 0;
     width: 100%;
     text-align: left;
+  }
+}
+
+/* Anyone who asked not to be shown animations is not shown this one either. */
+@media (prefers-reduced-motion: reduce) {
+  .c64--fullscreen .c64__controls,
+  .amiga--fullscreen .amiga__controls {
+    transition: none;
   }
 }
