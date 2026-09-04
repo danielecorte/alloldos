@@ -15,10 +15,10 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Z80, FLAG_C, FLAG_Z, FLAG_S, FLAG_P, FLAG_H, FLAG_N } from '../src/systems/zx/cpuz80.js';
-import { ULA, KEY_ROWS, FRAME_CYCLES } from '../src/systems/zx/ula.js';
+import { Z80, FLAG_C, FLAG_Z, FLAG_P, FLAG_H, FLAG_N } from '../src/systems/zx/cpuz80.js';
+import { ULA, FRAME_CYCLES } from '../src/systems/zx/ula.js';
 import { Spectrum } from '../src/systems/zx/machine.js';
-import { Tape, parseTAP, encodeTAP, tapeName, PILOT_PULSE, BIT_ONE } from '../src/systems/zx/tape.js';
+import { Tape, parseTAP, encodeTAP, tapeName, PILOT_PULSE } from '../src/systems/zx/tape.js';
 import { loadSNA, saveSNA } from '../src/systems/zx/snapshot.js';
 import { keysFor, positionOf, keysForCharacter } from '../src/systems/zx/keyboard.js';
 import { beeperSamples } from '../src/systems/zx/audio.js';

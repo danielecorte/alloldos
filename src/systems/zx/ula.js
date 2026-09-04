@@ -40,9 +40,8 @@ export const BORDER_Y = 24;
 export const SCREEN_WIDTH = 256 + BORDER_X * 2;
 export const SCREEN_HEIGHT = 192 + BORDER_Y * 2;
 
-/** Dove sta il pennello quando comincia il primo pixel dell'immagine. */
+/** Da che rigo comincia l'immagine: prima ci sono 64 righi di bordo. */
 const FIRST_DISPLAY_LINE = 64;
-const FIRST_DISPLAY_CYCLE = FIRST_DISPLAY_LINE * LINE_CYCLES + 24;
 
 /** La memoria video, dove la ULA va a leggere: pixel e poi attributi. */
 export const SCREEN_BASE = 0x4000;

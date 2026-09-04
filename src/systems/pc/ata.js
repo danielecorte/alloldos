@@ -44,7 +44,9 @@ const REG_DRIVE_HEAD = 6;
 const REG_STATUS = 7; // in lettura lo stato, in scrittura il comando
 
 /** I bit dello stato, che sono gli stessi da quarant'anni. */
-const ST_BUSY = 0x80;
+// Il bit 7 direbbe che il disco è occupato. Qui non lo è mai: i settori
+// arrivano nello stesso istante in cui vengono chiesti, e chi aspetta che si
+// liberi trova che è già libero.
 const ST_READY = 0x40;
 const ST_SEEK_DONE = 0x10;
 const ST_DRQ = 0x08;

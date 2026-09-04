@@ -31,7 +31,8 @@ export const FDC_DATA = 0x3f5; // comandi, parametri e risultati, tutti da qui
 /** I bit del registro di stato principale. */
 const MSR_RQM = 0x80; // il chip è pronto a un byte
 const MSR_DIO = 0x40; // 1 = ha qualcosa da dire, 0 = sta ascoltando
-const MSR_NDMA = 0x20; // trasferimento senza DMA, che qui non si usa mai
+// Il bit 5 direbbe che il trasferimento va senza DMA, e resta sempre a zero:
+// su un PC il disco passa dal DMA, e non c'è nessun altro modo.
 const MSR_BUSY = 0x10; // un comando è in corso: è così che si sa se il
 //                        risultato è finito, perché non se ne dice la lunghezza
 
