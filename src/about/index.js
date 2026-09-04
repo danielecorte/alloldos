@@ -18,6 +18,7 @@ import {
   XTIDE_SOURCE_URL,
 } from '../systems/pc/roms.js';
 import { FREEDOS_URL } from '../systems/pc/media.js';
+import { FUSE_URL, FUSE_SOURCE_URL, OPENSE_URL } from '../systems/zx/roms.js';
 
 const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
@@ -51,6 +52,7 @@ class AboutPage {
       ${this.commodore64()}
       ${this.amiga500()}
       ${this.pc286()}
+      ${this.spectrum()}
 
       <pre class="about__ready">READY.
 <span class="about__cursor">&nbsp;</span></pre>
@@ -369,6 +371,80 @@ class AboutPage {
         bit a mano invece di lasciar fare al contatore.</li>
         <li>Il <b>modo protetto</b>, che il DOS non usa: Windows 3 e i DOS
         extender sono un altro progetto.</li>
+      </ul>
+    `;
+  }
+
+  // --------------------------------------------------------- zx spectrum
+
+  spectrum() {
+    return `
+      <h2 class="about__section">ZX Spectrum 48K</h2>
+      <p>La macchina più piccola di questa collezione, e quella che ha insegnato
+      a programmare a mezza Europa. Dentro ci sono tre cose: uno <b>Z80</b>, 64
+      KB fra ROM e RAM, e un solo chip fatto fare apposta — la <b>ULA</b>, che
+      fa il video, la tastiera, l'altoparlante, il nastro e il bordo. Non c'è
+      nient'altro: nessun chip sonoro, nessuno sprite, nessun controllore di
+      interruzioni. Costava 125 sterline, e questo è il motivo.</p>
+      <p>Tutto quello che lo Spectrum fa di bello lo fa il processore a mano,
+      contando cicli: le note, il caricamento da nastro, i giochi. È per questo
+      che quando parte la musica il gioco si ferma.</p>
+
+      <h3 class="about__heading">Dove trovare la ROM</h3>
+      <p>Sono <b>sedici KB</b>, e dentro c'è tutto: l'interprete BASIC,
+      l'aritmetica in virgola mobile a cinque byte, il disegno delle lettere, il
+      caricamento da nastro. È di Amstrad, che comprò Sinclair nel 1986 e che da
+      allora ne permette la ridistribuzione insieme agli emulatori — quindi, a
+      differenza della Kickstart, si trova senza cercarla:</p>
+      <ul class="about__list">
+        <li>dentro il sorgente di
+        <a class="about__link" href="${FUSE_URL}" target="_blank" rel="noopener noreferrer">Fuse</a>
+        (<a class="about__link" href="${FUSE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">fuse-1.6.0.tar.gz</a>,
+        in <code>roms/48.rom</code>), ed è quello che scarica
+        <code>npm run fetch-roms</code>;</li>
+        <li>oppure
+        <a class="about__link" href="${OPENSE_URL}" target="_blank" rel="noopener noreferrer">OpenSE BASIC</a>,
+        che è un rimpiazzo <b>libero</b> in GPL, compatibile e più veloce
+        dell'originale: si trascina sulla finestra al posto dell'altra.</li>
+      </ul>
+
+      <h3 class="about__heading">Cosa è stato fatto</h3>
+      <ul class="about__list">
+        <li>Lo <b>Z80</b> per intero: i due banchi di registri, gli indici, le
+        istruzioni di blocco, i bit, e anche quelle non documentate — SLL, i
+        due bit nascosti dei flag, la BIT che li prende dall'indirizzo invece
+        che dal risultato. I cicli non stanno in una tabella: si sommano dai
+        giri sul bus, che è come nascono davvero.</li>
+        <li>La <b>ULA</b>: lo schermo con il suo rimescolamento di indirizzi —
+        la riga 1 non sta sotto la riga 0, sta 2048 byte più in là — gli
+        attributi a quadretti di otto per otto con due colori dentro, il
+        lampeggio, e il <b>bordo che cambia colore a metà quadro</b>, che è
+        quello che fa le bande dei caricamenti.</li>
+        <li>La <b>tastiera</b>: otto mezze righe lette da una porta sola, con i
+        due shift. Qui i tasti del browser diventano le combinazioni giuste —
+        la virgola è symbol shift più N, la freccia a sinistra è caps shift più
+        5, che è poi il motivo per cui le frecce sono disegnate sui numeri.</li>
+        <li>Il <b>nastro</b>. Un <code>.tap</code> non contiene il suono,
+        contiene i byte: qui il suono viene <b>rifatto</b> con i tempi esatti
+        della ROM — tono di guida, sincronismo, impulsi lunghi e corti — e la
+        ROM li rimisura contando cicli, come faceva con la cassetta vera.
+        Infilare una cassetta batte <code>LOAD ""</code> da sé e preme play.</li>
+        <li>L'<b>altoparlante</b>, che è un bit: il suono è la storia di quel
+        bit dentro il quadro, presa così com'è e trasformata in campioni.</li>
+        <li>Il <b>joystick Kempston</b>, su richiesta, e le istantanee
+        <code>.sna</code> — che non sono un programma ma una macchina
+        fotografata a metà lavoro, e ripartono dall'istruzione dopo.</li>
+      </ul>
+
+      <h3 class="about__heading">Cosa manca</h3>
+      <ul class="about__list">
+        <li>La <b>contesa della memoria</b>: sullo Spectrum la ULA e il
+        processore si contendono i primi 16 KB, e il processore aspetta. Qui non
+        aspetta, e le demo che ci contano sopra sfarfallano.</li>
+        <li>I <code>.tzx</code>, e con loro i <b>caricatori turbo</b> — quelli
+        che si inventavano tempi propri per dimezzare i quattro minuti.</li>
+        <li>Il <b>128K</b> con il suo chip sonoro AY, e la registrazione su
+        nastro: qui le cassette si leggono e non si scrivono.</li>
       </ul>
     `;
   }

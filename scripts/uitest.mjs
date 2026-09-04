@@ -673,6 +673,74 @@ if (pc.machine === null) {
 pc.dispose();
 check('the PC shuts down cleanly', pc.running === false);
 
+
+// ------------------------------------------------------- lo ZX Spectrum
+
+// La quarta macchina, e la più piccola: una ROM da sedici KB e una ULA. Qui
+// la sessione si accende davvero, perché la ROM sta in roms/zx.
+const zxEntry = (await import('../src/boot/systems.js')).SYSTEMS.find((s) => s.id === 'zx-spectrum');
+check('the boot menu offers the Spectrum', zxEntry?.available === true);
+
+const zxModule = await zxEntry.load();
+const zx = await zxModule.boot(new StubElement('main'), { onExit: () => {} });
+
+if (zx.machine === null) {
+  check('the Spectrum asks for its ROM when there is none', zx.overlay.children.length > 0);
+} else {
+  check('the canvas is 320 by 240: the picture plus its border', zx.canvas.width === 320 && zx.canvas.height === 240);
+
+  const zxScreen = () => zx.machine.text().join('\n');
+  for (let i = 0; i < 80 && !/Sinclair Research/.test(zxScreen()); i++) pump(4);
+  check('it boots to Sinclair BASIC', /1982 Sinclair Research Ltd/.test(zxScreen()), zx.machine.text()[23]);
+
+  // Un tasto del browser diventa due tasti di gomma: la virgola sullo
+  // Spectrum non esiste, si fa con il symbol shift.
+  sendKey('keydown', 'Comma', ',');
+  check('a key becomes the right pair of rubber keys', (zx.machine.ula.keys[7] & 0x02) !== 0 && (zx.machine.ula.keys[7] & 0x08) !== 0, `${zx.machine.ula.keys[7]}`);
+  sendKey('keyup', 'Comma', ',');
+  check('and lets them both go', zx.machine.ula.keys[7] === 0);
+
+  // Il joystick va chiesto, perché le frecce sono già tasti della macchina.
+  sendKey('keydown', 'ArrowRight', 'ArrowRight');
+  check('an arrow is a Spectrum key until a stick is asked for', (zx.machine.ula.keys[4] & 0x04) !== 0, `${zx.machine.ula.keys[4]}`);
+  sendKey('keyup', 'ArrowRight', 'ArrowRight');
+  zx.toggleJoystick();
+  sendKey('keydown', 'ArrowRight', 'ArrowRight');
+  check('and a Kempston stick once it is', zx.machine.ula.joystick === 1, `${zx.machine.ula.joystick}`);
+  sendKey('keyup', 'ArrowRight', 'ArrowRight');
+  zx.toggleJoystick();
+
+  // Una cassetta, costruita qui: un programma BASIC che stampa qualcosa e
+  // parte da solo. La sessione batte LOAD "" e preme play da sé.
+  const line = [0xf5, 0x22, ...[...'UI TEST'].map((c) => c.charCodeAt(0)), 0x22, 0x0d];
+  const program = [0x00, 0x0a, line.length & 0xff, line.length >> 8, ...line];
+  const header = [0x00, 0x00, ...[...'uitest    '].map((c) => c.charCodeAt(0)),
+    program.length & 0xff, program.length >> 8, 10, 0, program.length & 0xff, program.length >> 8];
+  const checksum = (bytes) => { let v = 0; for (const b of bytes) v ^= b; return [...bytes, v]; };
+  const blocks = [checksum(header), checksum([0xff, ...program])];
+  const tapBytes = [];
+  for (const block of blocks) tapBytes.push(block.length & 0xff, block.length >> 8, ...block);
+
+  await zx.acceptFiles([asFile('uitest.tap', new Uint8Array(tapBytes))]);
+  check('a dropped .tap goes into the recorder', zx.machine.tape !== null);
+  check('and the machine starts typing LOAD "" by itself', zx.pendingKeys.length > 0);
+
+  // Il nastro corre a ventiquattro quadri per volta: qui bastano pochi giri.
+  for (let i = 0; i < 1200 && !/UI TEST/.test(zxScreen()); i++) pump(1);
+  check('the tape loads and the program runs', /UI TEST/.test(zxScreen()), JSON.stringify(zx.machine.text().slice(0,3)));
+  check('and the recorder says so', zx.tapeLabel.textContent.includes('uitest'), zx.tapeLabel.textContent);
+
+  // Un'istantanea fatta e rimessa: la macchina torna dov'era.
+  const snapshot = (await import('../src/systems/zx/snapshot.js')).saveSNA(zx.machine);
+  const where = zx.machine.cpu.pc;
+  zx.resetMachine();
+  await zx.acceptFiles([asFile('ripresa.sna', snapshot)]);
+  check('a dropped .sna puts the machine back where it was', zx.machine.cpu.pc === where, zx.machine.cpu.pc.toString(16));
+}
+
+zx.dispose();
+check('the Spectrum shuts down cleanly', zx.running === false);
+
 // The about page boots through the same contract as a machine, so it can be
 // run here the same way — and what it claims about itself has to be true.
 const aboutEntry = (await import('../src/boot/systems.js')).SYSTEMS.find((system) => system.id === 'about');
@@ -686,7 +754,7 @@ check('it says which licence it is under', aboutText.includes('GNU General Publi
 check('it points at the public repository', aboutText.includes('github.com/danielecorte/alloldos'));
 check(
   'and it is laid out as credits and then one machine at a time',
-  ['Crediti', 'Commodore 64', 'Amiga 500', 'PC 286'].every((title) =>
+  ['Crediti', 'Commodore 64', 'Amiga 500', 'PC 286', 'ZX Spectrum 48K'].every((title) =>
     aboutText.includes(`about__section">${title}`),
   ),
 );

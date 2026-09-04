@@ -9,7 +9,7 @@
     "dev": "node scripts/serve.mjs",
     "fetch-roms": "node scripts/fetch-roms.mjs",
     "make-adf": "node scripts/makeadf.mjs",
-    "test": "node scripts/selftest.mjs && node scripts/keytest.mjs && node scripts/taptest.mjs && node scripts/amigatest.mjs && node scripts/uitest.mjs && node scripts/pctest.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/keytest.mjs && node scripts/taptest.mjs && node scripts/amigatest.mjs && node scripts/uitest.mjs && node scripts/pctest.mjs && node scripts/zxtest.mjs",
     "make-hdd": "node scripts/makehdd.mjs"
   },
   "repository": {

@@ -8,7 +8,7 @@
 import { mkdir, writeFile, access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { inflateRawSync } from 'node:zlib';
+import { inflateRawSync, gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 // The list of images, and where they come from, belongs to the emulator: the
@@ -18,15 +18,18 @@ import { ROM_SPECS, ROM_SOURCE_URL } from '../src/systems/c64/roms.js';
 import { AMIGA_FOREVER_URL, AROS_URL } from '../src/systems/amiga/roms.js';
 import { BIOS_SPEC, CARD_SPEC, GLABIOS_URL, XTIDE_URL } from '../src/systems/pc/roms.js';
 import { FREEDOS_SPEC, FREEDOS_URL } from '../src/systems/pc/media.js';
+import { ROM_SPEC as ZX_SPEC, FUSE_URL, OPENSE_URL, isSpectrumROM } from '../src/systems/zx/roms.js';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const DEST = join(ROOT, 'roms', 'c64');
 const AMIGA_DEST = join(ROOT, 'roms', 'amiga');
 const PC_DEST = join(ROOT, 'roms', 'pc');
+const ZX_DEST = join(ROOT, 'roms', 'zx');
 
 await mkdir(DEST, { recursive: true });
 await mkdir(AMIGA_DEST, { recursive: true });
 await mkdir(PC_DEST, { recursive: true });
+await mkdir(ZX_DEST, { recursive: true });
 
 for (const rom of ROM_SPECS) {
   const target = join(DEST, rom.file);
@@ -282,6 +285,73 @@ function extractFromZip(zip, name) {
       return new Uint8Array(bytes.buffer ?? bytes, bytes.byteOffset ?? 0, size);
     }
     entry += 46 + nameLength + extraLength + commentLength;
+  }
+  return null;
+}
+
+// ------------------------------------------------------------- lo ZX Spectrum
+
+// La ROM dello Spectrum è di Amstrad, che ne ha permesso la ridistribuzione
+// insieme agli emulatori: sta dentro il sorgente di Fuse, e da lì si prende.
+// È l'unica delle ROM proprietarie di questo progetto che si possa scaricare
+// onestamente in un colpo solo.
+
+const zxPath = join(ZX_DEST, ZX_SPEC.file);
+let haveZX = false;
+if (!process.argv.includes('--force')) {
+  try {
+    await access(zxPath);
+    haveZX = true;
+    console.log(`\n\u00b7 ${ZX_SPEC.file} already present, skipping (use --force to refetch)`);
+  } catch {
+    /* not there yet */
+  }
+}
+
+if (!haveZX) {
+  process.stdout.write(`\n\u2193 ${ZX_SPEC.file} \u2026 `);
+  try {
+    const res = await fetch(ZX_SPEC.source, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const archive = new Uint8Array(await res.arrayBuffer());
+    const rom = extractFromTarGz(archive, ZX_SPEC.member);
+    if (!rom) throw new Error(`${ZX_SPEC.member} not in the archive`);
+    if (!isSpectrumROM(rom)) throw new Error(`that is not a Spectrum ROM (${rom.length} bytes)`);
+    await writeFile(zxPath, rom);
+    console.log(`ok (${rom.length} bytes)`);
+    haveZX = true;
+  } catch (error) {
+    console.log(`FAILED (${error.message})`);
+    console.error(`  could not fetch ${ZX_SPEC.source}`);
+    process.exitCode = 1;
+  }
+}
+
+if (haveZX) {
+  console.log(`  ${FUSE_URL} \u2014 Fuse, che la distribuisce col permesso di Amstrad`);
+  console.log(`  ${OPENSE_URL} \u2014 OpenSE BASIC, il rimpiazzo libero, se la si preferisce`);
+}
+
+/**
+ * Tira fuori un file da un tar compresso. Un tar è la cosa più semplice che
+ * ci sia: un'intestazione da 512 byte con dentro il nome e la lunghezza in
+ * ottale, poi il file arrotondato a 512, poi la prossima intestazione.
+ *
+ * @param {Uint8Array} archive
+ * @param {string} name
+ * @returns {?Uint8Array}
+ */
+function extractFromTarGz(archive, name) {
+  const tar = new Uint8Array(gunzipSync(Buffer.from(archive)));
+  const decoder = new TextDecoder();
+  for (let at = 0; at + 512 <= tar.length; ) {
+    const header = tar.subarray(at, at + 512);
+    const found = decoder.decode(header.subarray(0, 100)).replace(/\0.*$/, '');
+    if (!found) break; // due blocchi vuoti: è la fine dell'archivio
+    const size = parseInt(decoder.decode(header.subarray(124, 136)).replace(/[^0-7]/g, ''), 8) || 0;
+    at += 512;
+    if (found === name) return tar.subarray(at, at + size);
+    at += Math.ceil(size / 512) * 512;
   }
   return null;
 }

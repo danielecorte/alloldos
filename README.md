@@ -6,7 +6,7 @@ Un raccoglitore di vecchi sistemi operativi emulati, che gira interamente dentro
 il browser. Si parte da una schermata di boot in stile GRUB: scegli la macchina
 con le frecce, premi Invio, e quella macchina si accende.
 
-Ce ne sono tre che partono davvero:
+Ce ne sono quattro che partono davvero:
 
 - il **Commodore 64**, emulato dal silicio in su — 6510, VIC-II, due CIA e il
   SID — e avviato sul KERNAL e sul BASIC V2 originali;
@@ -17,7 +17,10 @@ Ce ne sono tre che partono davvero:
 - il **PC 286** con scheda XT, il lettore di dischetti da 720 KB e un disco
   fisso da 20 MB. È l'unica macchina qui libera fino in fondo: il BIOS
   **GLaBIOS**, la ROM della scheda del disco **XTIDE**, e sopra **FreeDOS**,
-  che si accende dal dischetto o dal disco e arriva al suo prompt.
+  che si accende dal dischetto o dal disco e arriva al suo prompt;
+- lo **ZX Spectrum 48K**: uno Z80, una ULA e nient'altro. Si accende sul suo
+  BASIC, carica le cassette rifacendo il suono che c'era sul nastro, e la
+  macchina si batte da sola il `LOAD ""`.
 
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
 eseguono il loro firmware. Il firmware però non è incluso — è di chi lo ha
@@ -37,14 +40,16 @@ npm start            # http://localhost:8080
 ```
 
 Nessuna dipendenza, nessun passo di build: sono moduli ES serviti così come
-sono. `npm test` esegue sei prove a schermo spento: la prima accende il C64,
+sono. `npm test` esegue sette prove a schermo spento: la prima accende il C64,
 verifica che arrivi al prompt `READY.` e ci fa girare un programma; la seconda
 preme i tasti attraverso lo stesso codice che usa il browser e rilegge dallo
 schermo i caratteri arrivati davvero al BASIC; la terza registra un nastro e lo
 fa ricaricare al KERNAL; la quarta prende l'Amiga a pezzi (vedi sotto); la
 quinta monta un DOM finto e fa girare l'intera sessione del browser di tutte e
 tre le macchine, canvas e audio compresi; la sesta accende il PC, gli fa fare il
-POST con il BIOS vero e ci avvia FreeDOS dal dischetto e dal disco fisso.
+POST con il BIOS vero e ci avvia FreeDOS dal dischetto e dal disco fisso; la
+settima accende lo Spectrum, ci fa fare un conto in virgola mobile alla sua ROM
+e gli fa caricare una cassetta.
 
 Se in cartella c'è un `.tap`, l'ultima prova ci carica dentro anche quello e poi
 **ci gioca**: tiene premuta una direzione e guarda dove finisce il personaggio.
@@ -57,8 +62,8 @@ che il gioco fa di `$dc01`, il pixel sullo schermo.
 ## Le ROM
 
 Nessun firmware è incluso in questo progetto, e nessuno è coperto dalla sua
-licenza. Le due macchine se lo procurano in due modi diversi, perché in due modi
-diversi si può fare onestamente.
+licenza. Ogni macchina se lo procura a modo suo, perché in modi diversi si può
+fare onestamente.
 
 **Il C64** ha il suo in VICE, che lo distribuisce da decenni:
 `npm run fetch-roms` scarica `kernal.bin`, `basic.bin` e `chargen.bin` in
@@ -107,6 +112,16 @@ l'A600, l'A1200 e il CDTV tengono la loro.
 
 Poi `npm run make-hdd` prepara un disco fisso da venti mega con FreeDOS
 installato sopra. Sono tutti file liberi, e nessuno è nel repository.
+
+**Lo ZX Spectrum** sta in mezzo fra i due casi. La sua ROM è di Amstrad, che
+comprò Sinclair nel 1986 e che da allora ne permette la ridistribuzione insieme
+agli emulatori: quindi si scarica, ma non è software libero. Viaggia dentro il
+sorgente di [Fuse](https://fuse-emulator.sourceforge.net/), e
+`npm run fetch-roms` scompatta l'archivio e ne tira fuori i sedici KB di
+`roms/zx/48.rom`. Chi preferisce una ROM davvero libera può usare
+[OpenSE BASIC](https://spectrumcomputing.co.uk/entry/27510/ZX-Spectrum/OpenSE_BASIC),
+che è un rimpiazzo compatibile in GPL: si trascina sulla finestra al posto
+dell'altra.
 
 Quello che trascini resta nel tuo browser e non va da nessuna parte: alloldos
 non ha un server a cui mandarlo.
@@ -619,6 +634,90 @@ FreeDOS che parte dal disco fisso, ci scrive, e ritrova quello che ha scritto
 dopo un riavvio. I comandi vengono battuti sulla tastiera attraverso lo stesso
 codice che usa il browser.
 
+## ZX Spectrum 48K
+
+Uno Z80 a 3,5 MHz, sedici KB di ROM, quarantotto di RAM, e un solo chip fatto
+fare apposta: la **ULA**, che fa il video, la tastiera, l'altoparlante, il
+nastro e il bordo. Non c'è nient'altro dentro — nessun chip sonoro, nessuno
+sprite, nessun controllore di interruzioni — e tutto quello che lo Spectrum fa
+di bello lo fa il processore a mano, contando cicli.
+
+La macchina si accende sul suo BASIC, e da lì si scrive come si scriveva:
+
+```
+PRINT 355/113
+3.1415929
+```
+
+Quel numero non è un dettaglio da poco: lo calcola l'aritmetica in virgola
+mobile a cinque byte che sta nella ROM, ed è il pezzo di codice più esigente
+della macchina. Farlo tornare vuol dire aver preso bene mezzo processore.
+
+### Lo schermo
+
+256×192 pixel, e il modo in cui stanno in memoria è la cosa che tutti ricordano:
+i righi non sono uno sotto l'altro. L'indirizzo si compone dai bit del rigo
+rimescolati — due di terzo, tre di rigo dentro il carattere, tre di rigo di
+caratteri — perché così l'incremento del contatore video costava meno porte
+logiche. Il rigo 1 non sta sotto il rigo 0: sta 2048 byte più in là.
+
+I colori sono altrove e sono pochi: 768 byte di attributi, uno per ogni
+quadretto di otto per otto, con dentro due colori. Due colori per quadretto è la
+ragione di tutte le macchie che hanno i giochi dello Spectrum quando due cose si
+sovrappongono — il famoso *attribute clash*, che nessuno ha mai chiamato così
+mentre ci giocava.
+
+Il **bordo** invece cambia colore a metà quadro, e qui cambia davvero: i cambi
+vengono registrati con il ciclo in cui sono avvenuti, ed è per quello che si
+vedono le bande dei caricamenti.
+
+### La tastiera
+
+Quaranta tasti, e tutto il resto sono combinazioni. Il *symbol shift* (il tasto
+rosso) dà i simboli, il *caps shift* dà maiuscole, frecce e DELETE — ed è per
+questo che sulla tastiera dello Spectrum le frecce sono disegnate sui tasti 5,
+6, 7 e 8. Qui i tasti del browser diventano le combinazioni giuste da soli: la
+virgola è symbol shift più N, Backspace è caps shift più 0. Chi vuole i due
+tasti veri ha **Maiusc** e **Ctrl**.
+
+Ogni tasto ha cinque parole scritte sopra perché ogni comando del BASIC si batte
+con una pressione sola: `P` è `PRINT`, `J` è `LOAD`. Chi ha imparato a
+programmare su questa macchina non ha mai scritto per esteso la parola PRINT.
+
+### Le cassette (`.tap`)
+
+Un `.tap` non contiene il suono: contiene i byte. Quindi il suono viene
+**rifatto** con i tempi esatti della ROM — tono di guida a 2168 cicli, due
+impulsi di sincronismo, 855 cicli per uno zero e 1710 per un uno — e la ROM li
+va a rimisurare contando cicli, come faceva con la cassetta vera. Nessuno qui
+legge i byte del nastro: li legge lo Spectrum.
+
+Trascinare un `.tap` sulla finestra accende la macchina, le fa battere
+`LOAD ""` da sola e preme play. Mentre il nastro corre la macchina va a
+ventiquattro quadri per volta: quattro minuti di caricamento erano il prezzo del
+1982, ma non c'è ragione di rifarli pagare.
+
+Ci sono anche le istantanee **`.sna`**, che non sono un programma ma una
+macchina fotografata a metà lavoro: si rimette tutto dov'era e si riparte
+dall'istruzione dopo. **Salva .sna** fa il contrario.
+
+### Il suono e il joystick
+
+L'altoparlante è **un bit**. Il suono qui è la storia di quel bit dentro il
+quadro — presa così com'è, mediata sull'intervallo di ogni campione e mandata
+alla scheda audio — e quindi funziona anche per chi quel bit lo muoveva a mano
+per tirarci fuori più voci o un campionamento.
+
+Il **joystick Kempston** va chiesto con il pulsante, perché i tasti che vuole
+sono già tasti della macchina.
+
+### Cosa manca
+
+La **contesa della memoria** (sullo Spectrum la ULA e il processore si
+contendono i primi 16 KB, e il processore aspetta), i `.tzx` e con loro i
+caricatori turbo, il 128K con il suo chip sonoro AY, e la registrazione su
+nastro: qui le cassette si leggono e non si scrivono.
+
 ## Schermo intero
 
 Il pulsante **Schermo intero** nella barra — e sul C64 anche un doppio clic
@@ -689,9 +788,19 @@ src/systems/pc/       il PC 286
   media.js            i dischi: dove trovarli e come riconoscerli
   roms.js             dove trovare GLaBIOS e la ROM della scheda del disco
   index.js            la sessione: canvas, audio, dischi, tastiera, comandi
+src/systems/zx/       lo ZX Spectrum 48K
+  cpuz80.js           lo Z80: prefissi, indici, blocchi, e le non documentate
+  machine.js          16 KB di ROM, 48 di RAM, e un quadro da 69888 cicli
+  ula.js              video, tastiera, bordo, altoparlante: un chip solo
+  tape.js             il .tap rifatto in impulsi, con i tempi della ROM
+  snapshot.js         le istantanee .sna, lette e scritte
+  keyboard.js         dai tasti del browser a quaranta tasti di gomma
+  audio.js            il bit dell'altoparlante trasformato in campioni
+  roms.js             dove trovare i sedici KB della ROM
+  index.js            la sessione: canvas, audio, cassette, tastiera, comandi
 ```
 
-Le tre macchine sono costruite allo stesso modo: la CPU esegue i cicli di una
+Le macchine sono costruite allo stesso modo: la CPU esegue i cicli di una
 riga, poi la riga viene disegnata. Non è esatto al singolo ciclo, ma sul C64 le
 badline, i contatori di riga e gli interrupt di raster ci sono — che è quello
 che serve agli split di schermo e allo scrolling — e sull'Amiga la riga viene
@@ -714,8 +823,8 @@ export async function boot(container, { onExit }) {
 Poi si aggiunge una voce a `src/boot/systems.js` con la descrizione e un
 `load: () => import(...)`. Il modulo viene scaricato solo quando quella voce
 viene davvero avviata. Le voci senza `load` compaiono nel menu ma non partono,
-come una partizione che GRUB elenca e non sa leggere — ce ne sono già tre in
-attesa di qualcuno che le scriva.
+come una partizione che GRUB elenca e non sa leggere — ce n'è già una in
+attesa di qualcuno che la scriva.
 
 Non serve che sia una macchina: la voce **About** in fondo al menu è una pagina
 in stile C64 con crediti, licenza e una sezione per macchina, e si avvia

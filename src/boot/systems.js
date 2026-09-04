@@ -33,8 +33,9 @@ export const SYSTEMS = [
     year: 1982,
     cpu: 'Zilog Z80A @ 3,5 MHz',
     memory: '48 KB RAM, 16 KB ROM',
-    notes: 'ULA, beeper a un bit, tastiera a gomma.',
-    available: false,
+    notes: 'Una ULA, un beeper a un bit e la tastiera di gomma.',
+    available: true,
+    load: () => import('../systems/zx/index.js'),
   },
   {
     id: 'apple2',
