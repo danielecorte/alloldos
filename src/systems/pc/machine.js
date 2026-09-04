@@ -31,7 +31,9 @@ import { PIT8253, PIT_CLOCK } from './pit.js';
 import { PPI8255, VIDEO_CGA_80 } from './ppi.js';
 import { DMA8237 } from './dma.js';
 import { CGA, DOT_CLOCK, CGA_BASE, CGA_SIZE } from './cga.js';
-import { XTKeyboard } from './keyboard.js';
+import { FDC765 } from './fdc.js';
+import { XTCF, XTCF_BASE, XTCF_SIZE, HardDisk } from './ata.js';
+import { XTKeyboard, KB_RESET_MS } from './keyboard.js';
 import { BIOS_BASE } from './roms.js';
 
 /** Il processore, in Hz. Un 286 da otto: veloce per il 1988, non assurdo. */
@@ -39,6 +41,14 @@ export const CPU_CLOCK = 8000000;
 
 /** La memoria convenzionale: 640 KB, e non uno di più. */
 export const RAM_SIZE = 0xa0000;
+
+/**
+ * La finestra delle schede: 192 KB di indirizzi fra la memoria video e il
+ * BIOS, dove ogni scheda che si porta dietro il suo firmware se lo affaccia.
+ * Chi non c'è lascia il bus alto, ed è per quello che si riempie di uno.
+ */
+export const CARD_ROM_BASE = 0xc0000;
+export const CARD_ROM_SIZE = BIOS_BASE - CARD_ROM_BASE;
 
 /** Quanti cicli passano al massimo fra due allineamenti dei chip. */
 const SYNC_INTERVAL = 64;
@@ -51,11 +61,22 @@ export class PC {
    * @param {Uint8Array} bios gli otto KB del BIOS, mappati in cima
    * @param {object} [options]
    * @param {number} [options.video] il tipo di scheda video negli interruttori
+   * @param {HardDisk|null} [options.disk] il disco montato sulla scheda XT-CF
+   * @param {{base:number,bytes:Uint8Array}[]} [options.cards] le ROM delle schede
    */
   constructor(bios, options = {}) {
     this.bios = bios;
+    /** Il tempo, in cicli del processore: c'è da prima dei chip che lo leggono. */
+    this.cycles = 0;
     this.ram = new Uint8Array(RAM_SIZE);
     this.cga = new CGA();
+    // Il disegno delle lettere se lo fa prestare dal BIOS: sulla scheda vera
+    // c'è una ROM apposta, e non è distribuibile più di quanto lo sia il resto.
+    this.cga.useFontFrom(bios);
+    this.cardROM = new Uint8Array(CARD_ROM_SIZE).fill(0xff);
+    for (const card of options.cards ?? []) {
+      this.cardROM.set(card.bytes, card.base - CARD_ROM_BASE);
+    }
 
     this.pic = new PIC8259();
     this.dma = new DMA8237({
@@ -68,7 +89,14 @@ export class PC {
     });
     this.keyboard = new XTKeyboard({
       onInterrupt: (active) => this.pic.setLine(1, active),
+      now: () => this.cycles,
+      resetHold: Math.round((CPU_CLOCK * KB_RESET_MS) / 1000),
     });
+    this.fdc = new FDC765({
+      dma: this.dma,
+      onInterrupt: () => this.pic.pulse(6),
+    });
+    this.hdc = new XTCF(options.disk ?? null);
     this.ppi = new PPI8255(
       {
         readKeyboard: () => this.keyboard.read(),
@@ -84,21 +112,25 @@ export class PC {
   }
 
   reset() {
+    // Il tempo si azzera per primo, perché i chip che si stanno per riavviare
+    // guardano l'orologio mentre lo fanno.
+    this.cycles = 0;
+    this.synced = 0;
+    this.nextSync = SYNC_INTERVAL;
+    this.pitRemainder = 0;
+    this.videoRemainder = 0;
+
     this.ram.fill(0);
     this.cga.reset();
     this.pic.reset();
     this.pit.reset();
     this.ppi.reset();
     this.dma.reset();
+    this.fdc.reset();
+    this.hdc.reset();
     this.keyboard.reset();
     this.cpu.reset();
 
-    /** Il tempo, in cicli del processore da quando è stata accesa. */
-    this.cycles = 0;
-    this.synced = 0;
-    this.nextSync = SYNC_INTERVAL;
-    this.pitRemainder = 0;
-    this.videoRemainder = 0;
     /** Se le interruzioni non mascherabili passano: il BIOS le apre a metà POST. */
     this.nmiEnabled = false;
     /** L'altoparlante: il cancello del contatore 2 e il filo dei dati. */
@@ -117,6 +149,7 @@ export class PC {
       return this.cga.readMemory(addr - CGA_BASE);
     }
     if (addr >= BIOS_BASE) return this.bios[addr - BIOS_BASE];
+    if (addr >= CARD_ROM_BASE) return this.cardROM[addr - CARD_ROM_BASE];
     // Sopra i 640 KB e sotto il BIOS non c'è niente, e un bus senza nessuno
     // sopra legge tutti uno: è così che il BIOS scopre dove finisce la memoria.
     return 0xff;
@@ -144,6 +177,8 @@ export class PC {
     if (port >= 0x40 && port < 0x50) return this.pit.read(port);
     if (port >= 0x60 && port < 0x70) return this.ppi.read(port);
     if (port >= 0x80 && port < 0x90) return this.dma.readPage(port);
+    if (port >= 0x3f0 && port < 0x3f8) return this.fdc.read(port);
+    if (port >= XTCF_BASE && port < XTCF_BASE + XTCF_SIZE) return this.hdc.read(port);
     if (port >= 0x3d0 && port < 0x3e0) return this.cga.read(port);
     // Nessuno risponde: il bus resta alto, e chi cercava una scheda capisce
     // che non c'è. È così che il BIOS conta le porte seriali che non hai.
@@ -164,6 +199,8 @@ export class PC {
       this.nmiEnabled = (value & 0x80) !== 0;
       return;
     }
+    if (port >= 0x3f0 && port < 0x3f8) return this.fdc.write(port, value);
+    if (port >= XTCF_BASE && port < XTCF_BASE + XTCF_SIZE) return this.hdc.write(port, value);
     if (port >= 0x3d0 && port < 0x3e0) return this.cga.write(port, value);
     return undefined;
   }

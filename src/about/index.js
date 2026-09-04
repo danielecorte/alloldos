@@ -11,7 +11,13 @@
 
 import { ROM_SPECS, romDownloadLink } from '../systems/c64/roms.js';
 import { AMIGA_FOREVER_URL, AROS_URL } from '../systems/amiga/roms.js';
-import { GLABIOS_URL } from '../systems/pc/roms.js';
+import {
+  GLABIOS_URL,
+  GLABIOS_VERSION,
+  GLABIOS_SOURCE_URL,
+  XTIDE_SOURCE_URL,
+} from '../systems/pc/roms.js';
+import { FREEDOS_URL } from '../systems/pc/media.js';
 
 const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
@@ -44,6 +50,7 @@ class AboutPage {
       ${this.credits()}
       ${this.commodore64()}
       ${this.amiga500()}
+      ${this.pc286()}
 
       <pre class="about__ready">READY.
 <span class="about__cursor">&nbsp;</span></pre>
@@ -83,8 +90,9 @@ class AboutPage {
       patto che chi lo riceve da te si ritrovi con le stesse libertà. Il testo
       completo è nel file <code>LICENSE</code> del repository.</p>
       <p class="about__note">Le ROM delle macchine emulate non sono incluse in
-      questo progetto e non sono coperte da questa licenza: restano di
-      Commodore/Cloanto, che ne è la proprietaria.</p>
+      questo progetto e non sono coperte da questa licenza: quelle del C64 e
+      dell'Amiga restano di Commodore/Cloanto, che ne è la proprietaria, e
+      quelle del PC sono software libero di chi le ha scritte.</p>
 
       <h3 class="about__heading">Sorgenti</h3>
       <p>Il codice è pubblico:<br>
@@ -262,19 +270,47 @@ class AboutPage {
         <li>L'hard disk, e le macchine NTSC: questa è PAL e basta.</li>
       </ul>
 
+    `;
+  }
+
+  // --------------------------------------------------------------- pc 286
+
+  pc286() {
+    return `
       <h2 class="about__section">PC 286</h2>
-      <p>La macchina in costruzione, e l'unica qui il cui firmware è software
-      libero. Non è un AT: è una <b>scheda XT con sopra un 286</b> — una
-      macchina che nel 1988 si poteva davvero comprare, e che qui è una scelta
-      obbligata. <a class="about__link" href="${GLABIOS_URL}" target="_blank" rel="noopener noreferrer">GLaBIOS</a>
+      <p>L'unica macchina qui il cui firmware è <b>software libero</b>, dal
+      BIOS al sistema operativo. Non è un AT: è una <b>scheda XT con sopra un
+      286</b> — una macchina che nel 1988 si poteva davvero comprare, e che qui
+      è una scelta obbligata.
+      <a class="about__link" href="${GLABIOS_URL}" target="_blank" rel="noopener noreferrer">GLaBIOS</a>
       è l'unico BIOS per PC libero e completo che esista, ed è un BIOS XT; un
       BIOS AT libero non c'è. Il 286 è il set di istruzioni, che è quello che il
       software guarda; la scheda intorno è quella che il BIOS sa avviare.</p>
-      <p>Dal menu non si accende ancora, ma il BIOS ci gira sopra e arriva in
-      fondo al suo POST: conta i 640 KB uno per uno, riconosce la scheda video
-      dagli interruttori a slitta, controlla che il DMA stia rinfrescando la
-      memoria, e alla fine chiede un tasto. L'unico guaio che trova è il
-      controllore del disco, che è il pezzo dopo.</p>
+      <p>Ci gira sopra <b>FreeDOS</b>, che sta al DOS come AROS sta alla
+      Kickstart: scritto da zero, libero, e capace di far girare le stesse cose.
+      Si accende dal dischetto o dal <b>disco fisso da 20 MB</b>, e arriva al
+      suo prompt.</p>
+
+      <h3 class="about__heading">Dove trovare le ROM</h3>
+      <p>Qui, per una volta, si scarica tutto — e sono tre pezzi distinti,
+      perché nel 1988 erano tre pezzi distinti:</p>
+      <ul class="about__list">
+        <li>il <b>BIOS di sistema</b>, otto KB di
+        <a class="about__link" href="${GLABIOS_SOURCE_URL}" target="_blank" rel="noopener noreferrer">GLaBIOS ${GLABIOS_VERSION}</a>
+        (GPLv3), che è quello che il 286 esegue all'accensione;</li>
+        <li>la <b>ROM della scheda del disco fisso</b>, la
+        <a class="about__link" href="${XTIDE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>
+        (GPLv2): un BIOS XT non sa cosa sia un disco fisso, e chi lo sa è la
+        scheda, che se lo porta dietro in dodici KB a C800;</li>
+        <li>un <b>dischetto avviabile</b>: quello di
+        <a class="about__link" href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS 1.3</a>
+        da 720 KB, che è l'unica misura che un controllore XT sappia leggere.</li>
+      </ul>
+      <p class="about__note">Si trascinano sulla finestra come le altre. Chi ha
+      clonato il repository ha <code>npm run fetch-roms</code>, e in più
+      <code>npm run make-hdd</code>: un disco da venti mega con FreeDOS
+      installato sopra — installato <i>dalla macchina</i>, con FDISK e FORMAT
+      veri battuti sulla tastiera come li batterebbe una persona.</p>
 
       <h3 class="about__heading">Cosa è stato fatto</h3>
       <ul class="about__list">
@@ -289,20 +325,50 @@ class AboutPage {
         il tic a 18,2 Hz, il rinfresco della memoria e l'altoparlante — e
         l'<b>8255</b> con la tastiera e gli interruttori a slitta.</li>
         <li>L'<b>8237</b> del DMA, con i registri di pagina e la giunzione a
-        64 KB che non riporta, e il conteggio del rinfresco che gira davvero.</li>
-        <li>La <b>tastiera XT</b> con il suo filo di clock, e la metà testo
-        della scheda video — memoria a B800 e il registro di stato che segue il
-        pennello, che è quello che il BIOS aspetta prima di ogni carattere.</li>
+        64 KB che non riporta, il conteggio del rinfresco, e il filo TC che dice
+        al disco quando il blocco è finito.</li>
+        <li>Il <b>NEC 765</b> e un lettore da tre pollici e mezzo: comandi a
+        pacchetti, ricalibrazione e ricerca, lettura, scrittura e formattazione
+        di una traccia, con i byte che passano dal DMA e non dal processore.
+        Quello che il DOS scrive sul dischetto torna indietro come file.</li>
+        <li>Il <b>disco fisso</b>: una scheda <b>XT-CF</b> a 300h con venti mega
+        di ATA sopra — la geometria di un ST-225 — che parla a otto bit perché
+        il bus è a otto bit, e la ROM della scheda che il POST trova da sola
+        passando in rassegna la finestra a passi di due KB.</li>
+        <li>La <b>tastiera XT</b> con il suo filo di clock, dove tenerlo a terra
+        un attimo vuol dire "ho preso il byte" e tenerlo venti millesimi vuol
+        dire "riavviati" — due cose che il chip non deve confondere.</li>
+        <li>La <b>CGA</b>: il testo a ottanta colonne con il disegno delle
+        lettere preso dal BIOS, il cursore che lampeggia, e le due grafiche —
+        320×200 a quattro colori e 640×200 in bianco e nero, con i righi pari e
+        dispari in due metà separate di memoria.</li>
+        <li>L'<b>altoparlante</b>: un bit e un contatore, che è tutto il suono
+        che il PC ha avuto per dieci anni.</li>
+      </ul>
+
+      <h3 class="about__heading">La cosa che solo un BIOS vero ha trovato</h3>
+      <p>Tre bug che nessuna prova sintetica avrebbe visto:</p>
+      <ul class="about__list">
+        <li>Un <b>caricamento a un byte solo in un contatore del PIT azzera
+        l'altra metà</b>. Senza, il divisore del rinfresco si teneva una metà
+        alta vecchia e girava mille volte più lento.</li>
+        <li>Il <b>rinvio dopo una STI deve scadere mentre il processore è
+        fermo</b>, o <code>sti</code> seguito da <code>hlt</code> non si sveglia
+        più — ed è esattamente come il BIOS aspetta il disco.</li>
+        <li>La <b>tastiera si riavviava a ogni tasto</b>, perché confondeva i
+        due usi del filo di clock. Siccome AAh è anche il codice con cui si
+        lascia andare lo shift sinistro, chi scriveva i due punti otteneva un
+        punto e virgola.</li>
       </ul>
 
       <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li>Il <b>controllore del disco</b>, che è quello che porterà su
-        <b>FreeDOS</b>.</li>
-        <li>La <b>VGA</b> con il suo BIOS di scheda, e quindi il video sullo
-        schermo: per ora il testo si legge solo dalle prove.</li>
-        <li>Il <b>suono</b>, e il modo protetto — che il DOS non usa, e che
-        Windows 3 e i DOS extender sono un altro progetto.</li>
+        <li>La <b>VGA</b> con il suo BIOS di scheda: per ora la scheda video è
+        una CGA, che è quello che il BIOS si aspetta dagli interruttori.</li>
+        <li>Il suono <b>campionato</b> dall'altoparlante — quello che pilota il
+        bit a mano invece di lasciar fare al contatore.</li>
+        <li>Il <b>modo protetto</b>, che il DOS non usa: Windows 3 e i DOS
+        extender sono un altro progetto.</li>
       </ul>
     `;
   }

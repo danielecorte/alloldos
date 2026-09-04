@@ -11,6 +11,10 @@
   --c64-light-blue: #6c5eb5;
   --amiga-blue: #0055aa;
   --amiga-orange: #ff8800;
+  /* Il verde del fosforo e l'ambra delle spie: i due colori di un PC del 1988
+     che non fosse acceso su un monitor a colori. */
+  --pc-green: #33ff66;
+  --pc-amber: #ffb000;
 }
 
 * {
@@ -739,15 +743,214 @@ body[data-screen='amiga'] {
   font-size: 0.75rem;
 }
 
+/* ------------------------------------------------------------------ il PC */
+
+.pc {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.pc__stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.5rem, 2vw, 2rem);
+}
+
+.pc__canvas {
+  /* 640 per 200: i punti della CGA sono alti il doppio di quanto sono larghi,
+     e il monitor li rimetteva in un 4:3 come tutti gli altri. */
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #000;
+  box-shadow: 0 0 0 2px #0b0b0b, 0 1.5rem 4rem rgb(0 0 0 / 60%);
+}
+
+.pc--dropping .pc__canvas {
+  box-shadow: 0 0 0 3px var(--pc-amber), 0 1.5rem 4rem rgb(0 0 0 / 60%);
+}
+
+.pc__controls {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.pc--fullscreen {
+  background: #111;
+  position: relative;
+}
+
+.pc--fullscreen .pc__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  transform: translateY(100%);
+  transition: transform 160ms ease-out;
+  box-shadow: 0 -1rem 2.5rem rgb(0 0 0 / 55%);
+}
+
+.pc--fullscreen.pc--controls-shown .pc__controls {
+  transform: none;
+}
+
+.pc--fullscreen .pc__stage {
+  padding: 0;
+}
+
+.pc--fullscreen .pc__canvas {
+  box-shadow: none;
+}
+
+.pc__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.pc__overlay:empty {
+  display: none;
+}
+
+.pc__panel {
+  pointer-events: auto;
+  max-width: min(46rem, 90%);
+  max-height: 90%;
+  overflow-y: auto;
+  padding: 1.5rem 2rem;
+  background: #101010;
+  color: #c8c8c8;
+  border: 2px solid #2b2b2b;
+  line-height: 1.6;
+  font-size: 0.9rem;
+}
+
+.pc__panel h2 {
+  margin-top: 0;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: normal;
+  letter-spacing: 0.05em;
+}
+
+.pc__panel ul {
+  margin: 0 0 0.9rem;
+  padding-left: 1.4rem;
+}
+
+.pc__panel code,
+.pc__panel a {
+  color: var(--pc-amber);
+}
+
+.pc__panel-note {
+  color: #8a8a8a;
+  font-size: 0.85em;
+}
+
+.pc__bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem clamp(0.5rem, 2vw, 2rem);
+  background: #0a0a0a;
+  border-top: 1px solid #262626;
+  font-size: 0.8rem;
+}
+
+.pc__button {
+  font: inherit;
+  color: #c8c8c8;
+  background: transparent;
+  border: 1px solid #333;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+}
+
+.pc__button:hover {
+  background: #1e1e1e;
+  color: #fff;
+}
+
+.pc__status {
+  margin-left: auto;
+  color: #8a8a8a;
+  text-align: right;
+}
+
+.pc__file,
+.pc__download {
+  display: none;
+}
+
+/* Le due unità, ognuna con la sua spia: su un PC vero sono la sola cosa che
+   dica se sta succedendo qualcosa. */
+.pc__drives {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.pc__drive {
+  flex: 1 1 14rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem clamp(0.5rem, 2vw, 2rem);
+  background: #070707;
+  border-top: 1px solid #262626;
+  font-size: 0.8rem;
+}
+
+.pc__light {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #2a1a00;
+  box-shadow: inset 0 0 0 1px #000;
+}
+
+.pc__light--on {
+  background: var(--pc-amber);
+  box-shadow: 0 0 0.5rem var(--pc-amber);
+}
+
+.pc__drive-name {
+  color: #c8c8c8;
+}
+
+.pc__drive-label {
+  color: var(--pc-green);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 40rem) {
   .c64__canvas,
-  .amiga__canvas {
+  .amiga__canvas,
+  .pc__canvas {
     width: 100%;
     height: auto;
   }
 
   .c64__status,
-  .amiga__status {
+  .amiga__status,
+  .pc__status {
     margin-left: 0;
     width: 100%;
     text-align: left;
@@ -757,7 +960,8 @@ body[data-screen='amiga'] {
 /* Anyone who asked not to be shown animations is not shown this one either. */
 @media (prefers-reduced-motion: reduce) {
   .c64--fullscreen .c64__controls,
-  .amiga--fullscreen .amiga__controls {
+  .amiga--fullscreen .amiga__controls,
+  .pc--fullscreen .pc__controls {
     transition: none;
   }
 }

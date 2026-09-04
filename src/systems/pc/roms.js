@@ -12,6 +12,7 @@
 // scarica dalla pagina delle versioni del progetto.
 
 const STORAGE_KEY = 'alloldos.rom.pc.bios';
+const CARD_STORAGE_KEY = 'alloldos.rom.pc.xtide';
 
 /** Il progetto, per chi arriva sulla pagina senza la ROM. */
 export const GLABIOS_URL = 'https://glabios.org/';
@@ -32,6 +33,37 @@ export const BIOS_SPEC = { file: 'glabios.rom', size: 8192, label: 'GLaBIOS', so
 /** Dove finisce mappata: gli ultimi otto KB del mega di memoria reale. */
 export const BIOS_BASE = 0xfe000;
 
+// ------------------------------------------------------ la ROM della scheda
+//
+// Il BIOS di sistema non sa niente di dischi fissi — nessun BIOS XT lo sa, il
+// disco fisso è arrivato dopo — e quello che ne sa se lo porta dietro la
+// scheda. La XTIDE Universal BIOS è la ROM libera che fanno girare tutte le
+// schede IDE per macchine vecchie: dodici KB che si affacciano a C800 e che
+// il POST trova da solo mentre passa in rassegna la finestra delle schede.
+
+/** Il progetto, per i crediti e per chi la vuole andare a prendere. */
+export const XTIDE_URL = 'https://www.xtideuniversalbios.org/';
+
+/**
+ * Il build XT, versione grande: quello con il menu di avvio, che è la parte
+ * che serve davvero — il BIOS di sistema sa avviare solo dal floppy, e senza
+ * quel menu il disco fisso sarebbe un posto dove tenere le cose ma non da cui
+ * partire.
+ */
+export const XTIDE_REVISION = 'r638';
+export const XTIDE_SOURCE_URL =
+  `https://www.xtideuniversalbios.org/binaries/${XTIDE_REVISION}/ide_xtl.bin`;
+
+export const CARD_SPEC = {
+  file: 'xtide.bin',
+  size: 10244,
+  label: 'XTIDE Universal BIOS',
+  source: XTIDE_SOURCE_URL,
+};
+
+/** Dove la scheda si affaccia: la prima finestra libera dopo le schede video. */
+export const CARD_ROM_BASE = 0xc8000;
+
 export class MissingBIOSError extends Error {
   constructor() {
     super('missing PC BIOS ROM');
@@ -40,31 +72,58 @@ export class MissingBIOSError extends Error {
 }
 
 /**
+ * Una ROM di scheda come la scriverebbe il programmatore di EEPROM.
+ *
+ * L'immagine pubblicata è solo il codice: dice nel terzo byte quanto è grande
+ * la memoria su cui va scritta, ma non ci arriva, e non ha la somma di
+ * controllo in fondo. Chi la scrive davvero su una scheda la allunga fino a
+ * quella misura e chiude i conti — il BIOS di sistema somma tutti i byte e
+ * salta dentro solo se il totale fa zero. Questo fa la stessa cosa: nessun
+ * byte del codice viene toccato, si riempie il vuoto e si firma la fine.
+ *
+ * @param {Uint8Array} raw
+ * @returns {Uint8Array}
+ */
+export function padOptionROM(raw) {
+  const size = (raw[2] ?? 0) * 512;
+  if (size < raw.length) return raw;
+  const rom = new Uint8Array(size);
+  rom.set(raw);
+  let sum = 0;
+  for (let i = 0; i < size - 1; i++) sum = (sum + rom[i]) & 0xff;
+  rom[size - 1] = (256 - sum) & 0xff;
+  return rom;
+}
+
+/** Una ROM di scheda si riconosce dai due byte con cui si presenta. */
+export function isOptionROM(bytes) {
+  return bytes.length > 3 && bytes[0] === 0x55 && bytes[1] === 0xaa && bytes[2] > 0;
+}
+
+/**
  * Dove starebbe la ROM se qualcuno ce l'avesse messa. Calcolato da questo
  * modulo e non dalla radice del sito, perché GitHub Pages serve alloldos da una
  * sottocartella e l'unica fetch che conta deve ritrovare la strada di casa.
  */
-function romURL() {
-  return new URL(`../../../roms/pc/${BIOS_SPEC.file}`, import.meta.url);
+function romURL(file = BIOS_SPEC.file) {
+  return new URL(`../../../roms/pc/${file}`, import.meta.url);
 }
 
-async function fetchROM() {
+async function fetchROM(file = BIOS_SPEC.file) {
   try {
-    const response = await fetch(romURL(), { cache: 'force-cache' });
+    const response = await fetch(romURL(file), { cache: 'force-cache' });
     if (!response.ok) return null;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return bytes.length === BIOS_SPEC.size ? bytes : null;
+    return new Uint8Array(await response.arrayBuffer());
   } catch {
     return null;
   }
 }
 
-function readStoredROM() {
-  const encoded = localStorage.getItem(STORAGE_KEY);
+function readStoredROM(key = STORAGE_KEY) {
+  const encoded = localStorage.getItem(key);
   if (!encoded) return null;
   try {
     const binary = atob(encoded);
-    if (binary.length !== BIOS_SPEC.size) return null;
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
@@ -79,12 +138,15 @@ function readStoredROM() {
  * codice che il processore esegue, e cominciano sempre con un salto lontano.
  */
 export function acceptROMFile(bytes) {
-  if (bytes.length !== BIOS_SPEC.size) return false;
-  if (bytes[bytes.length - 16] !== 0xea) return false;
+  const card = isOptionROM(bytes);
+  if (!card) {
+    if (bytes.length !== BIOS_SPEC.size) return false;
+    if (bytes[bytes.length - 16] !== 0xea) return false;
+  }
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  localStorage.setItem(STORAGE_KEY, btoa(binary));
-  return true;
+  localStorage.setItem(card ? CARD_STORAGE_KEY : STORAGE_KEY, btoa(binary));
+  return card ? 'card' : 'bios';
 }
 
 /**
@@ -92,7 +154,22 @@ export function acceptROMFile(bytes) {
  * @throws {MissingBIOSError}
  */
 export async function loadBIOS() {
-  const bytes = (await fetchROM()) ?? readStoredROM();
-  if (!bytes) throw new MissingBIOSError();
+  const fetched = await fetchROM();
+  const bytes = (fetched?.length === BIOS_SPEC.size ? fetched : null) ?? readStoredROM();
+  if (!bytes || bytes.length !== BIOS_SPEC.size) throw new MissingBIOSError();
   return bytes;
+}
+
+/**
+ * La ROM della scheda del disco, se c'è. Senza, la macchina si accende lo
+ * stesso e ha soltanto il floppy: è esattamente quello che succedeva a chi
+ * comprava il computer senza il disco fisso.
+ *
+ * @returns {Promise<?Uint8Array>} la ROM già pronta da mappare
+ */
+export async function loadCardROM() {
+  const fetched = await fetchROM(CARD_SPEC.file);
+  const bytes = (fetched && isOptionROM(fetched) ? fetched : null) ?? readStoredROM(CARD_STORAGE_KEY);
+  if (!bytes || !isOptionROM(bytes)) return null;
+  return padOptionROM(bytes);
 }

@@ -20,13 +20,33 @@
 /** La risposta della tastiera al reset: "sto bene". */
 export const KB_SELF_TEST_OK = 0xaa;
 
+/**
+ * Quanto deve restare a terra il clock perché sia un reset e non un "preso".
+ *
+ * È la differenza fra le due cose, e non è una finezza: la scheda madre
+ * abbassa il clock per un attimo dopo ogni tasto, per far stare zitta la
+ * tastiera mentre legge il byte, e lo abbassa per venti millesimi di secondo
+ * quando la vuole riavviare. Una tastiera che confondesse le due si
+ * riavvierebbe a ogni tasto — e siccome AAh è anche il codice con cui si
+ * lascia andare lo shift sinistro, chi scrivesse i due punti otterrebbe un
+ * punto e virgola.
+ */
+export const KB_RESET_MS = 20;
+
 export class XTKeyboard {
   /**
    * @param {object} hooks
    * @param {(active:boolean)=>void} hooks.onInterrupt la IRQ 1 verso il PIC
+   * @param {()=>number} [hooks.now] che ora è, in cicli del processore
+   * @param {number} [hooks.resetHold] quanti cicli sono venti millesimi
    */
   constructor(hooks = {}) {
     this.hooks = hooks;
+    this.now = hooks.now ?? (() => 0);
+    // Senza un orologio non c'è modo di distinguere le due cose, e allora ogni
+    // rilascio del clock vale come un riavvio: è quello che serve a chi prova
+    // il chip da solo, fuori dalla macchina.
+    this.resetHold = hooks.resetHold ?? 0;
     this.reset();
   }
 
@@ -37,6 +57,8 @@ export class XTKeyboard {
     this.queue = [];
     /** Il clock a terra: la tastiera è zitta. */
     this.held = true;
+    /** Da quando: se da abbastanza, tornare liberi vuol dire ripartire. */
+    this.heldAt = this.now();
     /** Il bit 7 della porta B alto: il registro è tenuto azzerato. */
     this.cleared = true;
     this.irq = false;
@@ -44,9 +66,11 @@ export class XTKeyboard {
 
   /** I due fili come li mette la porta B della PPI. */
   setLines(held, cleared) {
-    if (this.held && !held) {
-      // Il clock torna libero dopo essere stato a terra: la tastiera si è
-      // riavviata, e la prima cosa che dice è che il suo test è andato bene.
+    if (!this.held && held) this.heldAt = this.now();
+    if (this.held && !held && this.now() - this.heldAt >= this.resetHold) {
+      // Il clock è tornato libero dopo essere stato a terra abbastanza a
+      // lungo: la tastiera si è riavviata, e la prima cosa che dice è che il
+      // suo test è andato bene.
       this.queue.push(KB_SELF_TEST_OK);
     }
     this.held = held;

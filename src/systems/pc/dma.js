@@ -31,7 +31,15 @@ export class DMA8237 {
     this.bus = bus;
     this.channels = [];
     for (let i = 0; i < 4; i++) {
-      this.channels.push({ address: 0, count: 0, baseAddress: 0, baseCount: 0, mode: 0, page: 0 });
+      this.channels.push({
+        address: 0,
+        count: 0,
+        baseAddress: 0,
+        baseCount: 0,
+        mode: 0,
+        page: 0,
+        terminal: false,
+      });
     }
     this.reset();
   }
@@ -44,6 +52,7 @@ export class DMA8237 {
       channel.baseCount = 0;
       channel.mode = 0;
       channel.page = 0;
+      channel.terminal = false;
     }
     this.command = 0;
     /** I bit di fine conteggio, che si azzerano appena qualcuno li legge. */
@@ -96,6 +105,7 @@ export class DMA8237 {
       if (counting) {
         channel.count = merged;
         channel.baseCount = merged;
+        channel.terminal = false; // un conteggio nuovo è un blocco nuovo
       } else {
         channel.address = merged;
         channel.baseAddress = merged;
@@ -193,12 +203,17 @@ export class DMA8237 {
     if (this.mask & (1 << index)) return -1;
 
     const address = this.physical(index);
-    let byte;
-    if (value === null) {
-      byte = this.bus.read8(address);
-    } else {
-      byte = value & 0xff;
+    // I due bit del modo dicono in che verso va il byte, e uno dei quattro
+    // versi è "in nessun verso": la verifica conta i byte senza toccare la
+    // memoria, ed è così che il DOS controlla un disco senza avere dove
+    // metterlo.
+    const direction = (channel.mode >> 2) & 3;
+    let byte = 0xff;
+    if (direction === 1) {
+      byte = value === null ? 0xff : value & 0xff;
       this.bus.write8(address, byte);
+    } else if (direction === 2) {
+      byte = this.bus.read8(address);
     }
 
     const step = channel.mode & 0x20 ? -1 : 1;
@@ -206,6 +221,7 @@ export class DMA8237 {
     channel.count = (channel.count - 1) & 0xffff;
     if (channel.count === 0xffff) {
       this.status |= 1 << index;
+      channel.terminal = true;
       if (channel.mode & 0x10) {
         channel.address = channel.baseAddress;
         channel.count = channel.baseCount;
@@ -216,8 +232,18 @@ export class DMA8237 {
     return byte;
   }
 
-  /** Se il canale ha finito il suo blocco: il segnale che la periferica aspetta. */
+  /**
+   * Se il canale ha finito il suo blocco. Il bit di stato è quello che legge
+   * il processore, e leggerlo lo consuma; il filo TC che arriva alla
+   * periferica è un'altra cosa, e resta alzato finché non le si dà un altro
+   * blocco da fare. Sono due domande diverse e hanno due risposte diverse.
+   */
   terminalCount(index) {
     return (this.status & (1 << index)) !== 0;
+  }
+
+  /** Il filo TC come lo vede la periferica: "questo byte era l'ultimo". */
+  terminal(index) {
+    return this.channels[index].terminal;
   }
 }

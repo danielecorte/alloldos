@@ -50,9 +50,10 @@ export const SYSTEMS = [
     label: 'PC 286 — GLaBIOS / FreeDOS',
     year: 1988,
     cpu: 'Intel 80286 @ 8 MHz',
-    memory: '640 KB convenzionali',
-    notes: 'Scheda XT, BIOS libero, VGA: la macchina su cui gira tutto il DOS.',
-    available: false,
+    memory: '640 KB convenzionali, disco fisso da 20 MB',
+    notes: 'Scheda XT, BIOS libero, CGA: la macchina su cui gira il DOS.',
+    available: true,
+    load: () => import('../systems/pc/index.js'),
   },
   // Not a machine, but it boots like one — the way GRUB keeps its own entries
   // at the bottom of the list, under the systems.

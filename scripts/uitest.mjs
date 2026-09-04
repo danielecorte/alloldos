@@ -124,7 +124,23 @@ class StubAudioContext {
     return Promise.resolve();
   }
   createGain() {
-    return { gain: { value: 0 }, connect: (node) => node, disconnect() {} };
+    return {
+      gain: { value: 0, setValueAtTime() {}, setTargetAtTime() {} },
+      connect: (node) => node,
+      disconnect() {},
+    };
+  }
+  createOscillator() {
+    return {
+      type: 'square',
+      frequency: { value: 0, setValueAtTime() {} },
+      connect: (node) => node,
+      start() {},
+      stop() {},
+    };
+  }
+  get currentTime() {
+    return 0;
   }
   close() {
     return Promise.resolve();
@@ -586,6 +602,77 @@ document.exitFullscreen();
 amiga.dispose();
 check('the Amiga shuts down cleanly', amiga.running === false);
 
+
+// ------------------------------------------------------------------ il PC
+
+// La terza macchina. A differenza delle altre due il suo firmware è libero e
+// sta in roms/pc, quindi qui si accende davvero e si arriva al DOS — che è
+// l'unico modo di sapere che ci si arriva anche aprendo la pagina.
+const pcEntry = (await import('../src/boot/systems.js')).SYSTEMS.find((s) => s.id === 'pc');
+check('the boot menu offers the PC', pcEntry?.available === true);
+
+const pcModule = await pcEntry.load();
+const pc = await pcModule.boot(new StubElement('main'), { onExit: () => {} });
+
+if (pc.machine === null) {
+  check('the PC asks for its BIOS when there is none', pc.overlay.children.length > 0);
+  const romPanel = pc.overlay.children[0];
+  const romText = [romPanel.innerHTML, ...romPanel.children.map((n) => n.innerHTML || n.textContent)].join(' ');
+  check('and says where to get it, because this one is free', romText.includes('glabios'));
+} else {
+  check('the PC booted', pc.machine !== null);
+  check('the canvas is 640 by 200, which is what a CGA draws', pc.canvas.width === 640 && pc.canvas.height === 200);
+
+  // Il POST, e poi il sistema operativo. Ci vogliono un po' di quadri: la
+  // macchina conta 640 KB e prova il lettore prima di guardare il disco.
+  const pcScreen = () => pc.machine.cga.text().join('\n');
+  // Il POST scorre via da solo appena il sistema operativo parte, quindi si
+  // tiene l'ultima schermata in cui il BIOS stava ancora parlando.
+  let post = '';
+  let reached = '';
+  for (let i = 0; i < 900 && !reached; i++) {
+    pump(4);
+    const text = pcScreen();
+    if (text.includes('GLaBIOS')) post = text;
+    if (/C:\\>/.test(text)) reached = 'C:';
+    else if (/A:\\>/.test(text) || /proceed \[Y,N\]/.test(text)) reached = 'A:';
+  }
+  check('it gets through the POST', post.includes('GLaBIOS'), post.split('\n')[1]);
+  check('with all 640 KB counted', /RAM\s+\[ 640 KB OK \]/.test(post));
+  check('and finds the hard disk card', post.includes('C800') && post.includes('XTIDE'));
+  check('and boots an operating system', reached !== '', reached || 'nessun prompt');
+
+  // La spia del lettore e quella del disco escono dallo stato vero dei chip.
+  pc.updateDrives();
+  check('the drive rows say what is in the machine', pc.diskRow.text.textContent.includes('20 MB'));
+
+  // Un tasto passa dalla finestra alla matrice della tastiera XT.
+  sendKey('keydown', 'KeyA', 'a');
+  const queued = pc.machine.keyboard.queue.concat(pc.machine.keyboard.latch);
+  check('a key press becomes an XT scan code', queued.includes(0x1e), queued.join(' '));
+  sendKey('keyup', 'KeyA', 'a');
+
+  // Lo schermo intero e la barra che si nasconde, come sulle altre due.
+  pc.toggleFullscreen();
+  check('fullscreen hands the screen to the machine', document.fullscreenElement === pc.root);
+  pc.hideControls();
+  pc.root.dispatch('mousemove', { clientY: 780 });
+  check('the bar comes back at the bottom edge', pc.root.classes.has('pc--controls-shown'));
+  document.exitFullscreen();
+
+  // Un dischetto trascinato sulla finestra entra in A:.
+  const floppyPath = join(ROOT, 'roms', 'pc', 'fdboot.img');
+  if (existsSync(floppyPath)) {
+    const bytes = new Uint8Array(readFileSync(floppyPath));
+    await pc.acceptFiles([asFile('prova.img', bytes)]);
+    check('a dropped .img goes into the drive', pc.machine.fdc.drives[0].medium !== null);
+    check('and the machine says which one and how big', pc.status.textContent.includes('720 KB'), pc.status.textContent);
+  }
+}
+
+pc.dispose();
+check('the PC shuts down cleanly', pc.running === false);
+
 // The about page boots through the same contract as a machine, so it can be
 // run here the same way — and what it claims about itself has to be true.
 const aboutEntry = (await import('../src/boot/systems.js')).SYSTEMS.find((system) => system.id === 'about');
@@ -599,12 +686,13 @@ check('it says which licence it is under', aboutText.includes('GNU General Publi
 check('it points at the public repository', aboutText.includes('github.com/danielecorte/alloldos'));
 check(
   'and it is laid out as credits and then one machine at a time',
-  ['Crediti', 'Commodore 64', 'Amiga 500'].every((title) =>
+  ['Crediti', 'Commodore 64', 'Amiga 500', 'PC 286'].every((title) =>
     aboutText.includes(`about__section">${title}`),
   ),
 );
 check('the C64 section links its own ROMs', aboutText.includes('kernal-901227-03.bin'));
 check('and the Amiga section says where its Kickstart comes from', aboutText.includes('amigaforever.com'));
+check('and the PC section links the free firmware it runs on', aboutText.includes('glabios') && aboutText.includes('freedos.org'));
 
 sendKey('keydown', 'Escape', 'Escape');
 check('Escape goes back to the boot menu', leftAbout);

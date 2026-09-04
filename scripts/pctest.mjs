@@ -22,7 +22,11 @@ import { DMA8237 } from '../src/systems/pc/dma.js';
 import { PPI8255, VIDEO_CGA_80 } from '../src/systems/pc/ppi.js';
 import { XTKeyboard } from '../src/systems/pc/keyboard.js';
 import { CGA, DOTS_PER_LINE, LINES_PER_FRAME } from '../src/systems/pc/cga.js';
+import { FDC765, FloppyDrive, formatOf } from '../src/systems/pc/fdc.js';
+import { XTCF, HardDisk, GEOMETRY, XTCF_BASE } from '../src/systems/pc/ata.js';
+import { keyFor } from '../src/systems/pc/scancodes.js';
 import { PC, CPU_CLOCK, FPS } from '../src/systems/pc/machine.js';
+import { bootPC, Session, have } from './pcsession.mjs';
 
 let failures = 0;
 
@@ -584,23 +588,196 @@ section('La scheda');
   check('il 286 si sveglia a F000:FFF0', pc.location === 'f000:fff0');
 }
 
+section('Il lettore di dischetti (765)');
+
+{
+  // Un dischetto da 720 KB, con dentro un settore riconoscibile: il numero del
+  // settore scritto in ogni suo byte.
+  const image = new Uint8Array(737280);
+  const lba = (40 * 2 + 1) * 9 + 3; // cilindro 40, testina 1, settore 4
+  image.fill(0x5a, lba * 512, lba * 512 + 512);
+
+  const memory = new Uint8Array(0x100000);
+  const dma = new DMA8237({ read8: (a) => memory[a], write8: (a, v) => (memory[a] = v) });
+  let interrupts = 0;
+  const fdc = new FDC765({ dma, onInterrupt: () => interrupts++ });
+  check('un\'immagine si riconosce dalla lunghezza', formatOf(image).label === '720 KB');
+  check('e una lunghezza qualunque no', formatOf(new Uint8Array(1000)) === null);
+  fdc.drives[0].insert(image);
+
+  // Reset del controllore: il BIOS abbassa e rialza il bit 2 della 3F2h.
+  fdc.write(0x3f2, 0x08);
+  fdc.write(0x3f2, 0x0c);
+  check('il reset del controllore alza l\'interruzione', interrupts === 1);
+  fdc.write(0x3f5, 0x08); // sense interrupt status
+  check('e la sense interrupt dice che è stato un reset', fdc.read(0x3f5) === 0xc0);
+  fdc.read(0x3f5); // il cilindro, che chiude il risultato
+  check('finito il risultato il chip torna ad ascoltare', (fdc.read(0x3f4) & 0xd0) === 0x80);
+
+  // Ricalibrazione e ricerca: la testina va a zero e poi dove le si dice.
+  fdc.write(0x3f5, 0x07);
+  fdc.write(0x3f5, 0x00);
+  fdc.write(0x3f5, 0x08);
+  check('dopo la ricalibrazione la testina è alla traccia zero', fdc.read(0x3f5) === 0x20 && fdc.read(0x3f5) === 0);
+  fdc.write(0x3f5, 0x0f);
+  fdc.write(0x3f5, 0x00);
+  fdc.write(0x3f5, 40);
+  fdc.write(0x3f5, 0x08);
+  fdc.read(0x3f5);
+  check('e dopo una ricerca è dove è stata mandata', fdc.read(0x3f5) === 40);
+
+  // Una lettura vera, con il DMA che porta i byte in memoria.
+  const program = (mode, count, address) => {
+    dma.write(0x0b, mode);
+    dma.write(0x0c, 0);
+    dma.writePage(0x81, (address >> 16) & 0x0f);
+    dma.write(0x04, address & 0xff);
+    dma.write(0x04, (address >> 8) & 0xff);
+    dma.write(0x05, (count - 1) & 0xff);
+    dma.write(0x05, ((count - 1) >> 8) & 0xff);
+    dma.write(0x0a, 0x02);
+  };
+  program(0x46, 512, 0x30000); // canale 2, scrittura in memoria
+  interrupts = 0;
+  for (const byte of [0x66, 0x04, 40, 1, 4, 2, 9, 0x1b, 0xff]) fdc.write(0x3f5, byte);
+  check('un settore letto finisce in memoria dove diceva il DMA', memory[0x30000] === 0x5a && memory[0x301ff] === 0x5a);
+  check('e non un byte più in là', memory[0x30200] === 0);
+  check('la fine della lettura alza la IRQ 6', interrupts === 1);
+  const result = [];
+  for (let i = 0; i < 7; i++) result.push(fdc.read(0x3f5));
+  check('il chip racconta di essere finito bene', (result[0] & 0xc0) === 0, `ST0 ${hex(result[0], 2)}`);
+  check('e di essersi fermato sul settore dopo', result[5] === 5, `settore ${result[5]}`);
+
+  // Una scrittura, e la protezione che la ferma.
+  program(0x4a, 512, 0x30000); // lettura dalla memoria verso il disco
+  memory.fill(0x3c, 0x30000, 0x30200);
+  for (const byte of [0x45, 0x04, 40, 1, 4, 2, 9, 0x1b, 0xff]) fdc.write(0x3f5, byte);
+  for (let i = 0; i < 7; i++) fdc.read(0x3f5);
+  check('quello che si scrive arriva nell\'immagine', image[lba * 512] === 0x3c);
+  check('e il lettore se ne ricorda, per chi vuole il file indietro', fdc.drives[0].writes > 0);
+
+  fdc.drives[0].writeProtected = true;
+  program(0x4a, 512, 0x30000);
+  for (const byte of [0x45, 0x04, 40, 1, 4, 2, 9, 0x1b, 0xff]) fdc.write(0x3f5, byte);
+  check('un disco protetto rifiuta la scrittura', (fdc.read(0x3f5) & 0xc0) === 0x40 && (fdc.read(0x3f5) & 0x02) !== 0);
+}
+
+{
+  const drive = new FloppyDrive();
+  check('un lettore vuoto non è pronto', !drive.ready);
+  const fdc = new FDC765({ dma: null, onInterrupt: () => {} });
+  fdc.write(0x3f2, 0x0c);
+  fdc.write(0x3f5, 0x07); // ricalibrazione senza disco
+  fdc.write(0x3f5, 0x00);
+  fdc.write(0x3f5, 0x08);
+  check('senza disco la testina non trova mai la traccia zero', (fdc.read(0x3f5) & 0xd0) === 0x50);
+}
+
+section('Il disco fisso (XT-CF)');
+
+{
+  const disk = new HardDisk();
+  const card = new XTCF(disk);
+  check('venti mega, come un ST-225', Math.round(disk.data.length / 1024 / 1024) === 20);
+  check('e la geometria di allora', GEOMETRY.cylinders === 615 && GEOMETRY.heads === 4 && GEOMETRY.sectors === 17);
+
+  // I registri stanno di due in due, perché alla scheda il filo A0 non arriva.
+  const reg = (index) => XTCF_BASE + index * 2;
+  check('la scheda decodifica un registro ogni due porte', card.decode(reg(7)).register === 7);
+  check('e il blocco di controllo sedici porte più in là', card.decode(XTCF_BASE + 0x1c).control === true);
+
+  // Il comando con cui il BIOS della scheda chiede al disco di parlare a otto
+  // bit: senza, un bus a otto bit non potrebbe leggere un settore.
+  card.write(reg(1), 0x01);
+  card.write(reg(7), 0xef);
+  check('il disco accetta di parlare a otto bit', card.eightBit);
+
+  // Identify: la scheda si presenta, e il nome esce dalla porta dei dati.
+  card.write(reg(7), 0xec);
+  const identify = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) identify[i] = card.read(reg(0));
+  // Le stringhe ATA escono a coppie scambiate — il bus è a sedici bit e i due
+  // byte di ogni parola arrivano nell'ordine della macchina, non del testo —
+  // e ogni driver del mondo le rigira così.
+  let name = '';
+  for (let i = 54; i < 94; i += 2) name += String.fromCharCode(identify[i + 1], identify[i]);
+  check('e dice chi è', name.includes('XT-CF'), name.trim());
+
+  // Scrittura e rilettura di un settore, indirizzato per cilindro e testina.
+  card.write(reg(6), 0xa0 | 1); // testina 1, master
+  card.write(reg(2), 1);
+  card.write(reg(3), 5);
+  card.write(reg(4), 2);
+  card.write(reg(5), 0);
+  card.write(reg(7), 0x30);
+  for (let i = 0; i < 512; i++) card.write(reg(0), (i * 7) & 0xff);
+  const lba = (2 * GEOMETRY.heads + 1) * GEOMETRY.sectors + 4;
+  check('un settore scritto finisce dove dice la geometria', disk.data[lba * 512 + 3] === 21);
+
+  card.write(reg(6), 0xa0 | 1);
+  card.write(reg(3), 5);
+  card.write(reg(7), 0x20);
+  let same = true;
+  for (let i = 0; i < 512; i++) if (card.read(reg(0)) !== ((i * 7) & 0xff)) same = false;
+  check('e si rilegge identico', same);
+  check('finito il settore il disco non ha più niente da dare', (card.read(reg(7)) & 0x08) === 0);
+
+  // Lo stesso settore, chiesto in LBA invece che per cilindro e testina.
+  card.write(reg(6), 0xe0 | ((lba >> 24) & 0x0f));
+  card.write(reg(5), (lba >> 16) & 0xff);
+  card.write(reg(4), (lba >> 8) & 0xff);
+  card.write(reg(3), lba & 0xff);
+  card.write(reg(2), 1);
+  card.write(reg(7), 0x20);
+  check('e lo stesso settore chiesto in LBA è lo stesso settore', card.read(reg(0)) === 0);
+  for (let i = 1; i < 512; i++) card.read(reg(0));
+
+  // Oltre la fine del disco non c'è niente, e il disco lo dice.
+  card.write(reg(6), 0xe0);
+  card.write(reg(5), 0xff);
+  card.write(reg(4), 0xff);
+  card.write(reg(3), 0xff);
+  card.write(reg(7), 0x20);
+  check('oltre la fine del disco c\'è un errore', (card.read(reg(7)) & 0x01) !== 0);
+
+  // Una scheda senza disco non risponde: è così che il BIOS sa che è vuota.
+  const empty = new XTCF(null);
+  check('una scheda senza disco lascia lo stato a zero', empty.read(reg(7)) === 0);
+}
+
+section('La tastiera');
+
+{
+  // Il clock a terra per un attimo vuol dire "ho preso il byte"; per venti
+  // millesimi vuol dire "riavviati". Sono due cose diverse e il chip non le
+  // deve confondere, perché AAh è anche il rilascio dello shift sinistro.
+  let clock = 0;
+  const keyboard = new XTKeyboard({ now: () => clock, resetHold: 160000 });
+  keyboard.setLines(false, false); // clock libero, senza aspettare
+  check('un rilascio breve del clock non è un riavvio', keyboard.queue.length === 0);
+  keyboard.setLines(true, false);
+  clock += 200000;
+  keyboard.setLines(false, false);
+  check('venti millesimi a terra sì', keyboard.queue[0] === 0xaa);
+
+  check('la A sta dove la mise IBM', keyFor('a').code === 0x1e && !keyFor('a').shift);
+  check('e i due punti vogliono lo shift', keyFor(':').code === 0x27 && keyFor(':').shift);
+}
+
 // -------------------------------------------------------- l'avvio vero
 
-const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
-const biosPath = join(ROOT, 'roms', 'pc', 'glabios.rom');
-
-if (!existsSync(biosPath)) {
+if (!have.bios) {
   console.log(`
-Nessun BIOS in roms/pc: la prova di avvio vero è stata saltata.
+Nessun BIOS in roms/pc: le prove di avvio vero sono state saltate.
 GLaBIOS è libero e si prende con \`npm run fetch-roms\`.`);
 } else {
-  section('Avvio vero');
+  section('Avvio vero: il POST');
 
   // Tutto quello che c'è sopra dice che i chip fanno quello che dice il
   // manuale. Questo dice l'unica cosa che conta davvero: che un BIOS scritto
   // per questa macchina, da qualcuno che non ha mai visto questo emulatore,
   // ci si accende sopra e la trova come se la aspetta.
-  const pc = new PC(new Uint8Array(readFileSync(biosPath)));
+  const pc = bootPC({ card: false, floppy: false, disk: null });
   for (let frame = 0; frame < 1800 && !pc.cga.text().join('\n').includes('Any Key'); frame++) {
     pc.runFrame();
   }
@@ -618,6 +795,10 @@ GLaBIOS è libero e si prende con \`npm run fetch-roms\`.`);
   check('nessun errore di DMA: la memoria si sta rinfrescando', !shown.includes('DMA'));
   check('e nessuno di memoria', !shown.includes('MEM'));
 
+  // Senza dischetto nel lettore il POST trova un errore, ed è giusto così: il
+  // controllore c'è e risponde, ma la testina non trova la traccia zero.
+  check('il controllore del disco risponde al BIOS', !shown.includes('FDC'), screen[10]);
+
   const timer = () => pc.ram[0x46c] | (pc.ram[0x46d] << 8);
   const before = timer();
   const from = pc.cycles;
@@ -629,18 +810,76 @@ GLaBIOS è libero e si prende con \`npm run fetch-roms\`.`);
     `${rate.toFixed(1)} tic al secondo`,
   );
 
-  // L'unico guaio che il POST trova è il controllore del disco, che non c'è
-  // ancora: è il pezzo dopo, ed è quello che porterà su un sistema operativo.
-  check('l\'unico pezzo che manca è il controllore del disco', shown.includes('FDC'), screen[10]);
+  // Il disegno delle lettere: la CGA se lo fa prestare dal BIOS, e la prova è
+  // che quello che c'è scritto nella memoria video si veda anche sui pixel.
+  const pixels = pc.cga.render();
+  let lit = 0;
+  for (let i = 0; i < pixels.length; i++) if (pixels[i] !== 0xff000000) lit++;
+  check('e lo schermo ha davvero dei pixel accesi', lit > 2000, `${lit} punti`);
+}
 
-  pc.keyboard.press(0x39); // barra spaziatrice
-  for (let frame = 0; frame < 10; frame++) pc.runFrame();
-  pc.keyboard.release(0x39);
-  for (let frame = 0; frame < 600; frame++) pc.runFrame();
-  check(
-    'un tasto arriva al BIOS, che prova ad avviare e non trova niente',
-    pc.cga.text().join('\n').includes('Disk Boot Fail'),
-  );
+if (!have.bios || !have.floppy) {
+  console.log(`
+Nessun dischetto in roms/pc: la prova con FreeDOS è stata saltata.
+Si prende con \`npm run fetch-roms\`.`);
+} else {
+  section('Avvio vero: FreeDOS dal dischetto');
+
+  // Il giro completo: il BIOS legge un settore dal dischetto, ci salta dentro,
+  // e da lì in poi è FreeDOS che guida il controllore attraverso lo stesso
+  // DMA e le stesse porte. Se si arriva al prompt, tutta la catena regge.
+  const pc = bootPC({ card: false, disk: null });
+  const dos = new Session(pc, (text) => console.log(text));
+  const posted = dos.waitFor(/FreeDOS/, 2500);
+  check('il dischetto parte e il kernel si presenta', posted, dos.lastLine());
+  dos.toFloppyPrompt();
+  check('e FreeDOS arriva al suo prompt', /A:\\>/.test(dos.screen()));
+
+  dos.command('dir');
+  check('il DOS legge la cartella del dischetto', /KERNEL\s+SYS/.test(dos.screen()), dos.lastLine());
+
+  // Scrivere: la parte che il BIOS non prova mai da solo. Il file va nella
+  // FAT, e la FAT va sui piatti attraverso il DMA nel verso opposto.
+  dos.command('echo ciao > a:\\prova.txt');
+  dos.command('type a:\\prova.txt');
+  check('e ci scrive sopra un file, che si rilegge', /ciao/i.test(dos.screen()), dos.lastLine());
+  check('il lettore sa di essere stato scritto', pc.fdc.drives[0].writes > 0);
+}
+
+if (!have.bios || !have.card || !have.hdd) {
+  console.log(`
+Nessun disco fisso in roms/pc: la prova di avvio da C: è stata saltata.
+Si costruisce con \`npm run make-hdd\` (ci vuole meno di un minuto).`);
+} else {
+  section('Avvio vero: FreeDOS dal disco fisso');
+
+  // Qui il BIOS di sistema non c'entra più niente: un BIOS XT non sa cosa sia
+  // un disco fisso. A rispondere all'INT 13h è la ROM della scheda, trovata
+  // dal POST a C800 e agganciata da sola.
+  const pc = bootPC({ disk: 'installed' });
+  const dos = new Session(pc, (text) => console.log(text));
+  check('il POST trova la ROM della scheda', dos.waitFor(/ROM\s+\[ C800 \]/, 1500));
+  check('e la scheda trova il disco', dos.waitFor(/Master at 300h/, 1500), dos.lastLine());
+
+  dos.run(30);
+  dos.type('c'); // avvia da C: senza aspettare i trenta secondi del menu
+  check('il disco fisso si avvia', dos.waitFor(/C:\\>/, 4000), dos.lastLine());
+
+  dos.command('dir c:\\');
+  check('e ha dentro un DOS installato', /COMMAND\s+COM/.test(dos.screen()), dos.lastLine());
+
+  const writes = pc.hdc.disk.writes;
+  dos.command('echo ciao > c:\\prova.txt');
+  dos.command('type c:\\prova.txt');
+  check('ci si scrive sopra', /ciao/i.test(dos.screen()), dos.lastLine());
+  check('e la scrittura arriva ai piatti', pc.hdc.disk.writes > writes);
+
+  // La prova che vale più di tutte: spegnere e riaccendere. Quello che è stato
+  // scritto deve essere ancora lì, letto da capo dal settore di avvio in giù.
+  dos.reboot('c');
+  check('e sopravvive a un riavvio', dos.waitFor(/C:\\>/, 4000));
+  dos.command('type c:\\prova.txt');
+  check('il file è ancora dov\'era', /ciao/i.test(dos.screen()), dos.lastLine());
 }
 
 console.log(failures === 0 ? '\nPC OK.' : `\n${failures} problema/i.`);

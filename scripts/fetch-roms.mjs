@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 // two must not be able to drift apart.
 import { ROM_SPECS, ROM_SOURCE_URL } from '../src/systems/c64/roms.js';
 import { AMIGA_FOREVER_URL, AROS_URL } from '../src/systems/amiga/roms.js';
-import { BIOS_SPEC, GLABIOS_URL } from '../src/systems/pc/roms.js';
+import { BIOS_SPEC, CARD_SPEC, GLABIOS_URL, XTIDE_URL } from '../src/systems/pc/roms.js';
+import { FREEDOS_SPEC, FREEDOS_URL } from '../src/systems/pc/media.js';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const DEST = join(ROOT, 'roms', 'c64');
@@ -162,33 +163,125 @@ aros-amiga-m68k-rom.bin somewhere this script will find on the next run.`);
 // downloaded: GLaBIOS is a PC BIOS written from scratch under the GPL, and the
 // build this fetches is the 8088 one, which a 286 runs as it stands.
 
-const biosPath = join(PC_DEST, BIOS_SPEC.file);
-let haveBIOS = false;
-if (!process.argv.includes('--force')) {
+// Le due ROM libere di questa macchina e il dischetto da cui si avvia: il
+// BIOS di sistema, la ROM della scheda del disco fisso, e FreeDOS. Nessuna
+// delle tre è dentro il repository, tutte e tre si scaricano.
+
+/**
+ * @param {{file:string, size?:number, source:string, label:string}} spec
+ * @param {(bytes:Uint8Array)=>boolean} [accept]
+ */
+async function fetchInto(spec, accept = () => true) {
+  const target = join(PC_DEST, spec.file);
+  if (!process.argv.includes('--force')) {
+    try {
+      await access(target);
+      console.log(`\n\u00b7 ${spec.file} already present, skipping (use --force to refetch)`);
+      return true;
+    } catch {
+      /* not there yet, download it */
+    }
+  }
+  process.stdout.write(`\n\u2193 ${spec.file} \u2026 `);
   try {
-    await access(biosPath);
-    haveBIOS = true;
-    console.log(`\n· ${BIOS_SPEC.file} already present, skipping (use --force to refetch)`);
-  } catch {
-    /* not there yet, download it */
+    const res = await fetch(spec.source, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!accept(bytes)) throw new Error(`unexpected contents (${bytes.length} bytes)`);
+    await writeFile(target, bytes);
+    console.log(`ok (${bytes.length} bytes)`);
+    return true;
+  } catch (error) {
+    console.log(`FAILED (${error.message})`);
+    console.error(`  could not fetch ${spec.source}`);
+    process.exitCode = 1;
+    return false;
   }
 }
 
-if (!haveBIOS) {
-  process.stdout.write(`\n\u2193 ${BIOS_SPEC.file} \u2026 `);
+const haveBIOS = await fetchInto(BIOS_SPEC, (bytes) => bytes.length === BIOS_SPEC.size);
+if (haveBIOS) console.log(`  ${GLABIOS_URL} \u2014 GPLv3, and it boots real hardware too`);
+
+const haveCard = await fetchInto(CARD_SPEC, (bytes) => bytes[0] === 0x55 && bytes[1] === 0xaa);
+if (haveCard) console.log(`  ${XTIDE_URL} \u2014 GPLv2, the BIOS of the hard disk card`);
+
+// FreeDOS non si scarica da solo: sta dentro l'archivio dell'edizione a
+// dischetti, che è la sola forma in cui il progetto lo pubblica. Si prende
+// quello e si tira fuori il dischetto da 720 KB, che è l'unico che questa
+// macchina — un lettore da tre pollici e mezzo su una scheda XT — sa leggere.
+
+const floppyPath = join(PC_DEST, FREEDOS_SPEC.file);
+let haveFloppy = false;
+if (!process.argv.includes('--force')) {
   try {
-    const res = await fetch(BIOS_SPEC.source, { redirect: 'follow' });
+    await access(floppyPath);
+    haveFloppy = true;
+    console.log(`\n\u00b7 ${FREEDOS_SPEC.file} already present, skipping (use --force to refetch)`);
+  } catch {
+    /* not there yet */
+  }
+}
+
+if (!haveFloppy) {
+  process.stdout.write(`\n\u2193 ${FREEDOS_SPEC.file} \u2026 `);
+  try {
+    const res = await fetch(FREEDOS_SPEC.source, { redirect: 'follow' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (bytes.length !== BIOS_SPEC.size) throw new Error(`expected ${BIOS_SPEC.size} bytes, got ${bytes.length}`);
-    await writeFile(biosPath, bytes);
-    console.log(`ok (${bytes.length} bytes)`);
-    haveBIOS = true;
+    const archive = new Uint8Array(await res.arrayBuffer());
+    const image = extractFromZip(archive, FREEDOS_SPEC.member);
+    if (!image) throw new Error(`${FREEDOS_SPEC.member} not in the archive`);
+    if (image.length !== FREEDOS_SPEC.size) {
+      throw new Error(`expected ${FREEDOS_SPEC.size} bytes, got ${image.length}`);
+    }
+    await writeFile(floppyPath, image);
+    console.log(`ok (${image.length} bytes)`);
+    haveFloppy = true;
   } catch (error) {
     console.log(`FAILED (${error.message})`);
-    console.error(`  could not fetch ${BIOS_SPEC.source}`);
+    console.error(`  could not fetch ${FREEDOS_SPEC.source}`);
     process.exitCode = 1;
   }
 }
 
-if (haveBIOS) console.log(`  ${GLABIOS_URL} \u2014 GPLv3, and it boots real hardware too`);
+if (haveFloppy) {
+  console.log(`  ${FREEDOS_URL} \u2014 GPL, and it is the machine's operating system`);
+  console.log('\nUn disco fisso con FreeDOS gi\u00e0 installato si fa con `npm run make-hdd`.');
+}
+
+/**
+ * Tira fuori un file da uno zip senza aprire tutto l'archivio: si cerca
+ * all'indietro la fine del catalogo, si legge dove comincia il file, e si
+ * scompatta solo quello.
+ *
+ * @param {Uint8Array} zip
+ * @param {string} name
+ * @returns {?Uint8Array}
+ */
+function extractFromZip(zip, name) {
+  const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  let end = -1;
+  for (let i = zip.length - 22; i >= 0 && end < 0; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) end = i;
+  }
+  if (end < 0) return null;
+  let entry = view.getUint32(end + 16, true);
+  const count = view.getUint16(end + 10, true);
+  const wanted = new TextEncoder().encode(name);
+  for (let i = 0; i < count; i++) {
+    const nameLength = view.getUint16(entry + 28, true);
+    const extraLength = view.getUint16(entry + 30, true);
+    const commentLength = view.getUint16(entry + 32, true);
+    const found = zip.subarray(entry + 46, entry + 46 + nameLength);
+    if (nameLength === wanted.length && found.every((byte, at) => byte === wanted[at])) {
+      const method = view.getUint16(entry + 10, true);
+      const size = view.getUint32(entry + 24, true);
+      const local = view.getUint32(entry + 42, true);
+      const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+      const stored = zip.subarray(start, start + view.getUint32(entry + 20, true));
+      const bytes = method === 0 ? stored : inflateRawSync(Buffer.from(stored));
+      return new Uint8Array(bytes.buffer ?? bytes, bytes.byteOffset ?? 0, size);
+    }
+    entry += 46 + nameLength + extraLength + commentLength;
+  }
+  return null;
+}

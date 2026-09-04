@@ -6,19 +6,18 @@ Un raccoglitore di vecchi sistemi operativi emulati, che gira interamente dentro
 il browser. Si parte da una schermata di boot in stile GRUB: scegli la macchina
 con le frecce, premi Invio, e quella macchina si accende.
 
-Ce ne sono due che partono davvero:
+Ce ne sono tre che partono davvero:
 
 - il **Commodore 64**, emulato dal silicio in su — 6510, VIC-II, due CIA e il
   SID — e avviato sul KERNAL e sul BASIC V2 originali;
 - l'**Amiga 500**, con il 68000, Agnus, Denise, Paula, due CIA 8520 e i due
   drive DF0: e DF1:, avviato sulla Kickstart e capace di leggere e scrivere un
-  `.adf`. Ci gira sopra un
-  sistema operativo vero: **AROS m68k** arriva alla sua schermata di avvio.
-
-E ce n'è una terza in costruzione: un **PC 286** con scheda XT, di cui per ora
-c'è il processore e la scheda madre. Non si accende ancora dal menu, ma il BIOS
-libero **GLaBIOS** ci gira sopra e arriva in fondo al suo POST — 640 KB contati,
-scheda video riconosciuta, orologio che batte.
+  `.adf`. Ci gira sopra un sistema operativo vero: **AROS m68k** arriva alla sua
+  schermata di avvio;
+- il **PC 286** con scheda XT, il lettore di dischetti da 720 KB e un disco
+  fisso da 20 MB. È l'unica macchina qui libera fino in fondo: il BIOS
+  **GLaBIOS**, la ROM della scheda del disco **XTIDE**, e sopra **FreeDOS**,
+  che si accende dal dischetto o dal disco e arriva al suo prompt.
 
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
 eseguono il loro firmware. Il firmware però non è incluso — è di chi lo ha
@@ -32,18 +31,20 @@ che manca ancora.
 ## Avvio
 
 ```sh
-npm run fetch-roms   # scarica KERNAL, BASIC e il generatore di caratteri
+npm run fetch-roms   # le ROM libere e quelle che si possono scaricare
+npm run make-hdd     # il disco fisso del PC, con FreeDOS installato sopra
 npm start            # http://localhost:8080
 ```
 
 Nessuna dipendenza, nessun passo di build: sono moduli ES serviti così come
-sono. `npm test` esegue cinque prove a schermo spento: la prima accende il C64,
+sono. `npm test` esegue sei prove a schermo spento: la prima accende il C64,
 verifica che arrivi al prompt `READY.` e ci fa girare un programma; la seconda
 preme i tasti attraverso lo stesso codice che usa il browser e rilegge dallo
 schermo i caratteri arrivati davvero al BASIC; la terza registra un nastro e lo
 fa ricaricare al KERNAL; la quarta prende l'Amiga a pezzi (vedi sotto); la
-quinta monta un DOM finto e fa girare l'intera sessione del browser di
-entrambe le macchine, canvas e audio compresi.
+quinta monta un DOM finto e fa girare l'intera sessione del browser di tutte e
+tre le macchine, canvas e audio compresi; la sesta accende il PC, gli fa fare il
+POST con il BIOS vero e ci avvia FreeDOS dal dischetto e dal disco fisso.
 
 Se in cartella c'è un `.tap`, l'ultima prova ci carica dentro anche quello e poi
 **ci gioca**: tiene premuta una direzione e guarda dove finisce il personaggio.
@@ -90,13 +91,22 @@ con dentro il resto del sistema. Va in `roms/amiga/extended.rom`, o trascinata
 anche lei — la macchina la mette nel secondo zoccolo, a `$e00000`, che è dove
 l'A600, l'A1200 e il CDTV tengono la loro.
 
-**Il PC** è il caso fortunato: il suo firmware è software libero. GLaBIOS è un
-BIOS per PC scritto da zero, in GPLv3, che avvia macchine vere — ed è l'unico
-BIOS PC libero e completo che esista. `npm run fetch-roms` scarica gli otto KB
-di `GLABIOS_0.4.2_8T.ROM` in `roms/pc/glabios.rom`. Fra le dieci varianti
-pubblicate serve quella: il build per 8088 — un 286 esegue tutto quello che
-esegue un 8088, mentre i build "V20" usano le istruzioni in più del NEC V20, che
-il 286 non ha — nella versione Turbo, che è quella per i cloni generici.
+**Il PC** è il caso fortunato: il suo firmware è software libero, tutto quanto.
+`npm run fetch-roms` scarica tre cose in `roms/pc/`:
+
+- `glabios.rom`, gli otto KB di **GLaBIOS 0.4.2** (GPLv3), l'unico BIOS PC
+  libero e completo che esista. Fra le dieci varianti pubblicate serve il build
+  per 8088 — un 286 esegue tutto quello che esegue un 8088, mentre i build "V20"
+  usano le istruzioni in più del NEC V20, che il 286 non ha — nella versione
+  Turbo, che è quella per i cloni generici;
+- `xtide.bin`, la **XTIDE Universal BIOS** (GPLv2), che è la ROM della scheda
+  del disco fisso: un BIOS XT non sa cosa sia un disco fisso;
+- `fdboot.img`, il dischetto di avvio di **FreeDOS 1.3** da 720 KB, che il
+  progetto pubblica solo dentro l'archivio dell'edizione a dischetti — lo script
+  scarica quello e tira fuori l'immagine che serve.
+
+Poi `npm run make-hdd` prepara un disco fisso da venti mega con FreeDOS
+installato sopra. Sono tutti file liberi, e nessuno è nel repository.
 
 Quello che trascini resta nel tuo browser e non va da nessuna parte: alloldos
 non ha un server a cui mandarlo.
@@ -479,23 +489,18 @@ delle due si vede finché non provi a far girare del software vero:
 
 ## PC 286
 
-La macchina in costruzione. Non è un AT: è una **scheda XT con sopra un 286**,
-che è una macchina che nel 1988 si poteva davvero comprare, e che qui è una
-scelta obbligata — GLaBIOS è un BIOS XT, e un BIOS AT libero non esiste. Il 286
-è il set di istruzioni, che è quello che il software controlla; il resto della
-scheda è quello che GLaBIOS sa avviare.
+Non è un AT: è una **scheda XT con sopra un 286**, che è una macchina che nel
+1988 si poteva davvero comprare, e che qui è una scelta obbligata — GLaBIOS è un
+BIOS XT, e un BIOS AT libero non esiste. Il 286 è il set di istruzioni, che è
+quello che il software controlla; il resto della scheda è quello che GLaBIOS sa
+avviare.
 
-C'è: il processore in modo reale (`cpu286.js`, con i dettagli da cui un
-programma capisce di non essere su un 8086), la mappa di memoria con i 640 KB al
-loro posto e il BIOS in cima, l'8259 delle interruzioni, i tre contatori
-dell'8253, l'8255 con gli interruttori a slitta, l'8237 del DMA con il rinfresco
-della memoria che gira davvero, la tastiera XT e la metà testo della scheda
-video.
+È l'unica macchina di alloldos che è **libera fino in fondo**: BIOS libero
+(GLaBIOS, GPLv3), ROM della scheda del disco libera (XTIDE Universal BIOS,
+GPLv2), sistema operativo libero (FreeDOS). Niente di tutto questo è nel
+repository — nessun firmware lo è — ma tutto si scarica con un comando.
 
-Manca: il controllore del disco — che è il pezzo dopo, quello che porterà su
-FreeDOS — la VGA con il suo BIOS di scheda, e il suono.
-
-Il POST di GLaBIOS oggi arriva in fondo e dice quello che trova:
+Ci si accende sopra **FreeDOS**, dal dischetto o dal disco fisso:
 
 ```
 GLaBIOS [.] Reboot the Past
@@ -505,16 +510,114 @@ Boot   [ COLD ]
 RAM    [ 640 KB OK ]            Video  [ CGA ]
 CPU    [ 8088 ]                 FPU    [ None ]
 LPT    [ None ]                 COM    [ None ]
-FDD    [ 0 ]
+ROM    [ C800 ]                 Size   [ 12 KB ]
+FDD    [ 1 ]
 
-POST Error 1000
-FDC
+-=XTIDE Universal BIOS (XT)=- @ C800h
+Master at 300h: alloldos XT-CF 20 MB
+
+C:\>
 ```
 
-L'errore è il controllore che non c'è ancora, e `CPU [ 8088 ]` non è uno
-sbaglio: GLaBIOS distingue solo l'8088 dal NEC V20, e chiama 8088 tutto il
-resto. Le prove stanno in `scripts/pctest.mjs` — prima il processore un'opcode
-per volta, poi i chip, poi la macchina intera con dentro il BIOS vero.
+`CPU [ 8088 ]` non è uno sbaglio: GLaBIOS distingue solo l'8088 dal NEC V20, e
+chiama 8088 tutto il resto.
+
+### Il lettore di dischetti
+
+Un NEC **765** con un lettore da tre pollici e mezzo, il canale 2 del DMA e la
+IRQ 6 — cioè esattamente il giro che fa un byte per andare dal disco alla
+memoria senza passare dal processore. `npm run fetch-roms` scarica il dischetto
+di avvio di **FreeDOS 1.3** da 720 KB in `roms/pc/fdboot.img`; qualunque altro
+`.img` si trascina sulla finestra, e viene riconosciuto dalla sua lunghezza —
+160, 180, 320, 360, 720 KB, 1,2 e 1,44 MB.
+
+720 KB non è una scelta di comodo: un controllore XT sa fare una sola velocità
+di trasferimento, 250 kbit/s, e le due misure grandi ne vogliono un'altra. Su
+questa macchina, nel 1988, un 1,44 non si sarebbe letto.
+
+Quello che il DOS scrive sul dischetto finisce nell'immagine in memoria, e
+appena il lettore tace l'`.img` aggiornato viene scaricato: in una scheda del
+browser non c'è nessuno scaffale dove posare un floppy.
+
+### Il disco fisso
+
+Venti mega, che nel 1988 erano tanti. La geometria è quella di un **Seagate
+ST-225** — 615 cilindri, 4 testine, 17 settori — e la scheda è una **XT-CF**
+all'indirizzo 300h: un adattatore fra il bus a otto bit e una scheda
+CompactFlash, che elettricamente è un disco IDE.
+
+Un BIOS XT non sa cosa sia un disco fisso: chi lo sa è la scheda, che se lo
+porta dietro in una ROM di dodici KB a `C800`. Il POST passa in rassegna la
+finestra delle schede a passi di due KB, trova la firma `55 AA`, controlla la
+somma e salta dentro; da lì in poi l'INT 13h dei dischi fissi è roba della
+scheda. La ROM è la [XTIDE Universal
+BIOS](https://www.xtideuniversalbios.org/), GPLv2, e la scarica
+`npm run fetch-roms`.
+
+Il disco si prepara con:
+
+```sh
+npm run make-hdd
+```
+
+che ci mette venti secondi e **non scrive un byte di filesystem**. Accende la
+macchina emulata con il dischetto di FreeDOS dentro e ci batte sopra i comandi
+che ci si batteva allora, uno per uno: `FDISK /AUTO` per la partizione,
+`FDISK /MBR` per il codice che ci sta davanti, un riavvio perché il DOS se ne
+accorga, `FORMAT C:`, `SYS C:`, e poi la copia dei programmi. La tabella delle
+partizioni e la FAT le scrivono FDISK e FORMAT veri, girando sul 286: è l'unico
+modo di essere sicuri che siano giuste.
+
+Il disco finito sta in `roms/pc/hdd.img` e non è nel repository. Dalla pagina
+pubblica si parte con un disco **vuoto** — venti mega di zeri, come si comprava
+— e lo si può partizionare e formattare a mano, che è esattamente il pomeriggio
+che ci passava chiunque nel 1988. **Salva il disco fisso** se lo riporta via
+come file, e ritrascinandolo lo si rimette dentro.
+
+### Cosa c'è dentro
+
+- l'**80286** in modo reale (`cpu286.js`), con i dettagli da cui un programma
+  capisce di non essere su un 8086;
+- la **mappa di memoria** del PC: 640 KB in fondo, le schede da A0000 a EFFFF,
+  il BIOS negli ultimi otto KB;
+- l'**8259**, i tre contatori dell'**8253**, l'**8255** con gli interruttori a
+  slitta, l'**8237** del DMA con i registri di pagina e la giunzione a 64 KB che
+  non riporta;
+- il **765** e il suo lettore, la scheda **XT-CF** con il disco ATA;
+- la **tastiera XT** con il filo di clock, dove tenerlo a terra un attimo vuol
+  dire «ho preso il byte» e tenerlo venti millesimi vuol dire «riavviati»;
+- la **CGA**: testo a ottanta colonne con il disegno delle lettere preso dalla
+  ROM del BIOS, cursore che lampeggia, e le due grafiche — 320×200 a quattro
+  colori e 640×200 in bianco e nero;
+- l'**altoparlante**: un bit e un contatore, che è tutto il suono che il PC ha
+  avuto per dieci anni.
+
+Manca la **VGA** con il suo BIOS di scheda, il suono campionato — quello che
+pilota il bit dell'altoparlante a mano invece di lasciar fare al contatore — e
+il modo protetto, che il DOS non usa.
+
+### Le tre cose che solo un BIOS vero ha trovato
+
+Tutte le prove sintetiche passavano già:
+
+- un **caricamento a un byte solo in un contatore del PIT azzera l'altra metà**;
+  senza, il divisore del rinfresco della memoria si teneva una metà alta vecchia
+  e girava mille volte più lento;
+- il **rinvio dopo una `STI` deve scadere mentre il processore è fermo**, o
+  `sti` seguito da `hlt` non si sveglia più — ed è esattamente come il BIOS
+  aspetta il disco;
+- la **tastiera si riavviava a ogni tasto**, perché confondeva i due usi del
+  filo di clock. Siccome `AA` è anche il codice con cui si lascia andare lo
+  shift sinistro, chi scriveva i due punti otteneva un punto e virgola.
+
+### Le prove
+
+`scripts/pctest.mjs`: prima il processore un'opcode per volta, poi i chip uno
+per uno, poi la macchina intera. Le ultime tre sezioni sono quelle che contano —
+il POST di GLaBIOS, FreeDOS che parte dal dischetto e ci scrive sopra un file, e
+FreeDOS che parte dal disco fisso, ci scrive, e ritrova quello che ha scritto
+dopo un riavvio. I comandi vengono battuti sulla tastiera attraverso lo stesso
+codice che usa il browser.
 
 ## Schermo intero
 
@@ -570,19 +673,25 @@ src/systems/amiga/    l'Amiga 500
   keyboard.js         tastiera posizionale e contatori del mouse
   roms.js             dove trovare la Kickstart
   index.js            la sessione: canvas, audio, dischi, mouse, comandi
-src/systems/pc/       il PC 286, in costruzione
+src/systems/pc/       il PC 286
   cpu286.js           l'80286 in modo reale, con le istruzioni del 186
   machine.js          la scheda: mappa di memoria, porte, e il tempo che passa
   pic.js              8259: chi parla e quando
   pit.js              8253: il tic a 18,2 Hz, il rinfresco e l'altoparlante
   ppi.js              8255: tastiera, interruttori a slitta, altoparlante
   dma.js              8237: quattro canali, pagine, e il rinfresco della RAM
-  cga.js              la scheda video, per la metà che c'è: il testo
+  fdc.js              il NEC 765 e il lettore di dischetti
+  ata.js              la scheda XT-CF e i venti mega di disco fisso
+  cga.js              la scheda video: testo e le due grafiche
   keyboard.js         la tastiera XT, con il suo filo di clock
-  roms.js             dove trovare GLaBIOS
+  scancodes.js        da tasto del browser a numero di tasto sulla matrice
+  speaker.js          l'altoparlante: un bit e un contatore
+  media.js            i dischi: dove trovarli e come riconoscerli
+  roms.js             dove trovare GLaBIOS e la ROM della scheda del disco
+  index.js            la sessione: canvas, audio, dischi, tastiera, comandi
 ```
 
-Le due macchine sono costruite allo stesso modo: la CPU esegue i cicli di una
+Le tre macchine sono costruite allo stesso modo: la CPU esegue i cicli di una
 riga, poi la riga viene disegnata. Non è esatto al singolo ciclo, ma sul C64 le
 badline, i contatori di riga e gli interrupt di raster ci sono — che è quello
 che serve agli split di schermo e allo scrolling — e sull'Amiga la riga viene
