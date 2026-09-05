@@ -668,6 +668,46 @@ if (pc.machine === null) {
     check('a dropped .img goes into the drive', pc.machine.fdc.drives[0].medium !== null);
     check('and the machine says which one and how big', pc.status.textContent.includes('720 KB'), pc.status.textContent);
   }
+
+  // E il caso del sito pubblicato, dove nessuna ROM sta sul server e arriva
+  // tutto in un mucchio solo: il BIOS accende la macchina, e il dischetto
+  // caduto insieme a lui non deve perdersi per strada — se si perde, la
+  // macchina si accende su un lettore vuoto e il BIOS dice che non c'è niente
+  // da cui partire.
+  const biosPath = join(ROOT, 'roms', 'pc', 'glabios.rom');
+  if (existsSync(biosPath) && existsSync(floppyPath)) {
+    const served = globalThis.fetch;
+    globalThis.fetch = async (url) =>
+      /roms\/pc\//.test(String(url)) ? { ok: false, status: 404 } : served(url);
+    const keys = ['alloldos.rom.pc.bios', 'alloldos.rom.pc.xtide', 'alloldos.pc.floppy'];
+    const kept = keys.map((key) => [key, localStorage.getItem(key)]);
+    for (const key of keys) localStorage.removeItem(key);
+
+    const bare = await pcModule.boot(new StubElement('main'), { onExit: () => {} });
+    check('with no ROM on the server there is no machine yet', bare.machine === null);
+    await bare.acceptFiles([
+      asFile('glabios.rom', new Uint8Array(readFileSync(biosPath))),
+      asFile('fdboot.img', new Uint8Array(readFileSync(floppyPath))),
+    ]);
+    check('the BIOS in the same drop switches the machine on', bare.machine !== null);
+    check(
+      'and the floppy that came with it is in the drive',
+      bare.machine?.fdc.drives[0].medium !== null,
+    );
+    bare.dispose();
+
+    // E ci resta: chi torna sulla pagina domani non deve ritrascinarlo.
+    const again = await pcModule.boot(new StubElement('main'), { onExit: () => {} });
+    check('a dropped floppy is still there next time the page opens',
+      again.machine?.fdc.drives[0].medium !== null);
+    again.dispose();
+
+    globalThis.fetch = served;
+    for (const [key, value] of kept) {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    }
+  }
 }
 
 pc.dispose();

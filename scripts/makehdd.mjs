@@ -71,7 +71,7 @@ dos.toFloppyPrompt();
 step('FORMAT C: (e sì, si vuole davvero)');
 dos.type('format c: /v:alloldos\n');
 dos.run(200);
-dos.expect(/Proceed with format/, 3000, 'FORMAT non ha chiesto conferma');
+dos.expect(/Proceed with [Ff]ormat/, 3000, 'FORMAT non ha chiesto conferma');
 dos.type('yes\n');
 dos.expect(/Format complete|allocation units on disk/i, 8000, 'FORMAT non è finito');
 dos.expect(/A:\\>/, 3000);

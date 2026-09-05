@@ -51,6 +51,8 @@ class PCSession {
     this.savedFloppyWrites = 0;
     this.savedDiskWrites = 0;
     this.quietAt = 0;
+    /** I dischi arrivati prima che ci fosse una macchina in cui metterli. */
+    this.pending = [];
     this.build();
   }
 
@@ -177,6 +179,7 @@ class PCSession {
     });
     if (floppy) this.insertFloppy(floppy, 'FreeDOS');
     this.savedDiskWrites = 0;
+    this.mountPending();
 
     try {
       this.audio = new Speaker();
@@ -422,42 +425,70 @@ class PCSession {
     this.acceptFiles([...(event.dataTransfer?.files ?? [])]);
   }
 
+  /**
+   * Quello che qualcuno ha lasciato cadere sulla finestra, tutto insieme.
+   *
+   * Si guardano prima le ROM e poi i dischi, e non nell'ordine in cui il
+   * browser consegna i file: chi trascina il BIOS e il dischetto in un colpo
+   * solo si aspetta che la macchina si accenda con dentro il dischetto, non
+   * che il secondo file sparisca perché il primo ha già acceso tutto. E un
+   * dischetto arrivato prima del BIOS non si butta: si mette da parte, e ci
+   * si torna appena c'è un lettore in cui infilarlo.
+   */
   async acceptFiles(files) {
+    let bios = false;
     for (const file of files) {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const image = classifyImage(bytes);
-      if (image?.kind === 'floppy') {
-        if (!this.machine) {
-          this.setStatus('Prima serve il BIOS');
-          continue;
-        }
-        this.insertFloppy(bytes, file.name);
-        continue;
-      }
-      if (image?.kind === 'hdd') {
-        if (!this.machine) {
-          this.setStatus('Prima serve il BIOS');
-          continue;
-        }
-        this.machine.hdc.disk.data.set(bytes.subarray(0, this.machine.hdc.disk.data.length));
-        this.machine.hdc.disk.writes = 0;
-        this.savedDiskWrites = 0;
-        this.updateDrives();
-        this.setStatus(`Disco fisso da ${image.label} montato — premi Reset per avviarlo`);
+      if (image) {
+        this.pending.push({ bytes, name: file.name, ...image });
         continue;
       }
       const kind = acceptROMFile(bytes);
       if (kind === 'bios') {
-        this.setStatus('BIOS salvato — accensione…');
-        this.overlay.replaceChildren();
-        await this.start();
-        return;
+        bios = true;
+        continue;
       }
       if (kind === 'card') {
-        this.setStatus('ROM della scheda salvata — ricarica la macchina per montarla');
+        this.setStatus(
+          this.machine
+            ? 'ROM della scheda salvata — ricarica la pagina per montarla'
+            : 'ROM della scheda salvata',
+        );
         continue;
       }
       this.setStatus(`«${file.name}» non è né una ROM né un'immagine di disco`);
+    }
+
+    if (bios && !this.machine) {
+      this.setStatus('BIOS salvato — accensione…');
+      this.overlay.replaceChildren();
+      await this.start();
+      return;
+    }
+    this.mountPending();
+  }
+
+  /**
+   * I dischi messi da parte finiscono dentro la macchina appena ce n'è una.
+   * Finché non c'è, restano dove sono: il BIOS può sempre arrivare dopo.
+   */
+  mountPending() {
+    if (!this.machine) {
+      if (this.pending.length) this.setStatus('Prima serve il BIOS: il disco aspetta qui');
+      return;
+    }
+    for (const { bytes, name, kind, label } of this.pending.splice(0)) {
+      if (kind === 'floppy') {
+        if (this.insertFloppy(bytes, name)) storeFloppy(bytes);
+        continue;
+      }
+      const disk = this.machine.hdc.disk;
+      disk.data.set(bytes.subarray(0, disk.data.length));
+      disk.writes = 0;
+      this.savedDiskWrites = 0;
+      this.updateDrives();
+      this.setStatus(`Disco fisso da ${label} montato — premi Reset per avviarlo`);
     }
   }
 
