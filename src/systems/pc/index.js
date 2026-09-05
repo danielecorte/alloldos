@@ -141,7 +141,7 @@ class PCSession {
     this.listeners = [
       [window, 'keydown', (event) => this.onKeyDown(event)],
       [window, 'keyup', (event) => this.onKeyUp(event)],
-      [window, 'blur', () => this.machine?.keyboard.reset()],
+      [window, 'blur', () => this.machine?.keyboard.releaseAll()],
       [window, 'beforeunload', (event) => this.warnUnsaved(event)],
       [this.root, 'dragover', (event) => this.onDragOver(event)],
       [this.root, 'dragleave', () => this.root.classList.remove('pc--dropping')],

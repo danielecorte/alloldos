@@ -62,6 +62,9 @@ export class XTKeyboard {
     /** Il bit 7 della porta B alto: il registro è tenuto azzerato. */
     this.cleared = true;
     this.irq = false;
+    /** Quali tasti sono giù: il processore dentro la tastiera lo sa, perché è
+     *  lui a passare la matrice. */
+    this.down = new Set();
   }
 
   /** I due fili come li mette la porta B della PPI. */
@@ -103,13 +106,30 @@ export class XTKeyboard {
 
   /** Un tasto premuto: il suo numero nella matrice. */
   press(code) {
+    this.down.add(code & 0x7f);
     this.queue.push(code & 0x7f);
     this.deliver();
   }
 
   /** Lo stesso tasto lasciato andare: lo stesso numero con il bit 7 acceso. */
   release(code) {
+    this.down.delete(code & 0x7f);
     this.queue.push((code & 0x7f) | 0x80);
+    this.deliver();
+  }
+
+  /**
+   * Tutti i tasti lasciati andare in una volta.
+   *
+   * Serve a chi guarda la tastiera da fuori: quando la finestra del browser
+   * perde il fuoco i rilasci non arrivano più, e senza questo la macchina
+   * resterebbe convinta che lo shift è ancora premuto. Sono rilasci veri, uno
+   * per tasto, non un reset: il reset è quello dell'accensione e mette il
+   * clock a terra, e a macchina accesa nessuno lo rialzerebbe più.
+   */
+  releaseAll() {
+    for (const code of this.down) this.queue.push(code | 0x80);
+    this.down.clear();
     this.deliver();
   }
 }

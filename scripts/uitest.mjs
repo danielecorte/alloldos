@@ -652,6 +652,21 @@ if (pc.machine === null) {
   check('a key press becomes an XT scan code', queued.includes(0x1e), queued.join(' '));
   sendKey('keyup', 'KeyA', 'a');
 
+  // Quando la finestra perde il fuoco i rilasci non arrivano più, e i tasti
+  // rimasti giù vanno lasciati andare. Ma solo quelli: il reset della tastiera
+  // è quello dell'accensione, mette a terra il filo del clock, e a macchina
+  // accesa nessuno lo rialza più — chi lo chiamasse qui si ritroverebbe una
+  // tastiera muta fino al prossimo Reset.
+  sendKey('keydown', 'ShiftLeft', 'Shift');
+  for (const handler of listeners.get('blur') ?? []) handler({});
+  check('losing focus lets go of the keys still held', pc.machine.keyboard.down.size === 0);
+  check('but leaves the keyboard able to talk', pc.machine.keyboard.held === false);
+  pc.machine.keyboard.queue.length = 0;
+  sendKey('keydown', 'KeyB', 'b');
+  const afterBlur = pc.machine.keyboard.queue.concat(pc.machine.keyboard.latch);
+  check('so the next key still gets through', afterBlur.includes(0x30), afterBlur.join(' '));
+  sendKey('keyup', 'KeyB', 'b');
+
   // Lo schermo intero e la barra che si nasconde, come sulle altre due.
   pc.toggleFullscreen();
   check('fullscreen hands the screen to the machine', document.fullscreenElement === pc.root);
