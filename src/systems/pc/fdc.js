@@ -331,9 +331,13 @@ export class FDC765 {
     // sull'accensione: ora la posizione della testina la sa per averla vista.
     this.resetSense = 0;
     this.seekEnd = true;
-    // Senza disco la testina non trova mai la traccia zero: il chip ci prova
-    // per settantasette passi e poi si arrende con l'errore di ricerca.
-    this.st0 = drive.ready ? this.makeST0(0, 0x20) : this.makeST0(1, 0x30);
+    // Il disco non c'entra: la traccia zero la sente un interruttore
+    // meccanico, che sta nel lettore e non sul dischetto. Un lettore vuoto si
+    // ricalibra come un altro — e deve, perché il POST conta i lettori così:
+    // se qui rispondesse un errore, un PC con il lettore vuoto direbbe di non
+    // averne nessuno. Del dischetto che manca ci si accorge dopo, alla prima
+    // lettura, quando sotto la testina non passa niente.
+    this.st0 = this.makeST0(0, 0x20);
     this.finish([]);
   }
 
@@ -344,7 +348,7 @@ export class FDC765 {
     drive.cylinder = this.command[2] & 0xff;
     this.resetSense = 0;
     this.seekEnd = true;
-    this.st0 = drive.ready ? this.makeST0(0, 0x20) : this.makeST0(1, 0x30);
+    this.st0 = this.makeST0(0, 0x20); // anche qui: la testina si muove lo stesso
     this.finish([]);
   }
 

@@ -224,9 +224,10 @@ class PCSession {
         — la <a href="${XTIDE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>,
         cioè la ROM della scheda del disco fisso: senza, la macchina ha solo il
         lettore di dischetti</li>
-        <li>un dischetto avviabile: quello di
+        <li>un dischetto avviabile, se ti va: quello di
         <a href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS</a>
-        da 720 KB va benissimo, e si trascina qui come gli altri</li>
+        da 720 KB si trascina qui come gli altri — ma non serve per accendere,
+        perché il DOS sta già sul disco fisso</li>
       </ul>
     `;
 
@@ -239,9 +240,10 @@ class PCSession {
     const notes = element('div', 'pc__panel-note');
     notes.innerHTML = `
       <p>I file si riconoscono dal contenuto, quindi il nome non conta. Se hai
-      clonato il repository, in cartella bastano <code>npm run fetch-roms</code>
-      e <code>npm run make-hdd</code>: il secondo installa FreeDOS su un disco
-      da venti mega facendolo alla macchina, con FDISK e FORMAT veri.</p>
+      clonato il repository basta <code>npm run fetch-roms</code>. Il disco
+      fisso invece viaggia con alloldos: venti mega con FreeDOS già installato
+      sopra — installato dalla macchina stessa, con FDISK e FORMAT veri — e la
+      macchina si accende lì, su <code>C:\></code>.</p>
       <p>Niente di tutto questo esce dal tuo browser: alloldos non ha un server
       a cui mandarlo.</p>
     `;

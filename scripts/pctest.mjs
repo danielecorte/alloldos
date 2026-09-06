@@ -665,12 +665,20 @@ section('Il lettore di dischetti (765)');
 {
   const drive = new FloppyDrive();
   check('un lettore vuoto non è pronto', !drive.ready);
+
+  // Un lettore vuoto si muove lo stesso: la traccia zero la sente un
+  // interruttore dentro il lettore, non il dischetto. È la differenza fra un
+  // lettore aperto e un lettore rotto, e il POST la usa per contare i lettori.
   const fdc = new FDC765({ dma: null, onInterrupt: () => {} });
   fdc.write(0x3f2, 0x0c);
   fdc.write(0x3f5, 0x07); // ricalibrazione senza disco
   fdc.write(0x3f5, 0x00);
   fdc.write(0x3f5, 0x08);
-  check('senza disco la testina non trova mai la traccia zero', (fdc.read(0x3f5) & 0xd0) === 0x50);
+  check('senza disco la testina va lo stesso alla traccia zero', fdc.read(0x3f5) === 0x20 && fdc.read(0x3f5) === 0);
+
+  // Del dischetto che manca ci si accorge quando si prova a leggerlo.
+  for (const byte of [0x46, 0x00, 0, 0, 1, 2, 9, 0x1b, 0xff]) fdc.write(0x3f5, byte);
+  check('e la lettura è quella che si accorge che non c\'è niente', (fdc.read(0x3f5) & 0xc8) === 0x48);
 }
 
 section('Il disco fisso (XT-CF)');
@@ -795,9 +803,11 @@ GLaBIOS è libero e si prende con \`npm run fetch-roms\`.`);
   check('nessun errore di DMA: la memoria si sta rinfrescando', !shown.includes('DMA'));
   check('e nessuno di memoria', !shown.includes('MEM'));
 
-  // Senza dischetto nel lettore il POST trova un errore, ed è giusto così: il
-  // controllore c'è e risponde, ma la testina non trova la traccia zero.
+  // Il lettore è vuoto, e il POST non se ne lamenta: un PC acceso senza
+  // dischetto dentro conta il suo lettore, non trova da dove partire, e lo
+  // dice. Quello che non deve mai comparire è un errore del controllore.
   check('il controllore del disco risponde al BIOS', !shown.includes('FDC'), screen[10]);
+  check('e il lettore vuoto viene contato lo stesso', /FDD\s+\[ 1 \]/.test(shown));
 
   const timer = () => pc.ram[0x46c] | (pc.ram[0x46d] << 8);
   const before = timer();
@@ -849,7 +859,7 @@ Si prende con \`npm run fetch-roms\`.`);
 if (!have.bios || !have.card || !have.hdd) {
   console.log(`
 Nessun disco fisso in roms/pc: la prova di avvio da C: è stata saltata.
-Si costruisce con \`npm run make-hdd\` (ci vuole meno di un minuto).`);
+Dovrebbe esserci — viaggia col repository — e \`npm run make-hdd\` lo rifà.`);
 } else {
   section('Avvio vero: FreeDOS dal disco fisso');
 
@@ -880,6 +890,14 @@ Si costruisce con \`npm run make-hdd\` (ci vuole meno di un minuto).`);
   check('e sopravvive a un riavvio', dos.waitFor(/C:\\>/, 4000));
   dos.command('type c:\\prova.txt');
   check('il file è ancora dov\'era', /ciao/i.test(dos.screen()), dos.lastLine());
+
+  // E il caso normale, che è quello di chiunque apra la pagina: nessun
+  // dischetto nel lettore, nessun tasto premuto. Il POST conta il lettore
+  // vuoto, la scheda trova il disco, il menu scade da sé e parte il DOS —
+  // come si accendeva un PC da quando il disco fisso c'era.
+  const alone = new Session(bootPC({ disk: 'installed', floppy: false }));
+  check('e senza dischetto, senza toccare niente, parte da C:', alone.waitFor(/C:\\>/, 1800), alone.lastLine());
+  check('con il lettore vuoto contato lo stesso', /FDD\s+\[ 1 \]/.test(alone.screen()));
 }
 
 console.log(failures === 0 ? '\nPC OK.' : `\n${failures} problema/i.`);

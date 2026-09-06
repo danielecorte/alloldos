@@ -35,9 +35,12 @@ che manca ancora.
 
 ```sh
 npm run fetch-roms   # le ROM libere e quelle che si possono scaricare
-npm run make-hdd     # il disco fisso del PC, con FreeDOS installato sopra
 npm start            # http://localhost:8080
 ```
+
+Il disco fisso del PC è già in cartella — `roms/pc/hdd.img`, venti mega con
+FreeDOS installato sopra, l'unica immagine che viaggia con alloldos — e
+`npm run make-hdd` serve solo a rifarlo da capo.
 
 Nessuna dipendenza, nessun passo di build: sono moduli ES serviti così come
 sono. `npm test` esegue sette prove a schermo spento: la prima accende il C64,
@@ -110,8 +113,9 @@ l'A600, l'A1200 e il CDTV tengono la loro.
   progetto pubblica solo dentro l'archivio dell'edizione a dischetti — lo script
   scarica quello e tira fuori l'immagine che serve.
 
-Poi `npm run make-hdd` prepara un disco fisso da venti mega con FreeDOS
-installato sopra. Sono tutti file liberi, e nessuno è nel repository.
+Sono tutti file liberi, e nessuno dei tre è nel repository. Il **disco fisso**
+invece sì: `roms/pc/hdd.img` c'è già, con FreeDOS installato sopra, e
+`npm run make-hdd` serve solo a rifarlo.
 
 **Lo ZX Spectrum** sta in mezzo fra i due casi. La sua ROM è di Amstrad, che
 comprò Sinclair nel 1986 e che da allora ne permette la ridistribuzione insieme
@@ -512,8 +516,9 @@ avviare.
 
 È l'unica macchina di alloldos che è **libera fino in fondo**: BIOS libero
 (GLaBIOS, GPLv3), ROM della scheda del disco libera (XTIDE Universal BIOS,
-GPLv2), sistema operativo libero (FreeDOS). Niente di tutto questo è nel
-repository — nessun firmware lo è — ma tutto si scarica con un comando.
+GPLv2), sistema operativo libero (FreeDOS). Il firmware non è nel repository —
+non lo è per nessuna macchina — ma **il disco fisso sì**, ed è l'unica immagine
+che viaggia con alloldos: si può, perché quello che c'è sopra è libero.
 
 Ci si accende sopra **FreeDOS**, dal dischetto o dal disco fisso:
 
@@ -569,7 +574,12 @@ scheda. La ROM è la [XTIDE Universal
 BIOS](https://www.xtideuniversalbios.org/), GPLv2, e la scarica
 `npm run fetch-roms`.
 
-Il disco si prepara con:
+**Il disco arriva già pronto**: `roms/pc/hdd.img` è nel repository, la macchina
+lo trova acceso e si avvia su `C:\>` senza dischetto — che è come si accendeva
+un PC dal 1988 in poi, e come si accende questo sia in locale sia sulla pagina
+pubblica.
+
+Preparato però non da noi. Il disco si rifà con:
 
 ```sh
 npm run make-hdd
@@ -581,13 +591,19 @@ che ci si batteva allora, uno per uno: `FDISK /AUTO` per la partizione,
 `FDISK /MBR` per il codice che ci sta davanti, un riavvio perché il DOS se ne
 accorga, `FORMAT C:`, `SYS C:`, e poi la copia dei programmi. La tabella delle
 partizioni e la FAT le scrivono FDISK e FORMAT veri, girando sul 286: è l'unico
-modo di essere sicuri che siano giuste.
+modo di essere sicuri che siano giuste. L'immagine che sta nel repository è
+uscita da lì, ed è verificabile: rifalla e viene **identica byte per byte** —
+una macchina emulata non ha niente di casuale dentro, e un XT non ha nemmeno
+un orologio da cui prendere l'ora.
 
-Il disco finito sta in `roms/pc/hdd.img` e non è nel repository. Dalla pagina
-pubblica si parte con un disco **vuoto** — venti mega di zeri, come si comprava
-— e lo si può partizionare e formattare a mano, che è esattamente il pomeriggio
-che ci passava chiunque nel 1988. **Salva il disco fisso** se lo riporta via
-come file, e ritrascinandolo lo si rimette dentro.
+Venti mega, di cui scritti settecento KB: il resto sono zeri, e git se li
+comprime in quattrocento e rotti KB. Chi apre la pagina però se li scarica tutti
+e venti, perché un `.img` non si comprime per strada.
+
+Chi il pomeriggio del 1988 se lo vuole passare davvero può togliere il file:
+senza `hdd.img` la macchina monta un disco **vuoto**, venti mega di zeri come si
+comprava, da partizionare e formattare a mano. **Salva il disco fisso** riporta
+via come file quello che c'è dentro adesso, e ritrascinandolo lo si rimette.
 
 ### Cosa c'è dentro
 
@@ -842,6 +858,14 @@ stesse libertà.
 Le ROM del Commodore 64 (KERNAL, BASIC, generatore di caratteri) e la Kickstart
 dell'Amiga sono proprietà Commodore/Cloanto: non sono incluse in questo progetto
 e non sono coperte da questa licenza.
+
+Un'eccezione c'è, ed è il disco fisso del PC. `roms/pc/hdd.img` contiene
+**FreeDOS 1.3** — kernel, `COMMAND.COM` e i programmi in `C:\FDOS\BIN` — che è
+software libero sotto **GNU GPL versione 2**, ridistribuito qui in forma binaria
+insieme al resto. I sorgenti stanno dove sta il resto di FreeDOS, nel
+[repository dei pacchetti](https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/1.3/base/):
+ogni pacchetto si porta dietro il proprio, dentro `SOURCE/`. Il disco lo si
+rifà dal dischetto ufficiale con `npm run make-hdd`.
 
 Scritto da Daniele Corte e Claude Code. Il codice sta su
 [github.com/danielecorte/alloldos](https://github.com/danielecorte/alloldos).

@@ -9,9 +9,11 @@
 //
 // Il sistema operativo di questa macchina è FreeDOS, che sta a DOS come AROS
 // sta al Kickstart: scritto da zero, libero, e capace di far girare le stesse
-// cose. Non è nel repository — nessun software di sistema lo è — ma a
-// differenza del Kickstart si scarica in un colpo solo dal sito del progetto,
-// ed è quello che fa `npm run fetch-roms`.
+// cose. Il dischetto di avvio non è nel repository — si scarica in un colpo
+// solo dal sito del progetto, ed è quello che fa `npm run fetch-roms` — ma il
+// disco fisso con FreeDOS sopra sì, ed è l'unica immagine che viaggia con
+// alloldos: quello che c'è sopra è libero, e senza il DOS installato questa
+// macchina non è una macchina, è un pomeriggio di FDISK.
 
 import { formatOf } from './fdc.js';
 import { DISK_SIZE, HardDisk } from './ata.js';
@@ -36,7 +38,12 @@ export const FREEDOS_SPEC = {
     'https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/distributions/1.3/official/FD13-FloppyEdition.zip',
 };
 
-/** L'immagine del disco fisso, che si costruisce in casa con `npm run make-hdd`. */
+/**
+ * L'immagine del disco fisso. È l'unica cosa che alloldos si porta dietro
+ * davvero: venti mega con FreeDOS già installato sopra, che stanno nel
+ * repository perché FreeDOS è libero. `npm run make-hdd` la rifà da capo,
+ * facendo installare il DOS alla macchina.
+ */
 export const HDD_SPEC = { file: 'hdd.img', size: DISK_SIZE, label: 'disco fisso' };
 
 const FLOPPY_KEY = 'alloldos.pc.floppy';
@@ -70,10 +77,11 @@ export async function loadFloppy() {
 }
 
 /**
- * Il disco fisso. Se ce n'è uno già installato lo si monta, altrimenti se ne
- * monta uno vuoto: venti mega di zeri, che è esattamente quello che si
- * comprava — un disco nuovo non ha niente sopra, nemmeno una partizione, e
- * toccava a te partizionarlo e formattarlo.
+ * Il disco fisso: quello installato, se c'è — ed è il caso normale, perché
+ * viaggia con la pagina — e altrimenti uno vuoto. Venti mega di zeri erano
+ * esattamente quello che si comprava: un disco nuovo non aveva niente sopra,
+ * nemmeno una partizione, e toccava a te partizionarlo e formattarlo. Chi
+ * vuole quel pomeriggio lì può togliere `roms/pc/hdd.img`.
  *
  * @returns {Promise<HardDisk>}
  */

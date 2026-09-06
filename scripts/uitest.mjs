@@ -641,6 +641,11 @@ if (pc.machine === null) {
   check('with all 640 KB counted', /RAM\s+\[ 640 KB OK \]/.test(post));
   check('and finds the hard disk card', post.includes('C800') && post.includes('XTIDE'));
   check('and boots an operating system', reached !== '', reached || 'nessun prompt');
+  // E lo prende dal disco fisso, che viaggia con la pagina: chi apre alloldos
+  // trova il DOS installato, non un disco da partizionare.
+  if (existsSync(join(ROOT, 'roms', 'pc', 'hdd.img'))) {
+    check('from the hard disk that ships with the page', reached === 'C:', reached);
+  }
 
   // La spia del lettore e quella del disco escono dallo stato vero dei chip.
   pc.updateDrives();

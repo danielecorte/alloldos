@@ -1,5 +1,14 @@
 # Commodore firmware: fetch it yourself with `npm run fetch-roms`.
-/roms/
+/roms/*
+!/roms/pc/
+/roms/pc/*
+
+# One exception: the PC's hard disk. It is not firmware — it is a disk that
+# FreeDOS installed on itself inside the emulator (`npm run make-hdd`), and it
+# ships so the 286 comes up on C:\> the way it did in 1988. Twenty megabytes of
+# mostly zeros: git stores it in about four hundred KB. FreeDOS is GPLv2 and its
+# sources are at freedos.org — see the README.
+!/roms/pc/hdd.img
 
 # Tape and disk images belong to whoever made the games on them.
 *.tap

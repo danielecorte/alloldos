@@ -248,7 +248,7 @@ if (!haveFloppy) {
 
 if (haveFloppy) {
   console.log(`  ${FREEDOS_URL} \u2014 GPL, and it is the machine's operating system`);
-  console.log('\nUn disco fisso con FreeDOS gi\u00e0 installato si fa con `npm run make-hdd`.');
+  console.log('\nIl disco fisso con FreeDOS sopra \u00e8 gi\u00e0 in roms/pc: `npm run make-hdd` lo rif\u00e0.');
 }
 
 /**

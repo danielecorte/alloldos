@@ -290,8 +290,10 @@ class AboutPage {
       software guarda; la scheda intorno è quella che il BIOS sa avviare.</p>
       <p>Ci gira sopra <b>FreeDOS</b>, che sta al DOS come AROS sta alla
       Kickstart: scritto da zero, libero, e capace di far girare le stesse cose.
-      Si accende dal dischetto o dal <b>disco fisso da 20 MB</b>, e arriva al
-      suo prompt.</p>
+      Il <b>disco fisso da 20 MB</b> arriva già installato — è l'unica immagine
+      che viaggia con alloldos, e si può perché quello che c'è sopra è libero —
+      quindi la macchina si accende su <code>C:\></code> senza dischetto,
+      com'era una volta messo via l'ultimo floppy.</p>
 
       <h3 class="about__heading">Dove trovare le ROM</h3>
       <p>Qui, per una volta, si scarica tutto — e sono tre pezzi distinti,
@@ -304,15 +306,18 @@ class AboutPage {
         <a class="about__link" href="${XTIDE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>
         (GPLv2): un BIOS XT non sa cosa sia un disco fisso, e chi lo sa è la
         scheda, che se lo porta dietro in dodici KB a C800;</li>
-        <li>un <b>dischetto avviabile</b>: quello di
+        <li>un <b>dischetto avviabile</b>, se lo si vuole: quello di
         <a class="about__link" href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS 1.3</a>
-        da 720 KB, che è l'unica misura che un controllore XT sappia leggere.</li>
+        da 720 KB, che è l'unica misura che un controllore XT sappia leggere. Il
+        DOS però sta già sul disco fisso, e senza dischetto la macchina parte lo
+        stesso.</li>
       </ul>
-      <p class="about__note">Si trascinano sulla finestra come le altre. Chi ha
-      clonato il repository ha <code>npm run fetch-roms</code>, e in più
-      <code>npm run make-hdd</code>: un disco da venti mega con FreeDOS
-      installato sopra — installato <i>dalla macchina</i>, con FDISK e FORMAT
-      veri battuti sulla tastiera come li batterebbe una persona.</p>
+      <p class="about__note">Si trascinano sulla finestra come le altre, e chi
+      ha clonato il repository ha <code>npm run fetch-roms</code>. Il disco
+      fisso invece c'è già: venti mega con FreeDOS installato sopra —
+      installato <i>dalla macchina</i>, con FDISK e FORMAT veri battuti sulla
+      tastiera come li batterebbe una persona, ed è quello che rifà
+      <code>npm run make-hdd</code>.</p>
 
       <h3 class="about__heading">Cosa è stato fatto</h3>
       <ul class="about__list">
