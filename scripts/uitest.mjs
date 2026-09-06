@@ -714,6 +714,14 @@ if (pc.machine === null) {
       'and the floppy that came with it is in the drive',
       bare.machine?.fdc.drives[0].medium !== null,
     );
+
+    // Il BIOS da solo non basta più: senza la ROM della scheda non c'è C:, e
+    // il DOS sta lì. La macchina si accende lo stesso — era la normalità —
+    // ma lo chiede, invece di lasciarlo capire dal "Disk Boot Fail".
+    const askText = bare.overlay.children
+      .map((node) => [node.innerHTML, ...node.children.map((n) => n.innerHTML || n.textContent)].join(' '))
+      .join(' ');
+    check('and it asks for the disk card, which it never used to', askText.includes('xtide.bin'), bare.status.textContent);
     bare.dispose();
 
     // E ci resta: chi torna sulla pagina domani non deve ritrascinarlo.
@@ -736,6 +744,7 @@ if (pc.machine === null) {
       }
       check('and the POST finds it at C800', /C800/.test(cardScreen()), again.status.textContent);
       check('with the floppy still in the drive', again.machine.fdc.drives[0].medium !== null);
+      check('and the panel that asked for it is gone', again.overlay.children.length === 0);
     }
     again.dispose();
 

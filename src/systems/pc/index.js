@@ -191,12 +191,8 @@ class PCSession {
     this.overlay.replaceChildren();
     this.root.focus();
     this.updateDrives();
-    this.setStatus(
-      card
-        ? 'Accensione…'
-        : `Accensione senza la scheda del disco fisso: il DOS sta sul disco, e senza `
-          + `${CARD_SPEC.file} non ci si arriva — trascinala qui`,
-    );
+    this.setStatus('Accensione…');
+    if (!card) this.showCardPrompt();
 
     this.running = true;
     this.lastTime = performance.now();
@@ -253,6 +249,60 @@ class PCSession {
 
     this.overlay.replaceChildren(panel);
     this.setStatus('Serve il BIOS — trascinalo sulla finestra');
+  }
+
+  /**
+   * Il BIOS c'è, la macchina è accesa, e la scheda del disco no. Prima era una
+   * mancanza da poco — si partiva dal dischetto — e bastava scriverlo nella
+   * barra in fondo, che è il posto dove non si guarda. Da quando il DOS sta sul
+   * disco fisso è invece la differenza fra una macchina e un cartello che dice
+   * che non c'è niente da cui partire, e quindi lo si chiede in faccia, come si
+   * chiede il BIOS. Chiesto, non preteso: si può sempre andare avanti senza, e
+   * accendere un PC senza disco fisso nel 1988 era la normalità.
+   */
+  showCardPrompt() {
+    const panel = element('div', 'pc__panel');
+    panel.innerHTML = `
+      <h2>Manca la scheda del disco fisso</h2>
+      <p>Il BIOS c'è, e la macchina è accesa. Ma un BIOS XT non sa cosa sia un
+      disco fisso — nel 1981 il disco fisso non c'era — e chi lo sa è la
+      <b>scheda</b>, che se lo porta dietro in una ROM da dodici KB. Senza
+      quella non esiste nessun <code>C:</code>, e su <code>C:</code> c'è il DOS:
+      venti mega con FreeDOS già installato sopra, che alloldos si porta dietro
+      e che sono l'unico modo che questa macchina ha di arrivare a un prompt
+      senza un dischetto.</p>
+      <ul>
+        <li><a href="${XTIDE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">${CARD_SPEC.file}</a>
+        — la <a href="${XTIDE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>
+        (GPLv2), dieci KB: <b>trascinala sulla finestra</b> come hai fatto col
+        BIOS, e resta salvata in questo browser</li>
+      </ul>
+    `;
+
+    const pick = element('button', 'pc__button');
+    pick.type = 'button';
+    pick.textContent = 'Scegli il file…';
+    pick.addEventListener('click', () => this.pickFile());
+
+    const skip = element('button', 'pc__button');
+    skip.type = 'button';
+    skip.textContent = 'Accendi lo stesso';
+    skip.addEventListener('click', () => {
+      this.overlay.replaceChildren();
+      this.root.focus();
+      this.setStatus('Senza disco fisso: da qui si parte solo con un dischetto in A:');
+    });
+    panel.append(pick, skip);
+
+    const note = element('div', 'pc__panel-note');
+    note.innerHTML = `
+      <p>Non serve ricaricare niente: appena arriva, la macchina si rifà da
+      capo e riparte — una ROM di scheda si aggancia solo all'accensione.</p>
+    `;
+    panel.append(note);
+
+    this.overlay.replaceChildren(panel);
+    this.setStatus(`Manca ${CARD_SPEC.file}: senza, niente C: — e il DOS sta lì`);
   }
 
   // ------------------------------------------------------------------- loop
@@ -490,6 +540,8 @@ class PCSession {
       cards: [{ base: CARD_ROM_BASE, bytes: card }],
     });
     if (floppy) this.machine.fdc.drives[0].insert(floppy);
+    this.overlay.replaceChildren();
+    this.root.focus();
     this.updateDrives();
     this.setStatus('Scheda del disco fisso montata — la macchina riparte, e adesso C: c\'è');
     return true;
