@@ -9,6 +9,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { FAT16 } from '../src/systems/pc/fat.js';
+
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 
 // ------------------------------------------------------------ the stub DOM
@@ -687,6 +689,40 @@ if (pc.machine === null) {
     await pc.acceptFiles([asFile('prova.img', bytes)]);
     check('a dropped .img goes into the drive', pc.machine.fdc.drives[0].medium !== null);
     check('and the machine says which one and how big', pc.status.textContent.includes('720 KB'), pc.status.textContent);
+  }
+
+  // E un file che non è né una ROM né un disco: quello finisce *dentro* la
+  // macchina, su C:\SCARICATI. Come è fatta la FAT lo prova pctest.mjs
+  // facendola leggere a FreeDOS; qui si prova il filo che ci arriva — il
+  // pannello, il file, il disco che se lo ritrova sopra.
+  {
+    const before = pc.machine.hdc.disk.writes;
+    await pc.acceptFiles([asFile('appunti di ieri.txt', new TextEncoder().encode('ciao dal 2026'))]);
+    const volume = FAT16.of(pc.machine.hdc.disk.data);
+    const written = volume?.read('SCARICATI\\APPUNTID.TXT');
+    check(
+      'a dropped file lands on the hard disk, in C:\\SCARICATI',
+      written !== null && new TextDecoder().decode(written) === 'ciao dal 2026',
+      pc.status.textContent,
+    );
+    check('with the short name it will have under DOS', pc.status.textContent.includes('APPUNTID.TXT'), pc.status.textContent);
+    check('and the disk knows it has been written to', pc.machine.hdc.disk.writes > before);
+    // Il disco cambiato e non salvato è quello che si perde chiudendo la
+    // scheda: la pagina deve chiederlo prima, e adesso ha di che chiedere.
+    let asked = false;
+    pc.warnUnsaved({ preventDefault: () => { asked = true; } });
+    check('so leaving the page now asks first', asked);
+  }
+
+  // Uno zip rotto non deve sparire in silenzio né essere scambiato per un
+  // disco: si dice cosa non andava, e sul disco non si scrive niente.
+  {
+    const broken = new Uint8Array(64);
+    broken.set([0x50, 0x4b, 0x03, 0x04]); // le iniziali di Phil Katz, e poi niente
+    const untouched = pc.machine.hdc.disk.writes;
+    await pc.acceptFiles([asFile('rotto.zip', broken)]);
+    check('a broken zip says what was wrong with it', /rotto\.zip/.test(pc.status.textContent), pc.status.textContent);
+    check('and nothing gets written to the disk', pc.machine.hdc.disk.writes === untouched);
   }
 
   // E il caso del sito pubblicato, dove nessuna ROM sta sul server e arriva

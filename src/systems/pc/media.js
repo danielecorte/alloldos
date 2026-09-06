@@ -17,6 +17,7 @@
 
 import { formatOf } from './fdc.js';
 import { DISK_SIZE, HardDisk } from './ata.js';
+import { isZip } from './zip.js';
 
 /** Il progetto, per i crediti e per chi lo vuole andare a prendere. */
 export const FREEDOS_URL = 'https://www.freedos.org/';
@@ -121,14 +122,27 @@ export function storeFloppy(bytes) {
 }
 
 /**
- * Cosa è il file che qualcuno ha appena lasciato cadere sulla finestra.
+ * Cosa è il file che qualcuno ha appena lasciato cadere sulla finestra: un
+ * dischetto, un disco fisso, o niente di tutto questo — e allora è roba da
+ * mettere *dentro* la macchina, non da montarci.
+ *
+ * Un'immagine di disco non ha niente che la dichiari, quindi la si riconosce
+ * da come è fatta: la misura giusta per un dischetto, e per un disco fisso o
+ * la misura esatta di questo — un disco salvato da qui e riportato indietro —
+ * oppure una tabella delle partizioni in testa. Senza quella regola un file
+ * qualunque, lungo per caso un multiplo di 512, si sarebbe visto montare al
+ * posto del disco fisso.
+ *
  * @param {Uint8Array} bytes
  * @returns {?{kind:'floppy'|'hdd', label:string}}
  */
 export function classifyImage(bytes) {
+  if (isZip(bytes)) return null;
   const format = formatOf(bytes);
   if (format) return { kind: 'floppy', label: format.label };
-  if (bytes.length >= 1024 * 1024 && bytes.length % 512 === 0) {
+  const partitioned = bytes.length > 512 && bytes[510] === 0x55 && bytes[511] === 0xaa;
+  const plausible = bytes.length === DISK_SIZE || (partitioned && bytes.length >= 1024 * 1024);
+  if (plausible && bytes.length % 512 === 0) {
     return { kind: 'hdd', label: `${Math.round(bytes.length / 1024 / 1024)} MB` };
   }
   return null;

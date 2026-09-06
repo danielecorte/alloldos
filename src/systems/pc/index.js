@@ -20,6 +20,13 @@ import {
 } from './roms.js';
 import { loadFloppy, loadHardDisk, storeFloppy, classifyImage, FREEDOS_URL } from './media.js';
 import { formatOf } from './fdc.js';
+import {
+  loadIntoDisk,
+  NoFilesystemError,
+  FullDiskError,
+  FullDirectoryError,
+  UnreadableZipError,
+} from './files.js';
 
 const MAX_CATCHUP_FRAMES = 4; // non si recupera più di tanto dopo una pausa
 
@@ -77,7 +84,7 @@ class PCSession {
     this.bar = element('div', 'pc__bar');
     this.status = element('span', 'pc__status');
     this.bar.append(
-      this.button('Metti un dischetto .img', () => this.pickFile()),
+      this.button('Carica un file', () => this.pickFile()),
       this.button('Reset', () => this.resetMachine()),
       (this.pauseButton = this.button('Pausa', () => this.togglePause())),
       (this.muteButton = this.button('Audio on', () => this.toggleMute())),
@@ -97,7 +104,8 @@ class PCSession {
 
     this.fileInput = element('input', 'pc__file');
     this.fileInput.type = 'file';
-    this.fileInput.accept = '.img,.ima,.rom,.bin';
+    // Nessun filtro: un dischetto, una ROM, e tutto il resto, che finisce sul
+    // disco fisso. Il nome non conta, si guarda cosa c'è dentro.
     this.fileInput.multiple = true;
     this.fileInput.addEventListener('change', () => {
       this.acceptFiles([...this.fileInput.files]);
@@ -180,7 +188,7 @@ class PCSession {
     });
     if (floppy) this.insertFloppy(floppy, 'FreeDOS');
     this.savedDiskWrites = 0;
-    this.mountPending();
+    await this.mountPending();
 
     try {
       this.audio = new Speaker();
@@ -508,7 +516,9 @@ class PCSession {
         card = true;
         continue;
       }
-      this.setStatus(`«${file.name}» non è né una ROM né un'immagine di disco`);
+      // Non è una ROM e non è un disco: allora è roba da mettere dentro la
+      // macchina, e la macchina ha un posto dove metterla.
+      this.pending.push({ bytes, name: file.name, kind: 'file' });
     }
 
     if (bios && !this.machine) {
@@ -518,7 +528,7 @@ class PCSession {
       return;
     }
     if (card && this.machine) await this.mountCardROM();
-    this.mountPending();
+    await this.mountPending();
   }
 
   /**
@@ -551,14 +561,21 @@ class PCSession {
    * I dischi messi da parte finiscono dentro la macchina appena ce n'è una.
    * Finché non c'è, restano dove sono: il BIOS può sempre arrivare dopo.
    */
-  mountPending() {
+  async mountPending() {
     if (!this.machine) {
-      if (this.pending.length) this.setStatus('Prima serve il BIOS: il disco aspetta qui');
+      if (this.pending.length) {
+        this.setStatus('Prima serve il BIOS: quello che hai trascinato aspetta qui');
+      }
       return;
     }
+    const loose = [];
     for (const { bytes, name, kind, label } of this.pending.splice(0)) {
       if (kind === 'floppy') {
         if (this.insertFloppy(bytes, name)) storeFloppy(bytes);
+        continue;
+      }
+      if (kind === 'file') {
+        loose.push({ bytes, name });
         continue;
       }
       const disk = this.machine.hdc.disk;
@@ -568,6 +585,48 @@ class PCSession {
       this.updateDrives();
       this.setStatus(`Disco fisso da ${label} montato — premi Reset per avviarlo`);
     }
+    if (loose.length) await this.loadFiles(loose);
+  }
+
+  /**
+   * I file che non sono né ROM né dischi finiscono sul disco fisso, in
+   * `C:\SCARICATI` — e se sono zip ci finiscono aperti, in una cartella che
+   * si chiama come l'archivio. Poi la macchina si riaccende, perché il DOS la
+   * FAT se l'è letta all'avvio e non ha nessuna intenzione di rileggerla.
+   *
+   * @param {{bytes:Uint8Array, name:string}[]} files
+   */
+  async loadFiles(files) {
+    const disk = this.machine.hdc.disk;
+    if (!disk) {
+      this.setStatus('Non c\'è nessun disco fisso su cui metterlo');
+      return;
+    }
+
+    const done = [];
+    const failed = [];
+    for (const { bytes, name } of files) {
+      try {
+        const written = await loadIntoDisk(disk, name, bytes);
+        done.push(
+          written.zip
+            ? `«${name}» aperto in ${written.folder} (${written.names.length} file)`
+            : `«${name}» copiato in ${written.folder}\\${written.names[0]}`,
+        );
+      } catch (error) {
+        failed.push(`«${name}»: ${explain(error)}`);
+      }
+    }
+
+    if (!done.length) {
+      this.setStatus(failed.join(' · '));
+      return;
+    }
+    this.updateDrives();
+    this.machine.reset();
+    this.setStatus(
+      [`${done.join(' · ')} — riaccensione, perché il DOS lo veda`, ...failed].join(' · '),
+    );
   }
 
   // -------------------------------------------------------------- schermo intero
@@ -668,6 +727,23 @@ class PCSession {
     this.audio?.close();
     this.root.remove();
   }
+}
+
+/**
+ * Perché un file non è entrato, detto a chi l'ha trascinato e non a chi ha
+ * scritto il codice.
+ */
+function explain(error) {
+  if (error instanceof NoFilesystemError) {
+    return 'su C: non c\'è nessun filesystem — prima FDISK e FORMAT C:';
+  }
+  if (error instanceof FullDiskError) {
+    const mega = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    return `sul disco non c'è più posto: ne servono ${mega(error.needed)} e ne restano ${mega(error.free)}`;
+  }
+  if (error instanceof FullDirectoryError) return 'la cartella principale del disco è piena';
+  if (error instanceof UnreadableZipError) return error.message;
+  return error.message;
 }
 
 /** Quando è successo, per dare un nome a un file di cui se ne avranno tanti. */

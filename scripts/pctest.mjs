@@ -23,10 +23,13 @@ import { PPI8255, VIDEO_CGA_80 } from '../src/systems/pc/ppi.js';
 import { XTKeyboard } from '../src/systems/pc/keyboard.js';
 import { CGA, DOTS_PER_LINE, LINES_PER_FRAME } from '../src/systems/pc/cga.js';
 import { FDC765, FloppyDrive, formatOf } from '../src/systems/pc/fdc.js';
-import { XTCF, HardDisk, GEOMETRY, XTCF_BASE } from '../src/systems/pc/ata.js';
+import { XTCF, HardDisk, GEOMETRY, XTCF_BASE, DISK_SIZE } from '../src/systems/pc/ata.js';
 import { keyFor } from '../src/systems/pc/scancodes.js';
 import { PC, CPU_CLOCK, FPS } from '../src/systems/pc/machine.js';
-import { bootPC, Session, have } from './pcsession.mjs';
+import { FAT16, shortName } from '../src/systems/pc/fat.js';
+import { isZip, readZip, UnreadableZipError } from '../src/systems/pc/zip.js';
+import { loadIntoDisk } from '../src/systems/pc/files.js';
+import { bootPC, Session, have, ROMS } from './pcsession.mjs';
 
 let failures = 0;
 
@@ -772,6 +775,260 @@ section('La tastiera');
   check('e i due punti vogliono lo shift', keyFor(':').code === 0x27 && keyFor(':').shift);
 }
 
+// ------------------------------------------------------ portare dentro un file
+
+const text = (bytes) => (bytes ? new TextDecoder().decode(bytes) : '');
+
+/** Il disco fisso del repository, com'è appena uscito da FORMAT e SYS. */
+function freshDisk() {
+  const image = new Uint8Array(DISK_SIZE);
+  image.set(new Uint8Array(readFileSync(join(ROMS, 'hdd.img'))).subarray(0, DISK_SIZE));
+  return image;
+}
+
+/**
+ * Uno zip montato a mano, perché per provare un lettore ci vuole un archivio
+ * che non venga dallo stesso codice che lo legge. È il formato del 1989 per
+ * intero: davanti una testata e i byte di ogni file, in fondo il catalogo che
+ * dice dove ognuno comincia, e in fondo al catalogo la sua fine.
+ *
+ * @param {[string, string|Uint8Array][]} entries
+ * @param {object} [broken] come romperlo apposta, per le prove che devono fallire
+ */
+async function buildZip(entries, broken = {}) {
+  const { method = DEFLATED, password = false } = broken;
+  const encoder = new TextEncoder();
+  const before = [];
+  const catalog = [];
+  let at = 0;
+
+  for (const [path, content] of entries) {
+    const raw = typeof content === 'string' ? encoder.encode(content) : content;
+    const packed = method === DEFLATED ? await deflate(raw) : raw;
+    const name = encoder.encode(path);
+    const sum = zipCRC(raw);
+
+    const head = new DataView(new ArrayBuffer(30 + name.length));
+    head.setUint32(0, 0x04034b50, true);
+    head.setUint16(4, 20, true);
+    head.setUint16(6, password ? 1 : 0, true);
+    head.setUint16(8, method, true);
+    head.setUint32(14, sum, true);
+    head.setUint32(18, packed.length, true);
+    head.setUint32(22, raw.length, true);
+    head.setUint16(26, name.length, true);
+    const local = new Uint8Array(head.buffer);
+    local.set(name, 30);
+
+    const entry = new DataView(new ArrayBuffer(46 + name.length));
+    entry.setUint32(0, 0x02014b50, true);
+    entry.setUint16(4, 20, true);
+    entry.setUint16(6, 20, true);
+    entry.setUint16(8, password ? 1 : 0, true);
+    entry.setUint16(10, method, true);
+    entry.setUint32(16, sum, true);
+    entry.setUint32(20, packed.length, true);
+    entry.setUint32(24, raw.length, true);
+    entry.setUint16(28, name.length, true);
+    entry.setUint32(42, at, true);
+    const central = new Uint8Array(entry.buffer);
+    central.set(name, 46);
+
+    before.push(local, packed);
+    catalog.push(central);
+    at += local.length + packed.length;
+  }
+
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, catalog.length, true);
+  end.setUint16(10, catalog.length, true);
+  end.setUint32(12, catalog.reduce((sum, one) => sum + one.length, 0), true);
+  end.setUint32(16, at, true);
+
+  const pieces = [...before, ...catalog, new Uint8Array(end.buffer)];
+  const out = new Uint8Array(pieces.reduce((sum, one) => sum + one.length, 0));
+  let put = 0;
+  for (const piece of pieces) {
+    out.set(piece, put);
+    put += piece.length;
+  }
+  return out;
+}
+
+const DEFLATED = 8;
+
+async function deflate(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** La stessa somma che verifica il lettore, ricalcolata qui per non fidarsi. */
+function zipCRC(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** Se il lettore di zip ha detto di no, che è quello che deve fare. */
+async function refuses(bytes) {
+  try {
+    await readZip(bytes);
+    return false;
+  } catch (error) {
+    return error instanceof UnreadableZipError;
+  }
+}
+
+/** E come si è chiamato il no del disco. */
+async function refusedBy(disk, name, bytes) {
+  try {
+    await loadIntoDisk(disk, name, bytes);
+    return '';
+  } catch (error) {
+    return error.name;
+  }
+}
+// ------------------------------------------------------ portare dentro un file
+
+section('Il nome come lo vuole il DOS');
+
+{
+  // I nomi lunghi arrivano con Windows 95, sette anni dopo questa macchina:
+  // qui un file si chiama otto più tre, e chi ne porta dentro uno che si
+  // chiama in un altro modo se lo vede accorciare, esattamente come sarebbe
+  // successo allora copiandolo da un dischetto formattato altrove.
+  const short = (name) => {
+    const { base, ext } = shortName(name);
+    return ext ? `${base}.${ext}` : base;
+  };
+  check('un nome corto resta com\'è', short('leggimi.txt') === 'LEGGIMI.TXT', short('leggimi.txt'));
+  check('uno lungo si taglia a otto', short('relazione finale.txt') === 'RELAZION.TXT', short('relazione finale.txt'));
+  check('gli spazi spariscono, come faceva il DOS', short('appunti di ieri.txt') === 'APPUNTID.TXT', short('appunti di ieri.txt'));
+  check('e il tipo si taglia a tre', short('foto.jpeg') === 'FOTO.JPE', short('foto.jpeg'));
+  check('quello che il DOS non accetta diventa un underscore', short('a+b?c.txt') === 'A_B_C.TXT', short('a+b?c.txt'));
+  check('un nome fatto di soli spazi resta pur sempre un nome', short('   .txt') === 'FILE.TXT', short('   .txt'));
+  check('e senza tipo non si mette il punto', short('LEGGIMI') === 'LEGGIMI', short('LEGGIMI'));
+  check('un punto in testa non è un tipo', short('.profilo') === '_PROFILO', short('.profilo'));
+}
+
+section('Lo zip');
+
+{
+  // Un archivio vero, montato qui byte per byte com'era nel 1989: le voci
+  // davanti, il catalogo in fondo, e la somma di controllo di ognuna. Se il
+  // lettore lo apre, apre anche quelli che arrivano da fuori.
+  const zip = await buildZip([
+    ['LEGGIMI.TXT', 'roba dalla BBS'],
+    ['DOCS/manuale.txt', 'x'.repeat(4000)], // abbastanza lungo da comprimersi
+    ['bin/gioco.com', Uint8Array.from([0xb4, 0x4c, 0xcd, 0x21])],
+  ]);
+
+  check('si riconosce dalle iniziali di Phil Katz', isZip(zip));
+  check('e un file qualunque no', !isZip(new TextEncoder().encode('non sono uno zip, ma sono lungo abbastanza')));
+
+  const entries = await readZip(zip);
+  check('ci sono dentro tutti e tre', entries.length === 3, entries.map((e) => e.path).join(' '));
+  check('con le loro cartelle', entries[1].path === 'DOCS/manuale.txt', entries[1].path);
+  check('quello compresso esce come è entrato', text(entries[1].bytes) === 'x'.repeat(4000));
+  check('e quello che non si comprime nemmeno', entries[2].bytes.join() === '180,76,205,33');
+
+  // Le cartelle vuote sono voci che finiscono con la barra: su un disco DOS
+  // non servono a niente, e non tornano indietro.
+  const withFolder = await buildZip([['VUOTA/', ''], ['DENTRO.TXT', 'ciao']]);
+  const kept = await readZip(withFolder);
+  check('una cartella vuota non è un file', kept.length === 1 && kept[0].path === 'DENTRO.TXT');
+
+  // I tre modi in cui uno zip dice di no. Il primo è quello che capita
+  // davvero: un archivio scaricato a metà, che è come arrivava dalla BBS
+  // quando la linea cadeva.
+  check('un archivio troncato lo dice', await refuses(zip.subarray(0, zip.length - 40)));
+  check('e uno con la parola d\'ordine anche',
+    await refuses(await buildZip([['SEGRETO.TXT', 'zitto']], { password: true })));
+  check('e uno compresso in un modo che non conosciamo',
+    await refuses(await buildZip([['ROBA.TXT', 'ciao']], { method: 9 })));
+
+  // Un byte cambiato in mezzo ai dati: la lunghezza torna, il contenuto no.
+  // È l'unica cosa che la somma di controllo serve a trovare.
+  const rotten = await buildZip([['ROBA.TXT', 'ciao']], { method: 0 });
+  rotten[rotten.indexOf(0x63)] = 0x64; // la «c» di «ciao» diventa una «d»
+  check('e uno rovinato per strada, che è a cosa serve la somma', await refuses(rotten));
+}
+
+if (!have.hdd) {
+  console.log('\nNessun disco fisso in roms/pc: le prove sulla FAT sono state saltate.');
+} else {
+  section('Scrivere sulla FAT');
+
+  // La FAT su cui si scrive è quella vera, quella che FORMAT.COM ha scritto
+  // girando dentro questa macchina: aprirla e ritrovarci i campi giusti è già
+  // metà della prova. L'altra metà la fa FreeDOS, più sotto.
+  const image = freshDisk();
+  const volume = FAT16.of(image);
+  check('la partizione si trova da sé', volume !== null);
+  check('ed è una FAT16 con i cluster da due KB', volume.clusterSize === 2048, `${volume.clusterSize} byte`);
+  check('con l\'etichetta che le ha messo FORMAT', volume.label === 'ALLOLDOS', volume.label);
+  check('e cinquecentododici posti nella radice', volume.rootEntries === 512, `${volume.rootEntries}`);
+
+  const free = volume.freeBytes;
+  check('e venti mega quasi tutti liberi', free > 19 * 1024 * 1024, `${(free / 1024 / 1024).toFixed(1)} MB`);
+
+  // Un file solo, che è il caso di chi trascina un `.txt`.
+  const disk = { data: image, writes: 0 };
+  const one = await loadIntoDisk(disk, 'appunti di ieri.txt', new TextEncoder().encode('ciao dal 2026'));
+  check('un file finisce in C:\\SCARICATI', one.folder === 'C:\\SCARICATI', one.folder);
+  check('con il nome accorciato', one.names[0] === 'APPUNTID.TXT', one.names[0]);
+  check('e si rilegge dal disco identico',
+    text(FAT16.of(image).read('SCARICATI\\APPUNTID.TXT')) === 'ciao dal 2026');
+  check('il disco sa di essere stato scritto', disk.writes > 0, `${disk.writes} settori`);
+
+  // Lo stesso file una seconda volta: sovrascrive, come `COPY` quando si
+  // risponde di sì, e non lascia dietro i cluster di prima.
+  const busy = FAT16.of(image).freeBytes;
+  await loadIntoDisk(disk, 'appunti di ieri.txt', new TextEncoder().encode('e questo è di oggi'));
+  check('rimetterlo dentro lo sostituisce',
+    text(FAT16.of(image).read('SCARICATI\\APPUNTID.TXT')) === 'e questo è di oggi');
+  check('senza lasciare per terra i cluster di prima', FAT16.of(image).freeBytes === busy);
+
+  // Uno zip: si svuota in una cartella che si chiama come lui, con dentro le
+  // sue cartelle. È il caso per cui tutto questo esiste.
+  const zip = await buildZip([
+    ['LEGGIMI.TXT', 'roba dalla BBS'],
+    ['DOCS/manuale lungo.txt', 'il manuale'],
+    ['DOCS/manuale lunghissimo.txt', 'e un altro'],
+    ['bin/gioco.com', Uint8Array.from([0xb4, 0x4c, 0xcd, 0x21])],
+  ]);
+  const many = await loadIntoDisk(disk, 'giochi vari.zip', zip);
+  check('uno zip si apre in una cartella che si chiama come lui',
+    many.folder === 'C:\\SCARICATI\\GIOCHIVA', many.folder);
+  check('con dentro tutti i suoi file', many.names.length === 4, many.names.join(' '));
+
+  const after = FAT16.of(image);
+  check('quello in cima sta in cima', text(after.read('SCARICATI\\GIOCHIVA\\LEGGIMI.TXT')) === 'roba dalla BBS');
+  check('e quelli nelle sottocartelle nelle loro',
+    text(after.read('SCARICATI\\GIOCHIVA\\DOCS\\MANUALEL.TXT')) === 'il manuale');
+  check('un programma resta un programma',
+    after.read('SCARICATI\\GIOCHIVA\\BIN\\GIOCO.COM').join() === '180,76,205,33');
+
+  // Due nomi lunghi diversi che diventano lo stesso nome corto: nessuno dei
+  // due va perso, e il secondo si numera come farà Windows dieci anni dopo.
+  check('due nomi che si accorciano uguale non si mangiano',
+    text(after.read('SCARICATI\\GIOCHIVA\\DOCS\\MANUAL~1.TXT')) === 'e un altro',
+    many.names.join(' '));
+
+  // Le due porte chiuse: un disco senza filesystem, e un file che non ci sta.
+  const raw = { data: new Uint8Array(DISK_SIZE), writes: 0 };
+  check('su un disco vergine non si scrive niente',
+    (await refusedBy(raw, 'roba.txt', new Uint8Array(8))) === 'NoFilesystemError');
+  const huge = new Uint8Array(FAT16.of(image).freeBytes + 1024 * 1024);
+  check('e un file più grande del posto che resta viene rifiutato prima',
+    (await refusedBy(disk, 'enorme.bin', huge)) === 'FullDiskError');
+  check('senza aver scritto niente per strada', FAT16.of(image).freeBytes === after.freeBytes);
+}
+
 // -------------------------------------------------------- l'avvio vero
 
 if (!have.bios) {
@@ -898,6 +1155,101 @@ Dovrebbe esserci — viaggia col repository — e \`npm run make-hdd\` lo rifà.
   const alone = new Session(bootPC({ disk: 'installed', floppy: false }));
   check('e senza dischetto, senza toccare niente, parte da C:', alone.waitFor(/C:\\>/, 1800), alone.lastLine());
   check('con il lettore vuoto contato lo stesso', /FDD\s+\[ 1 \]/.test(alone.screen()));
+}
+
+if (!have.bios || !have.card || !have.hdd) {
+  console.log(`
+Nessun disco fisso in roms/pc: la prova del file portato dentro è stata saltata.`);
+} else {
+  section('Avvio vero: un file portato dentro');
+
+  // Qui il giudice è FreeDOS. La FAT di `fat.js` è l'unico posto di questa
+  // macchina dove scriviamo noi un filesystem invece di farlo scrivere al DOS,
+  // e l'unico modo di sapere se è giusta è chiederlo a lui: si scrive di qua a
+  // macchina spenta, si accende, e si guarda se ci trova quello che ci abbiamo
+  // messo — con DIR, con TYPE, e facendo girare un programma uscito da uno zip.
+
+  // Un `.COM` vero, di quelli che stavano in fondo a un archivio di una BBS:
+  // dice una parola con la funzione 9 dell'INT 21h e se ne va. Diciotto byte,
+  // che è più o meno il minimo perché un programma DOS esista.
+  const program = Uint8Array.from([
+    0xba, 0x09, 0x01, // mov dx, 0109h — dove comincia la scritta
+    0xb4, 0x09, // mov ah, 9 — «scrivi una stringa»
+    0xcd, 0x21,
+    0xcd, 0x20, // int 20h — fine del programma
+    ...new TextEncoder().encode('FUNZIONA$'),
+  ]);
+
+  const image = freshDisk();
+  const disk = { data: image, writes: 0 };
+  const emptyAgain = FAT16.of(image).freeBytes;
+
+  await loadIntoDisk(disk, 'leggimi.txt', new TextEncoder().encode('ciao dal 2026\r\n'));
+  await loadIntoDisk(disk, 'giochi vari.zip', await buildZip([
+    ['DOCS/manuale lungo.txt', 'il manuale\r\n'],
+    ['DOCS/manuale lunghissimo.txt', 'e un altro\r\n'],
+    ['bin/gioco.com', program],
+  ]));
+
+  const pc = bootPC({ disk: 'installed' });
+  pc.hdc.disk.data.set(image);
+  const dos = new Session(pc, (screen) => console.log(screen));
+  dos.expect(/Master at 300h/, 2000, 'la scheda del disco non si è presentata');
+  dos.run(30);
+  dos.type('c');
+  check('la macchina si accende su un disco a cui abbiamo messo le mani', dos.waitFor(/C:\\>/, 4000), dos.lastLine());
+
+  // La prima domanda, quella che conta: il DOS vede la cartella che gli
+  // abbiamo fatto sotto il naso?
+  dos.command('dir c:\\scaricati');
+  const listing = dos.screen();
+  check('il DOS trova la cartella che gli abbiamo scritto noi', /LEGGIMI\s+TXT/.test(listing), dos.lastLine());
+  check('e dentro ci trova anche quella dello zip', /GIOCHIVA\s+<DIR>/.test(listing));
+
+  // TYPE segue la catena dei cluster: se il numero che abbiamo messo nella
+  // voce di cartella fosse sbagliato di uno, qui uscirebbe spazzatura.
+  dos.command('type c:\\scaricati\\leggimi.txt');
+  check('e legge quello che c\'è scritto dentro', /ciao dal 2026/.test(dos.screen()), dos.lastLine());
+
+  // Le sottocartelle dello zip, con dentro i due nomi che si sarebbero
+  // accorciati uguale.
+  dos.command('dir c:\\scaricati\\giochiva\\docs');
+  const docs = dos.screen();
+  check('le sottocartelle dello zip ci sono tutte', /MANUALEL\s+TXT/.test(docs), dos.lastLine());
+  check('e nessuno dei due nomi lunghi si è perso', /MANUAL~1\s+TXT/.test(docs));
+
+  // E la prova che vale per tutte: un programma tirato fuori da uno zip,
+  // messo sul disco da noi, caricato dal DOS e fatto girare dal 286.
+  dos.command('c:\\scaricati\\giochiva\\bin\\gioco.com');
+  check('un programma uscito dallo zip gira davvero', /FUNZIONA/.test(dos.screen()), dos.lastLine());
+
+  // Adesso il contrario: il DOS scrive sulla FAT che abbiamo scritto noi. Se
+  // gli avessimo lasciato dei cluster segnati male, si prenderebbe quelli
+  // sotto i nostri file e il primo a sparire sarebbe quello che rileggiamo.
+  dos.command('copy c:\\scaricati\\leggimi.txt c:\\copia.txt');
+  dos.command('type c:\\copia.txt');
+  check('e il DOS ci scrive sopra senza pestare quello che c\'era', /ciao dal 2026/.test(dos.screen()), dos.lastLine());
+  dos.command('type c:\\scaricati\\giochiva\\docs\\manual~1.txt');
+  check('con i nostri file ancora al loro posto', /e un altro/.test(dos.screen()), dos.lastLine());
+
+  // L'ultima, che è quella che un CHKDSK direbbe in una riga: il DOS cancella
+  // tutto quello che abbiamo scritto, e il disco torna libero esattamente
+  // com'era. Ogni cluster che avessimo legato male resterebbe occupato per
+  // sempre, e il conto non tornerebbe.
+  dos.command('del c:\\copia.txt');
+  // DELTREE non si fida di chi gli dà una cartella della radice nemmeno con
+  // /Y, e chiede lo stesso: è una prudenza che nel 1988 sarebbe stata utile a
+  // parecchia gente.
+  dos.type('deltree /y c:\\scaricati\n');
+  dos.run(80);
+  if (/REALLY want to do this/.test(dos.screen())) dos.type('y\n');
+  dos.expect(/[A-C]:\\[^\n]*>$/m, 6000, 'deltree non è finito');
+  const back = FAT16.of(pc.hdc.disk.data).freeBytes;
+  check(
+    'e cancellando tutto il disco torna libero come prima',
+    back === emptyAgain,
+    `${back} byte contro ${emptyAgain}`,
+  );
 }
 
 console.log(failures === 0 ? '\nPC OK.' : `\n${failures} problema/i.`);

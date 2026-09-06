@@ -605,6 +605,51 @@ senza `hdd.img` la macchina monta un disco **vuoto**, venti mega di zeri come si
 comprava, da partizionare e formattare a mano. **Salva il disco fisso** riporta
 via come file quello che c'è dentro adesso, e ritrascinandolo lo si rimette.
 
+### Portare dentro un file
+
+Fra il computer di oggi e quello del 1988 non c'è nessun cavo. La macchina
+emulata sa leggere settori da un disco, e basta: un file che arriva dal browser
+non ha nessuna porta da cui entrare.
+
+**Carica un file** — o il trascinamento sulla finestra, che è la stessa cosa —
+lo mette dove il DOS lo troverà da sé: in `C:\SCARICATI` sul disco fisso, che è
+la cartella che si sarebbe fatto chiunque avesse avuto un modem. Il nome si
+accorcia a come lo vuole il DOS, otto più tre: `relazione finale.txt` diventa
+`RELAZION.TXT`, esattamente come sarebbe successo allora copiandolo da un
+dischetto formattato altrove.
+
+**Se è uno zip, si svuota.** Nel 1989 arriva PKZIP, e per dieci anni è il modo
+in cui il software viaggia: trovarsi l'archivio sul disco senza niente con cui
+aprirlo sarebbe una beffa. `giochi vari.zip` finisce aperto in
+`C:\SCARICATI\GIOCHIVA\`, con dentro le sue cartelle e i nomi accorciati; due
+nomi lunghi diversi che si accorciano uguale non si mangiano, il secondo si
+numera — `MANUAL~1.TXT` — come farà Windows dieci anni dopo per la stessa
+ragione. La scompattazione la fa il browser: deflate è quello di gzip e delle
+pagine web, e `DecompressionStream` ce l'ha già dentro. Nessuna libreria.
+
+Poi la macchina **si riaccende**. Non è una scortesia dell'emulatore: il DOS si
+tiene in memoria pezzi di FAT e di cartella, e uno che gli cambia il disco sotto
+mentre gira è quello che i manuali dell'epoca dicevano di non fare mai.
+
+E il disco è cambiato: **va salvato**, o chiudendo la scheda se ne va — la
+pagina lo chiede prima di lasciar chiudere.
+
+#### La regola che qui si rompe
+
+Il disco fisso di alloldos è fatto senza scrivere un byte di filesystem: la
+tabella delle partizioni e la FAT le hanno scritte FDISK e FORMAT veri, girando
+sul 286. Qui quella regola si rompe, perché non c'è alternativa: far fare il
+lavoro al DOS vorrebbe dire battergli il file sulla tastiera un byte per volta
+con DEBUG, che per un dischetto di roba vuol dire una giornata. La FAT la
+scriviamo noi, in `fat.js`.
+
+Ma il giudice resta FreeDOS. La prova scrive a macchina spenta, l'accende, e poi
+non tocca più niente: è il DOS a fare `DIR`, a fare `TYPE`, a caricare e far
+girare un programma uscito da uno zip, a scriverci accanto un file suo, e alla
+fine a cancellare tutto quanto con `DELTREE`. Se il disco torna libero degli
+stessi byte che aveva prima, ogni catena e ogni voce di cartella era al suo
+posto — e a dirlo è lui, non noi.
+
 ### Cosa c'è dentro
 
 - l'**80286** in modo reale (`cpu286.js`), con i dettagli da cui un programma
@@ -621,7 +666,9 @@ via come file quello che c'è dentro adesso, e ritrascinandolo lo si rimette.
   ROM del BIOS, cursore che lampeggia, e le due grafiche — 320×200 a quattro
   colori e 640×200 in bianco e nero;
 - l'**altoparlante**: un bit e un contatore, che è tutto il suono che il PC ha
-  avuto per dieci anni.
+  avuto per dieci anni;
+- una **FAT16** che sa scrivere (`fat.js`) e un lettore di **zip** (`zip.js`),
+  che è il solo modo che un file di oggi ha di entrare in un disco del 1988.
 
 Manca la **VGA** con il suo BIOS di scheda, il suono campionato — quello che
 pilota il bit dell'altoparlante a mano invece di lasciar fare al contatore — e
@@ -644,11 +691,12 @@ Tutte le prove sintetiche passavano già:
 ### Le prove
 
 `scripts/pctest.mjs`: prima il processore un'opcode per volta, poi i chip uno
-per uno, poi la macchina intera. Le ultime tre sezioni sono quelle che contano —
-il POST di GLaBIOS, FreeDOS che parte dal dischetto e ci scrive sopra un file, e
-FreeDOS che parte dal disco fisso, ci scrive, e ritrova quello che ha scritto
-dopo un riavvio. I comandi vengono battuti sulla tastiera attraverso lo stesso
-codice che usa il browser.
+per uno, poi la macchina intera. Le ultime quattro sezioni sono quelle che
+contano — il POST di GLaBIOS, FreeDOS che parte dal dischetto e ci scrive sopra
+un file, FreeDOS che parte dal disco fisso, ci scrive, e ritrova quello che ha
+scritto dopo un riavvio, e FreeDOS che si ritrova sul disco una cartella scritta
+da noi e ci fa dentro tutto quello che ci farebbe con una sua. I comandi vengono
+battuti sulla tastiera attraverso lo stesso codice che usa il browser.
 
 ## ZX Spectrum 48K
 
