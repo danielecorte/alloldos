@@ -172,6 +172,7 @@ class PCSession {
       throw error;
     }
 
+    this.bios = bios; // se la scheda del disco arriva dopo, la macchina si rifà
     const [card, floppy, disk] = await Promise.all([loadCardROM(), loadFloppy(), loadHardDisk()]);
     this.machine = new PC(bios, {
       disk,
@@ -193,7 +194,8 @@ class PCSession {
     this.setStatus(
       card
         ? 'Accensione…'
-        : 'Accensione senza la scheda del disco fisso: c\'è solo il dischetto',
+        : `Accensione senza la scheda del disco fisso: il DOS sta sul disco, e senza `
+          + `${CARD_SPEC.file} non ci si arriva — trascinala qui`,
     );
 
     this.running = true;
@@ -222,8 +224,8 @@ class PCSession {
         — il BIOS di sistema (${BIOS_SPEC.size} byte), obbligatorio</li>
         <li><a href="${XTIDE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">${CARD_SPEC.file}</a>
         — la <a href="${XTIDE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>,
-        cioè la ROM della scheda del disco fisso: senza, la macchina ha solo il
-        lettore di dischetti</li>
+        cioè la ROM della scheda del disco fisso: senza non c'è nessun C:, e il
+        DOS sta lì sopra — quindi serve anche questa</li>
         <li>un dischetto avviabile, se ti va: quello di
         <a href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS</a>
         da 720 KB si trascina qui come gli altri — ma non serve per accendere,
@@ -439,6 +441,7 @@ class PCSession {
    */
   async acceptFiles(files) {
     let bios = false;
+    let card = false;
     for (const file of files) {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const image = classifyImage(bytes);
@@ -452,11 +455,7 @@ class PCSession {
         continue;
       }
       if (kind === 'card') {
-        this.setStatus(
-          this.machine
-            ? 'ROM della scheda salvata — ricarica la pagina per montarla'
-            : 'ROM della scheda salvata',
-        );
+        card = true;
         continue;
       }
       this.setStatus(`«${file.name}» non è né una ROM né un'immagine di disco`);
@@ -468,7 +467,32 @@ class PCSession {
       await this.start();
       return;
     }
+    if (card && this.machine) await this.mountCardROM();
     this.mountPending();
+  }
+
+  /**
+   * La ROM della scheda del disco arrivata a macchina accesa. Su una macchina
+   * vera si spegne, si infila la scheda nello zoccolo e si riaccende: una ROM
+   * di espansione la si aggancia solo al POST, e a metà strada non serve a
+   * niente. Qui è la stessa cosa, e costa quanto un'accensione — il disco
+   * resta quello di prima, con sopra quello che ci fosse, e il dischetto resta
+   * nel lettore.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async mountCardROM() {
+    const card = await loadCardROM();
+    if (!card) return false;
+    const floppy = this.machine.fdc.drives[0].medium;
+    this.machine = new PC(this.bios, {
+      disk: this.machine.hdc.disk,
+      cards: [{ base: CARD_ROM_BASE, bytes: card }],
+    });
+    if (floppy) this.machine.fdc.drives[0].insert(floppy);
+    this.updateDrives();
+    this.setStatus('Scheda del disco fisso montata — la macchina riparte, e adesso C: c\'è');
+    return true;
   }
 
   /**

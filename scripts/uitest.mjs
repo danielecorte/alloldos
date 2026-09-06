@@ -720,6 +720,23 @@ if (pc.machine === null) {
     const again = await pcModule.boot(new StubElement('main'), { onExit: () => {} });
     check('a dropped floppy is still there next time the page opens',
       again.machine?.fdc.drives[0].medium !== null);
+
+    // La scheda del disco fisso arrivata dopo il BIOS, che è quello che
+    // succede a chi trascina un file per volta. Una ROM di espansione si
+    // aggancia solo al POST, quindi la macchina si rifà da capo — senza
+    // chiedere a nessuno di ricaricare la pagina.
+    const cardPath = join(ROOT, 'roms', 'pc', 'xtide.bin');
+    if (existsSync(cardPath)) {
+      const before = again.machine;
+      await again.acceptFiles([asFile('xtide.bin', new Uint8Array(readFileSync(cardPath)))]);
+      check('the disk card dropped later remounts the machine', again.machine !== before);
+      const cardScreen = () => again.machine.cga.text().join('\n');
+      for (let i = 0; i < 400 && !/C800/.test(cardScreen()); i++) {
+        again.machine.runFrame();
+      }
+      check('and the POST finds it at C800', /C800/.test(cardScreen()), again.status.textContent);
+      check('with the floppy still in the drive', again.machine.fdc.drives[0].medium !== null);
+    }
     again.dispose();
 
     globalThis.fetch = served;
