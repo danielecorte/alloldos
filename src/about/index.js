@@ -19,6 +19,12 @@ import {
 } from '../systems/pc/roms.js';
 import { FREEDOS_URL } from '../systems/pc/media.js';
 import { FUSE_URL, FUSE_SOURCE_URL, OPENSE_URL } from '../systems/zx/roms.js';
+import {
+  SEABIOS_URL,
+  SEABIOS_PACKAGE_URL,
+  BIOS_SPEC as SEABIOS_SPEC,
+  VIDEO_SPEC as SEAVGABIOS_SPEC,
+} from '../systems/pentium/roms.js';
 
 const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
@@ -52,6 +58,7 @@ class AboutPage {
       ${this.commodore64()}
       ${this.amiga500()}
       ${this.pc286()}
+      ${this.pentium()}
       ${this.spectrum()}
 
       <pre class="about__ready">READY.
@@ -388,6 +395,99 @@ class AboutPage {
         bit a mano invece di lasciar fare al contatore.</li>
         <li>Il <b>modo protetto</b>, che il DOS non usa: Windows 3 e i DOS
         extender sono un altro progetto.</li>
+      </ul>
+    `;
+  }
+
+  // -------------------------------------------------------------- pentium
+
+  pentium() {
+    return `
+      <h2 class="about__section">PC Pentium</h2>
+      <p>La macchina del 1995, che è la seconda qui dentro a girare su
+      <b>firmware libero fino in fondo</b> — e la prima a contare a trentadue
+      bit. Fra lei e il 286 di sopra ci sono sette anni e due cose che cambiano
+      tutto: la <b>misura</b> — registri e indirizzi lunghi trentadue bit, e la
+      fine del mestiere di spezzare la memoria in blocchi da 64 KB — e il fatto
+      che il processore comincia a <b>difendersi</b>, con il modo protetto e la
+      paginazione. Da quelle due cose viene tutto quello che un sistema
+      operativo moderno sa fare.</p>
+      <p>La scheda madre non è più fatta di venti chip: sono due, un ponte nord
+      <b>i440FX</b> e un ponte sud <b>PIIX3</b>, e dentro il secondo c'è tutto il
+      PC di prima — le due catene di interruzioni, i contatori, il DMA,
+      l'orologio — con gli stessi indirizzi del 1981. Sopra c'è un <b>bus
+      PCI</b>, dove il firmware trova le schede chiedendo invece di sapere.</p>
+
+      <h3 class="about__heading">Dove trovare le ROM</h3>
+      <p>Sono due file, e sono entrambi <b>software libero</b>:</p>
+      <ul class="about__list">
+        <li><b>SeaBIOS</b> (LGPLv3), il BIOS di sistema: è quello che accende
+        ogni macchina virtuale di
+        <a class="about__link" href="${SEABIOS_URL}" target="_blank" rel="noopener noreferrer">QEMU</a>
+        da quindici anni, scritto da zero;</li>
+        <li><b>SeaVGABIOS</b>, la ROM della scheda video, che su una macchina
+        vera stava in una ROM sulla scheda: serve la variante <b>ISA</b>, perché
+        la VGA di questa macchina è una VGA e basta.</li>
+      </ul>
+      <p class="about__note">Il progetto pubblica i sorgenti e non i binari,
+      quindi il modo più corto di averli è un pacchetto che li ha già compilati:
+      <code>apt install seabios</code> li mette in
+      <code>/usr/share/seabios</code>, che è dove
+      <code>npm run fetch-roms</code> va a guardare
+      (<a class="about__link" href="${SEABIOS_PACKAGE_URL}" target="_blank" rel="noopener noreferrer">packages.debian.org/seabios</a>).
+      I due file vanno in <code>roms/pentium/</code>:
+      <code>${SEABIOS_SPEC.file}</code> e <code>${SEAVGABIOS_SPEC.file}</code>.</p>
+
+      <h3 class="about__heading">Cosa è stato fatto</h3>
+      <ul class="about__list">
+        <li>Il <b>Pentium</b> nei suoi tre mondi: il real mode di quando si
+        accende — che comincia a FFFFFFF0, non a F000:FFF0, perché la base di CS
+        la mette il processore e non il selettore — il <b>modo protetto</b> con i
+        descrittori, i limiti e gli anelli, e il passaggio fra i due, che è la
+        prima cosa che fa qualunque sistema operativo.</li>
+        <li>La <b>paginazione</b>, che è la cosa da cui viene tutto il resto: una
+        pagina che non c'è ferma l'istruzione a metà, dice in CR2 quale indirizzo
+        mancava, e la lascia ricominciare quando il sistema operativo l'ha messa
+        a posto. Ci sono anche le pagine da quattro mega.</li>
+        <li>Le istruzioni con cui il software ha smesso di indovinare:
+        <b>CPUID</b>, che dice GenuineIntel e famiglia cinque, e <b>RDTSC</b>, il
+        contatore di cicli da cui viene ogni misura di prestazioni dei
+        trent'anni dopo. E CMPXCHG, XADD e CMPXCHG8B, che sono i mattoni dei
+        lucchetti.</li>
+        <li>Il <b>bus PCI</b> con il suo spazio di configurazione: ogni scheda
+        dichiara chi è e quanto spazio vuole, e il firmware glielo assegna.</li>
+        <li>I <b>PAM</b> del ponte nord, sette byte che decidono se in ogni pezzo
+        da sedici KB della memoria alta risponda la ROM o la RAM. Sono il pezzo di
+        silicio che permette al BIOS di copiarsi in memoria e continuare a
+        girare da lì — e la prima cosa che SeaBIOS va a cercare.</li>
+        <li>L'<b>MC146818</b>: l'orologio che non si spegne e i centoventotto
+        byte che si ricordano com'è fatta la macchina. È da lì che il firmware
+        legge quanta memoria c'è.</li>
+        <li>L'<b>8042</b>, che è il chip a cui hanno dato in mano tutto quello che
+        avanzava: la tastiera, il mouse, il <b>cancello A20</b> e il piedino di
+        reset del processore.</li>
+        <li>La <b>VGA</b>: i quattro piani paralleli e la macchineria di maschere
+        e latch che ci sta davanti, il modo testo a 80 colonne con il disegno
+        delle lettere in RAM, i sedici colori a piani e i 256 colori in
+        chain-4.</li>
+        <li>Il <b>canale di configurazione</b> di QEMU, da cui il firmware chiede
+        alla macchina com'è fatta e riceve la ROM della scheda video: su una
+        macchina come questa quella ROM non sta dentro una scheda.</li>
+      </ul>
+
+      <h3 class="about__heading">Cosa manca</h3>
+      <ul class="about__list">
+        <li>I <b>dischi</b>: l'IDE del ponte sud e il lettore di dischetti. È il
+        pezzo dopo, ed è quello che manca perché sopra ci si accenda un sistema
+        operativo — per adesso il firmware arriva in fondo al POST e dice che non
+        c'è niente da cui partire.</li>
+        <li>La <b>virgola mobile</b>, che sul Pentium è dentro il processore per
+        la prima volta. Finché non c'è, CPUID dice che non c'è: un processore che
+        dichiara un coprocessore che non ha è peggio di uno che dichiara di non
+        averlo.</li>
+        <li>Il <b>cambio di anello</b> con il TSS e il <b>modo virtuale
+        8086</b>: servono a far girare più programmi insieme, e il DOS non li
+        usa.</li>
       </ul>
     `;
   }

@@ -1686,9 +1686,15 @@ export class CPU586 {
         return 1;
       case 0x8c:
         this.modrm();
-        // Un selettore è sempre di sedici bit: in memoria ne scrive due, in un
-        // registro a trentadue bit i sedici alti restano quello che erano.
+        // Un selettore è di sedici bit, e in memoria ne scrive due. In un
+        // registro a trentadue bit invece i sedici alti vengono **azzerati**, e
+        // non è un dettaglio da manuale: sul 386 erano indefiniti, dal Pentium
+        // sono zero, e il software ci conta. Il modo in cui un firmware passa da
+        // uno stack a segmenti a uno stack piatto è esattamente questo —
+        // `mov %ss,%edi`, `shl $4,%edi`, `add %edi,%esp` — e con i sedici bit
+        // alti sporchi lo stack finisce a quattro giga da dove doveva.
         if (this.memory) this.write(2, this.opSegment, this.opOffset, this.s[this.reg & 7]);
+        else if (size === 4) this.set32(this.rm, this.s[this.reg & 7]);
         else this.set16(this.rm, this.s[this.reg & 7]);
         return 1;
       case 0x8d: {

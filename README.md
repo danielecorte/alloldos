@@ -22,6 +22,11 @@ Ce ne sono quattro che partono davvero:
   BASIC, carica le cassette rifacendo il suono che c'era sul nastro, e la
   macchina si batte da sola il `LOAD ""`.
 
+E ce n'è una quinta a metà strada: un **PC Pentium** del 1995 — modo protetto,
+paginazione, bus PCI, VGA — con sopra **SeaBIOS**, che arriva in fondo al POST e
+lo scrive sullo schermo. Nel menu è una voce che non si avvia ancora: le mancano
+i dischi, che sono il pezzo da cui parte un sistema operativo.
+
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
 eseguono il loro firmware. Il firmware però non è incluso — è di chi lo ha
 scritto — quindi al primo avvio la macchina te lo chiede e tu glielo trascini
@@ -43,7 +48,7 @@ FreeDOS installato sopra, l'unica immagine che viaggia con alloldos — e
 `npm run make-hdd` serve solo a rifarlo da capo.
 
 Nessuna dipendenza, nessun passo di build: sono moduli ES serviti così come
-sono. `npm test` esegue sette prove a schermo spento: la prima accende il C64,
+sono. `npm test` esegue otto prove a schermo spento: la prima accende il C64,
 verifica che arrivi al prompt `READY.` e ci fa girare un programma; la seconda
 preme i tasti attraverso lo stesso codice che usa il browser e rilegge dallo
 schermo i caratteri arrivati davvero al BASIC; la terza registra un nastro e lo
@@ -53,7 +58,9 @@ tre le macchine, canvas e audio compresi; la sesta accende il PC, gli fa fare il
 POST con il BIOS vero e ci avvia FreeDOS dal dischetto, dal disco fisso e da un
 disco di un'altra misura montato da fuori; la
 settima accende lo Spectrum, ci fa fare un conto in virgola mobile alla sua ROM
-e gli fa caricare una cassetta.
+e gli fa caricare una cassetta; l'ottava prende il Pentium — il processore nei suoi
+tre mondi, i chip della scheda madre uno per uno — e poi ci accende sopra SeaBIOS,
+che arriva in fondo al POST e lo scrive sullo schermo.
 
 Se in cartella c'è un `.tap`, l'ultima prova ci carica dentro anche quello e poi
 **ci gioca**: tiene premuta una direzione e guarda dove finisce il personaggio.
@@ -117,6 +124,14 @@ l'A600, l'A1200 e il CDTV tengono la loro.
 Sono tutti file liberi, e nessuno dei tre è nel repository. Il **disco fisso**
 invece sì: `roms/pc/hdd.img` c'è già, con FreeDOS installato sopra, e
 `npm run make-hdd` serve solo a rifarlo.
+
+**Il Pentium** è il caso fortunato anche lui, con una differenza: il suo firmware
+è libero ma viaggia dentro QEMU invece che su una pagina di download. SeaBIOS
+(LGPLv3) e la sua SeaVGABIOS sono quello che accende ogni macchina virtuale di
+QEMU; `apt install seabios` li mette in `/usr/share/seabios`, e
+`npm run fetch-roms` va a guardare lì — e in `/usr/share/qemu`, e negli altri
+posti dove li mettono i pacchetti — e li copia in `roms/pentium/`. È l'unico
+firmware di alloldos che si cerca sul computer invece che su Internet.
 
 **Lo ZX Spectrum** sta in mezzo fra i due casi. La sua ROM è di Amstrad, che
 comprò Sinclair nel 1986 e che da allora ne permette la ridistribuzione insieme
@@ -821,6 +836,156 @@ contendono i primi 16 KB, e il processore aspetta), i `.tzx` e con loro i
 caricatori turbo, il 128K con il suo chip sonoro AY, e la registrazione su
 nastro: qui le cassette si leggono e non si scrivono.
 
+## PC Pentium
+
+La macchina del 1995, e la seconda di questa collezione che gira su **firmware
+libero fino in fondo**. Non si accende ancora dal menu di boot — le manca il
+pezzo da cui parte un sistema operativo, cioè i dischi — ma il POST arriva in
+fondo e lo si vede scritto sullo schermo.
+
+Fra lei e il 286 di sopra ci sono sette anni e due cose che cambiano tutto:
+
+- **la misura.** Registri e indirizzi lunghi trentadue bit, e la fine del
+  mestiere di spezzare la memoria in blocchi da 64 KB. Trentadue mega invece di
+  uno, indirizzati tutti di seguito.
+- **il processore che si difende.** C'è un modo protetto vero, con una tabella di
+  descrittori che dice dove comincia e dove finisce ogni segmento e chi ha il
+  diritto di toccarlo, e c'è la **paginazione**, che mette fra l'indirizzo che il
+  programma scrive e il byte che esiste una traduzione fatta a tabelle. Da lì
+  viene tutto quello che un sistema operativo moderno sa fare: la memoria
+  virtuale, i processi che non si pestano, il file che si comporta come se fosse
+  in memoria.
+
+### Il firmware, che di nuovo è libero
+
+Per una macchina del 1995 GLaBIOS non basta — è un BIOS XT, e qui ci vogliono il
+PCI, il modo protetto, i dischi grandi — ma il firmware libero che lo fa esiste:
+**SeaBIOS**, LGPLv3, scritto da zero, ed è quello che accende ogni macchina
+virtuale di QEMU da quindici anni. Con dentro la sua **SeaVGABIOS**, che è la ROM
+della scheda video: un pezzo a parte, perché su una macchina vera stava in una
+ROM sulla scheda.
+
+Il progetto pubblica i sorgenti e non i binari, quindi il modo più corto di
+averli è un pacchetto che li ha già compilati:
+
+```sh
+apt install seabios      # e poi npm run fetch-roms
+```
+
+`npm run fetch-roms` non va a prenderli in rete: va a guardare in
+`/usr/share/seabios` e `/usr/share/qemu` — cioè dove li mettono i pacchetti — e
+se li trova li copia in `roms/pentium/`. Sono l'unico firmware di alloldos che
+si cerca sul computer invece che su Internet, e c'è una ragione: chi emula, QEMU
+ce l'ha.
+
+### Due chip invece di venti
+
+Su una scheda madre del 1995 i chip logici non si vedono più: ce ne sono due, e
+dentro ci sono tutti quelli di prima.
+
+Il **ponte nord** — un Intel 82441FX, il "Natoma" — sta fra il processore, la
+memoria e il bus PCI, e decide chi risponde a ogni indirizzo. La cosa più
+interessante che fa sono i **PAM**: sette byte nello spazio di configurazione che
+decidono, per ogni pezzo da sedici KB fra C0000 e FFFFF, se lì risponda la ROM o
+la RAM. È il pezzo di silicio che permette a un BIOS di copiare sé stesso in
+memoria e poi continuare a eseguirsi da lì — la ROM è lenta, la RAM no — e da
+quello "shadowing" veniva buona parte della differenza di velocità fra due PC
+identici. È anche la prima cosa che SeaBIOS va a cercare all'accensione, e senza
+non parte.
+
+Il **ponte sud** — un PIIX3 — è letteralmente un PC del 1984 dentro un chip: le
+due catene di interruzioni, i tre contatori, il DMA, l'orologio, i dischi IDE. Con
+gli stessi indirizzi di sempre: l'8259 risponde ancora alla porta 20h e il
+contatore ancora alla 40h, nel 1995 come nel 1981. Il PC non ha mai buttato
+niente.
+
+Sopra c'è un **bus PCI**, che è il momento in cui le schede smettono di essere
+ponticelli: ogni scheda ha duecentocinquantasei byte in cui dichiara chi è e
+quali finestre di indirizzi vorrebbe, e il firmware le trova chiedendo invece di
+saperlo. Ci si arriva da due porte, CF8h e CFCh, che sono l'ultima cosa in tutto
+il PCI a essere ancora fatta come nel 1981.
+
+### Come una macchina emulata si presenta
+
+C'è un pezzo di questa macchina che non esisteva nel 1995, e vale la pena dire
+perché c'è. Su un PC vero il BIOS e la scheda madre sono la stessa cosa: chi ha
+scritto il firmware sapeva quanti banchi di memoria c'erano e dove. Su una
+macchina emulata no — il firmware è uno e le macchine sono mille — e allora serve
+un posto dove l'una possa raccontarsi all'altro. In QEMU quel posto si chiama
+**fw_cfg**, e sono due porte: nella 510h si scrive cosa si vuole sapere, dalla
+511h si leggono i byte della risposta.
+
+La prima voce è una parola d'ordine, `QEMU`, e senza quella il firmware lascia
+perdere il canale. Dirla non è una bugia: questa macchina non finge di essere
+QEMU, si presenta per quello che è — una macchina emulata che parla il protocollo
+che quel firmware conosce. Lo stesso vale per i due numeri di sottosistema del
+ponte nord, `1af4:1100`: sono la riga in cui la scheda madre dichiara di non
+essere una scheda madre vera.
+
+Da quel canale passa anche la ROM della scheda video, che su questa macchina non
+sta dentro una scheda: la scheda madre la passa al BIOS come un file di nome
+`vgaroms/vgabios.bin`, il BIOS la copia a C0000 e la esegue. È esattamente quello
+che fa QEMU con una VGA ISA.
+
+### La VGA
+
+L'ultima scheda video che tutti hanno avuto uguale. Dal 1987 al 1995 ogni PC ne
+ha avuta una, e ogni scheda uscita dopo comincia comportandosi come questa,
+perché è così che si accende il DOS.
+
+La parte strana è la memoria. La VGA ha 256 KB ma la finestra che il processore
+vede è di 64, perché la memoria è divisa in **quattro piani paralleli**: a ogni
+indirizzo ci sono quattro byte, uno per piano, e ogni piano tiene un bit del
+colore di ogni punto. Un byte scritto una volta accende otto punti. È il modo con
+cui una scheda del 1987 riusciva a riempire uno schermo a sedici colori con un
+bus a sedici bit — e il motivo per cui i giochi in modo 12h erano così difficili
+da scrivere. Fra il processore e i piani c'è una macchineria di maschere, latch e
+funzioni logiche con quattro modi di scrittura, e c'è tutta.
+
+Il modo testo usa la stessa memoria in un modo diverso ancora: il piano 0 tiene i
+caratteri, il piano 1 gli attributi, e il piano 2 il **disegno delle lettere** —
+che quindi non è in una ROM ma in RAM, ed è per questo che sul DOS si potevano
+ridefinire i caratteri.
+
+### Dove si è arrivati
+
+`npm test` accende la macchina con SeaBIOS dentro e guarda cosa succede. Il
+firmware, che di questo emulatore non sa niente:
+
+- si racconta dalla porta di servizio (`SeaBIOS (version 1.16.2-debian…)`), che è
+  una porta che gli emulatori mettono a disposizione e che lui usa se la trova;
+- passa al modo protetto, trova il ponte nord sul PCI, apre i PAM, **si copia in
+  RAM e continua a girare da lì**, e poi richiude la porta dietro di sé perché
+  nessuno ci scriva sopra;
+- legge dall'orologio quanta memoria c'è e si sposta in cima ai trentadue mega;
+- si fa passare la ROM della scheda video dal canale di configurazione, la
+  esegue, e quella mette la VGA nel modo testo a 80 colonne — e da quel momento
+  c'è uno schermo su cui leggere;
+- ci scrive chi ha acceso la macchina, e poi prova ad avviare qualcosa.
+
+Lì si fermano le prove di adesso, perché lì manca il pezzo dopo: i dischi. Senza
+IDE e senza lettore di dischetti il firmware arriva in fondo, non trova niente da
+cui partire e lo dice — `No bootable device` — esattamente come farebbe una
+macchina vera con i cavi staccati.
+
+Una cosa che solo il firmware vero ha trovato: **`mov %ss,%edi` con gli operandi a
+trentadue bit azzera i sedici bit alti**. Sul 386 erano indefiniti, dal Pentium
+sono zero, e il software ci conta — il modo in cui si passa da uno stack a
+segmenti a uno stack piatto è esattamente `mov %ss,%edi`, `shl $4,%edi`,
+`add %edi,%esp`. Con i sedici bit alti sporchi lo stack finisce a quattro giga da
+dove doveva, e la macchina muore mezzo secondo dopo in un posto che non ha niente
+a che fare con l'errore.
+
+### Cosa manca
+
+I **dischi** — l'IDE del ponte sud e il lettore di dischetti — che sono il pezzo
+per cui sopra ci si accende un sistema operativo. La **virgola mobile**, che sul
+Pentium è dentro il processore per la prima volta: finché non c'è, CPUID dice che
+non c'è, perché un processore che dichiara un coprocessore che non ha è peggio di
+uno che dichiara di non averlo. Il **cambio di anello** con il TSS e il **modo
+virtuale 8086**. E la sessione nel browser: per adesso questa macchina si accende
+solo dalle prove, e nel menu di boot è una voce che non si avvia.
+
 ## Schermo intero
 
 Il pulsante **Schermo intero** nella barra — e sul C64 anche un doppio clic
@@ -901,6 +1066,16 @@ src/systems/zx/       lo ZX Spectrum 48K
   audio.js            il bit dell'altoparlante trasformato in campioni
   roms.js             dove trovare i sedici KB della ROM
   index.js            la sessione: canvas, audio, cassette, tastiera, comandi
+src/systems/pentium/  il PC del 1995
+  cpu586.js           il Pentium: real mode, modo protetto, paginazione, CPUID
+  machine.js          la scheda madre: la mappa, i chip, il tempo, il riavvio
+  pci.js              il bus PCI e lo spazio di configurazione
+  i440fx.js           il ponte nord con i PAM, e il PIIX3 con l'IDE
+  cmos.js             l'MC146818: l'ora e i byte che si ricordano
+  kbc.js              l'8042: tastiera, mouse, cancello A20, reset
+  vga.js              la VGA: quattro piani, modo testo e grafica
+  fwcfg.js            il canale da cui il firmware chiede com'è la macchina
+  roms.js             dove trovare SeaBIOS e la sua ROM video
 ```
 
 Le macchine sono costruite allo stesso modo: la CPU esegue i cicli di una

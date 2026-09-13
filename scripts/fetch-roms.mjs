@@ -19,17 +19,27 @@ import { AMIGA_FOREVER_URL, AROS_URL } from '../src/systems/amiga/roms.js';
 import { BIOS_SPEC, CARD_SPEC, GLABIOS_URL, XTIDE_URL } from '../src/systems/pc/roms.js';
 import { FREEDOS_SPEC, FREEDOS_URL } from '../src/systems/pc/media.js';
 import { ROM_SPEC as ZX_SPEC, FUSE_URL, OPENSE_URL, isSpectrumROM } from '../src/systems/zx/roms.js';
+import {
+  BIOS_SPEC as PENTIUM_BIOS,
+  VIDEO_SPEC as PENTIUM_VIDEO,
+  SEABIOS_URL,
+  SEABIOS_PACKAGE_URL,
+  isSystemBIOS,
+  isOptionROM,
+} from '../src/systems/pentium/roms.js';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const DEST = join(ROOT, 'roms', 'c64');
 const AMIGA_DEST = join(ROOT, 'roms', 'amiga');
 const PC_DEST = join(ROOT, 'roms', 'pc');
 const ZX_DEST = join(ROOT, 'roms', 'zx');
+const PENTIUM_DEST = join(ROOT, 'roms', 'pentium');
 
 await mkdir(DEST, { recursive: true });
 await mkdir(AMIGA_DEST, { recursive: true });
 await mkdir(PC_DEST, { recursive: true });
 await mkdir(ZX_DEST, { recursive: true });
+await mkdir(PENTIUM_DEST, { recursive: true });
 
 for (const rom of ROM_SPECS) {
   const target = join(DEST, rom.file);
@@ -287,6 +297,94 @@ function extractFromZip(zip, name) {
     entry += 46 + nameLength + extraLength + commentLength;
   }
   return null;
+}
+
+// --------------------------------------------------------------- il Pentium
+
+// Il firmware della macchina del 1995, che è libero come quello del 286 ma non
+// si scarica da una pagina di versioni: SeaBIOS pubblica i sorgenti, e i binari
+// viaggiano dentro QEMU. Se QEMU è installato — e se si emula, prima o poi lo è
+// — i due file sono già su questo computer, e questo script se li prende da lì.
+// Sono l'unico firmware di alloldos che non si va a cercare in rete.
+
+const PENTIUM_PLACES = [
+  '/usr/share/seabios',
+  '/usr/share/qemu',
+  '/usr/local/share/seabios',
+  '/usr/local/share/qemu',
+  '/opt/homebrew/share/qemu',
+  join(homedir(), '.local', 'share', 'qemu'),
+];
+
+/**
+ * Cerca un file di firmware nei posti dove lo mettono i pacchetti, provando più
+ * nomi: le distribuzioni chiamano lo stesso file in modi diversi.
+ *
+ * @param {string[]} names
+ * @returns {Promise<?{bytes:Uint8Array, from:string}>}
+ */
+async function findFirmware(names) {
+  for (const place of PENTIUM_PLACES) {
+    for (const name of names) {
+      try {
+        const at = join(place, name);
+        return { bytes: new Uint8Array(await readFile(at)), from: at };
+      } catch {
+        /* non è lì: si prova il prossimo */
+      }
+    }
+  }
+  return null;
+}
+
+let havePentium = false;
+{
+  const bios = join(PENTIUM_DEST, PENTIUM_BIOS.file);
+  try {
+    await access(bios);
+    havePentium = true;
+    console.log(`\n· ${bios} already present, leaving it alone`);
+  } catch {
+    // bios.bin è quello da 128 KB, che è la misura con cui la macchina è
+    // provata; bios-256k.bin va bene anche lui.
+    const found = await findFirmware(['bios.bin', 'bios-256k.bin', 'seabios.bin']);
+    if (found && isSystemBIOS(found.bytes)) {
+      await writeFile(bios, found.bytes);
+      console.log(`\n↓ SeaBIOS from ${found.from}`);
+      console.log(`  → ${bios} (${found.bytes.length} bytes)`);
+      havePentium = true;
+    }
+  }
+
+  const video = join(PENTIUM_DEST, PENTIUM_VIDEO.file);
+  try {
+    await access(video);
+    console.log(`· ${video} already present, leaving it alone`);
+  } catch {
+    // Serve la variante ISA: la scheda video di questa macchina è una VGA
+    // normale, senza le estensioni di Bochs.
+    const found = await findFirmware(['vgabios-isavga.bin', 'vgabios.bin']);
+    if (found && isOptionROM(found.bytes)) {
+      await writeFile(video, found.bytes);
+      console.log(`↓ SeaVGABIOS from ${found.from}`);
+      console.log(`  → ${video} (${found.bytes.length} bytes)`);
+    }
+  }
+}
+
+if (!havePentium) {
+  console.log(`
+No SeaBIOS. It is free software (LGPLv3) and it is what boots every QEMU machine,
+but the project ships sources, not binaries — so the quickest way to have it is a
+package that already built it:
+
+  · apt install seabios        — puts bios.bin and vgabios-isavga.bin in
+                                 /usr/share/seabios, where this script looks
+  · ${SEABIOS_PACKAGE_URL}
+  · ${SEABIOS_URL}  — the project, and how to build it yourself
+
+Two files go in ${PENTIUM_DEST}: ${PENTIUM_BIOS.file} (the system BIOS, 64/128/256 KB)
+and ${PENTIUM_VIDEO.file} (the ISA VGA BIOS). Dragging them onto the page works too.`);
 }
 
 // ------------------------------------------------------------- lo ZX Spectrum

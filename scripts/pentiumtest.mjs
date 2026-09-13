@@ -289,6 +289,25 @@ section('Le istruzioni che il 286 non aveva');
   check('e SETcc fa di una condizione un numero', cpu.get8(1) === 1);
 }
 
+{
+  // La cosa che solo il firmware vero ha trovato: `mov %ss,%edi` con gli
+  // operandi a trentadue bit **azzera** i sedici bit alti del registro. Sul 386
+  // erano indefiniti, dal Pentium sono zero, e il software ci conta — questo è
+  // il modo in cui si passa da uno stack a segmenti a uno stack piatto, e con i
+  // bit alti sporchi lo stack finisce a quattro giga da dove doveva.
+  const { cpu } = realMode([
+    0x66, 0xbf, ...dw(0xffffffff), // edi = tutti uno
+    0x8c, 0xd7, // mov di, ss     → sedici bit: i alti restano
+    0x66, 0x8c, 0xd6, // mov esi, ss  → trentadue: i alti si azzerano
+    HLT,
+  ]);
+  run(cpu);
+  check('un selettore in un registro a sedici bit lascia stare i bit alti',
+    cpu.get32(EDI) === 0xffff1000, hex(cpu.get32(EDI)));
+  check('in uno a trentadue li azzera, e da questo dipende ogni cambio di stack',
+    cpu.get32(ESI) === 0x1000, hex(cpu.get32(ESI)));
+}
+
 section('CPUID, cioè la fine degli indovinelli');
 
 {
@@ -690,6 +709,380 @@ section('Le interruzioni in modo protetto');
   check('un giro per passo, perché in mezzo si deve poter entrare', steps > 64, `${steps} passi`);
 }
 
+
+// ============================================================ la scheda madre
+
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { Pentium, CPU_CLOCK, RAM_SIZE } from '../src/systems/pentium/machine.js';
+import { PCIFunction, VENDOR_ID, DEVICE_ID, SUBSYSTEM_VENDOR, SUBSYSTEM_ID } from '../src/systems/pentium/pci.js';
+import { PAM0 } from '../src/systems/pentium/i440fx.js';
+import { CMOS } from '../src/systems/pentium/cmos.js';
+import { KBC8042 } from '../src/systems/pentium/kbc.js';
+import { FirmwareConfig, FWCFG_SELECTOR, FWCFG_DATA } from '../src/systems/pentium/fwcfg.js';
+import { VGA } from '../src/systems/pentium/vga.js';
+import { BIOS_SPEC, VIDEO_SPEC, isSystemBIOS, isOptionROM } from '../src/systems/pentium/roms.js';
+
+const ROMS = join(fileURLToPath(import.meta.url), '..', '..', 'roms', 'pentium');
+const romPath = (spec) => join(ROMS, spec.file);
+const have = {
+  get bios() {
+    return existsSync(romPath(BIOS_SPEC));
+  },
+  get video() {
+    return existsSync(romPath(VIDEO_SPEC));
+  },
+};
+
+/** Una macchina spenta con dentro un BIOS finto, per provare i chip. */
+function mainboard() {
+  // Sedici byte di BIOS finto che cominciano con un salto lontano, come tutti.
+  const bios = new Uint8Array(65536).fill(0x90);
+  bios[bios.length - 16] = 0xea;
+  bios[0] = 0x42; // un byte riconoscibile in testa all'immagine
+  return new Pentium(bios, { ram: 8 * 1024 * 1024 });
+}
+
+/** Legge una parola dallo spazio di configurazione come lo fa un firmware. */
+function pciWord(pc, device, fn, register) {
+  const address = (0x80000000 | (device << 11) | (fn << 8) | (register & 0xfc)) >>> 0;
+  for (let i = 0; i < 4; i++) pc.outb(0xcf8 + i, (address >>> (i * 8)) & 0xff);
+  const port = 0xcfc + (register & 2);
+  return pc.inb(port) | (pc.inb(port + 1) << 8);
+}
+
+function pciWriteByte(pc, device, fn, register, value) {
+  const address = (0x80000000 | (device << 11) | (fn << 8) | (register & 0xfc)) >>> 0;
+  for (let i = 0; i < 4; i++) pc.outb(0xcf8 + i, (address >>> (i * 8)) & 0xff);
+  pc.outb(0xcfc + (register & 3), value);
+}
+
+section('Il bus PCI');
+
+{
+  const pc = mainboard();
+  check('il ponte nord dice chi è', pciWord(pc, 0, 0, VENDOR_ID) === 0x8086 && pciWord(pc, 0, 0, DEVICE_ID) === 0x1237,
+    hex(pciWord(pc, 0, 0, DEVICE_ID), 4));
+  // I due numeri di sottosistema sono quelli con cui il firmware libero capisce
+  // di essere su una macchina emulata: senza, non va nemmeno a cercare la misura
+  // della memoria dove questa macchina l'ha scritta.
+  check('e che è una macchina emulata, non una scheda madre vera',
+    pciWord(pc, 0, 0, SUBSYSTEM_VENDOR) === 0x1af4 && pciWord(pc, 0, 0, SUBSYSTEM_ID) === 0x1100);
+  check('il ponte sud è un PIIX3 con due funzioni',
+    pciWord(pc, 1, 0, DEVICE_ID) === 0x7000 && pciWord(pc, 1, 1, DEVICE_ID) === 0x7010,
+    hex(pciWord(pc, 1, 1, DEVICE_ID), 4));
+  check('uno slot vuoto risponde «qui non c\'è nessuno»', pciWord(pc, 4, 0, VENDOR_ID) === 0xffff);
+
+  // Metà di quei byte sono di sola lettura, e il firmware ci conta: è così che
+  // riconosce una scheda invece di configurarla a caso.
+  pciWriteByte(pc, 0, 0, VENDOR_ID, 0x55);
+  check('chi la scheda è non si lascia riscrivere', pciWord(pc, 0, 0, VENDOR_ID) === 0x8086);
+
+  // Una finestra di indirizzi dichiara la propria misura lasciandosi scrivere
+  // solo i bit alti: il firmware scrive tutti uno e legge quanti gliene tornano.
+  const card = new PCIFunction({ vendor: 0x1234, device: 0x5678, name: 'prova' });
+  card.addBAR(0, 4096);
+  for (let i = 0; i < 4; i++) card.write(0x10 + i, 0xff);
+  check('e una finestra dice quanto è grande rifiutando i bit bassi',
+    card.read32(0x10) === 0xfffff000, hex(card.read32(0x10)));
+}
+
+section('La memoria alta, e chi risponde');
+
+{
+  const pc = mainboard();
+  // All'accensione la ROM risponde a tutta la memoria alta e la RAM che c'è
+  // sotto non la vede nessuno: è per questo che il firmware si trova a girare
+  // dalla ROM, che è lenta.
+  const fromROM = pc.read8(0xf0000);
+  pc.write8(0xf0000, 0x11);
+  check('dove risponde la ROM una scrittura non fa niente', pc.read8(0xf0000) === fromROM, hex(pc.read8(0xf0000), 2));
+  check('e la stessa ROM si affaccia anche in cima ai quattro giga',
+    pc.read8(0xfffff0000 % 0x100000000) === fromROM || pc.read8(0xffff0000) === fromROM);
+
+  // I PAM: mezzo byte per ogni pezzo da sedici KB, e due bit che contano.
+  pciWriteByte(pc, 0, 0, PAM0, 0x30);
+  pc.write8(0xf0000, 0x11);
+  check('con il PAM aperto in lettura e scrittura la RAM prende il posto della ROM',
+    pc.read8(0xf0000) === 0x11 && pc.ram[0xf0000] === 0x11);
+  // E la ROM resta dove il processore l'ha letta all'accensione: è da lì che il
+  // firmware rilegge sé stesso mentre si copia in memoria, perché la finestra in
+  // fondo al mega è già diventata RAM vuota.
+  check('mentre in cima ai quattro giga c\'è ancora la ROM',
+    pc.read8(0x100000000 - 65536) === 0x42, hex(pc.read8(0x100000000 - 65536), 2));
+
+  pciWriteByte(pc, 0, 0, PAM0, 0x00);
+  check('e richiudendo il PAM torna la ROM', pc.read8(0xf0000) === fromROM);
+}
+
+section('Il ventunesimo bit');
+
+{
+  const pc = mainboard();
+  pc.ram[0x000010] = 0xaa;
+  pc.ram[0x100010] = 0xbb;
+  check('col cancello aperto un mega più in là c\'è un altro byte', pc.read8(0x100010) === 0xbb);
+  // Il comando D1h del controllore di tastiera, che è il modo in cui ogni
+  // sistema operativo protetto degli anni Ottanta apriva la memoria.
+  pc.outb(0x64, 0xd1);
+  pc.outb(0x60, 0x00);
+  check('il controllore di tastiera lo chiude', pc.a20 === false);
+  check('e allora un mega più in là si riavvolge, come sull\'8086', pc.read8(0x100010) === 0xaa);
+  pc.outb(0x92, 0x02);
+  check('la porta 92h lo riapre, che è il modo veloce', pc.a20 === true && pc.read8(0x100010) === 0xbb);
+}
+
+section('L\'orologio che non si spegne');
+
+{
+  const cmos = new CMOS({ ram: 32 * 1024 * 1024, now: () => new Date(1995, 7, 24, 9, 30, 15) });
+  const read = (at) => {
+    cmos.write(0x70, at);
+    return cmos.read(0x71);
+  };
+  // La memoria è raccontata in tre pezzi, e il terzo — quello sopra i sedici
+  // mega — si conta in blocchi da 64 KB: è l'unico posto in cui il firmware la
+  // va a cercare, e sbagliarlo vuol dire una macchina con un mega di RAM.
+  check('i 640 KB in fondo', ((read(0x16) << 8) | read(0x15)) === 640);
+  check('i quindici mega dopo il primo', ((read(0x18) << 8) | read(0x17)) === 15 * 1024);
+  check('e i sedici che restano, in blocchi da 64 KB',
+    (((read(0x35) << 8) | read(0x34)) * 64) / 1024 === 16, `${((read(0x35) << 8) | read(0x34)) * 64 / 1024} MB`);
+
+  check('l\'ora è quella del computer che sta emulando', read(0x04) === 9 && read(0x00) === 15);
+  // In decimale codificato in binario, che è come nascono gli orologi: si spegne
+  // il bit e le cifre tornano a mezzo byte per volta.
+  cmos.bytes[0x0b] &= ~0x04;
+  check('e in decimale codificato in binario se glielo si chiede', read(0x04) === 0x09 && read(0x08) === 0x08);
+  check('il bit «sto aggiornando» resta spento, perché l\'ora non si fa a metà',
+    (read(0x0a) & 0x80) === 0);
+}
+
+section('Le due catene di interruzioni');
+
+{
+  const pc = mainboard();
+  // Come le programma un BIOS: il primo chip con i vettori da 8, il secondo da
+  // 70h, e la riga 2 del primo che è il filo su cui arriva il secondo.
+  pc.outb(0x20, 0x11);
+  pc.outb(0x21, 0x08);
+  pc.outb(0x21, 0x04);
+  pc.outb(0x21, 0x01);
+  pc.outb(0xa0, 0x11);
+  pc.outb(0xa1, 0x70);
+  pc.outb(0xa1, 0x02);
+  pc.outb(0xa1, 0x01);
+  pc.outb(0x21, 0x00);
+  pc.outb(0xa1, 0x00);
+
+  pc.pics.pulse(0);
+  check('la riga 0 diventa il vettore 8, come nel 1981', pc.pics.acknowledge() === 8);
+  pc.pics.master.write(0x20, 0x20);
+
+  // Una interruzione alta arriva raccontata due volte: il secondo chip la passa
+  // al primo, e il vettore lo dà il secondo.
+  pc.pics.pulse(12);
+  const vector = pc.pics.acknowledge();
+  check('la riga 12 passa dal secondo chip e diventa 74h', vector === 0x74, hex(vector, 2));
+  check('e resta in servizio su tutti e due finché non si chiudono',
+    pc.pics.master.isr === 0x04 && pc.pics.slave.isr === 0x10);
+  pc.pics.slave.write(0xa0, 0x20);
+  pc.pics.master.write(0x20, 0x20);
+  check('dopo i due EOI la catena è libera', pc.pics.master.isr === 0 && pc.pics.slave.isr === 0);
+
+  pc.pics.master.write(0x21, 0xff);
+  pc.pics.pulse(0);
+  check('e una riga mascherata non arriva', pc.pics.acknowledge() === -1);
+  pc.pics.master.write(0x21, 0x00);
+
+  // E l'orologio: il contatore 0 programmato come lo programma ogni BIOS — onda
+  // quadra, divisore 65536 — batte 18,2 volte al secondo perché 1.193.182 diviso
+  // 65.536 fa 18,2. Quel numero storto è il motivo per cui l'orologio del DOS
+  // perdeva un secondo ogni tanto, e ogni sistema operativo del PC lo dà per
+  // scontato.
+  let ticks = 0;
+  pc.pit.hooks.onChannel0 = () => ticks++;
+  pc.outb(0x43, 0x36);
+  pc.outb(0x40, 0x00);
+  pc.outb(0x40, 0x00);
+  const from = pc.cycles;
+  while (pc.cycles - from < CPU_CLOCK) {
+    pc.cycles += 1000;
+    pc.catchUp();
+  }
+  check('il contatore 0 batte 18,2 volte al secondo', Math.abs(ticks - 18.2) < 1, `${ticks} tic`);
+}
+
+section('Il canale di configurazione');
+
+{
+  const config = new FirmwareConfig({ ram: 64 * 1024 * 1024 });
+  const select = (key) => {
+    config.write(FWCFG_SELECTOR, key & 0xff);
+    config.write(FWCFG_SELECTOR + 1, (key >> 8) & 0xff);
+  };
+  const bytes = (count) => Array.from({ length: count }, () => config.read(FWCFG_DATA));
+
+  select(0x0000);
+  check('la parola d\'ordine è QEMU', String.fromCharCode(...bytes(4)) === 'QEMU');
+  select(0x0005);
+  check('e dice quanti processori ci sono', bytes(2)[0] === 1);
+
+  const rom = Uint8Array.from([0x55, 0xaa, 2, 0xcb]);
+  const key = config.addFile('vgaroms/prova.bin', rom);
+  select(0x0019);
+  const dir = bytes(4 + 64);
+  // L'elenco dei file è l'unica voce scritta nell'ordine della rete, e sbagliarlo
+  // vuol dire un firmware che cerca un file lungo quattro miliardi di byte.
+  check('l\'elenco dei file dice quanti sono, nell\'ordine della rete', dir[3] === 1, dir.slice(0, 4).join(' '));
+  check('con la misura del file', ((dir[4] << 24) | (dir[5] << 16) | (dir[6] << 8) | dir[7]) === rom.length);
+  check('la chiave con cui chiederlo', ((dir[8] << 8) | dir[9]) === key);
+  check('e il nome, che è quello che dice al firmware cosa farne',
+    String.fromCharCode(...dir.slice(12, 12 + 18)) === 'vgaroms/prova.bin\0');
+
+  select(key);
+  check('e il file si legge dalla stessa porta', bytes(4).join(',') === [...rom].join(','));
+}
+
+section('La scheda video');
+
+{
+  const vga = new VGA(CPU_CLOCK);
+  // Il modo testo come lo lascia il BIOS della scheda: 80 colonne, caratteri
+  // alti sedici righi, la finestra a B8000 e i piani a coppie pari/dispari.
+  vga.writePort(0x3c2, 0x67);
+  vga.writePort(0x3c4, 1);
+  vga.writePort(0x3c5, 0x00);
+  vga.writePort(0x3c4, 2);
+  vga.writePort(0x3c5, 0x03);
+  vga.writePort(0x3c4, 4);
+  vga.writePort(0x3c5, 0x03);
+  vga.writePort(0x3ce, 6);
+  vga.writePort(0x3cf, 0x0e);
+  vga.writePort(0x3d4, 1);
+  vga.writePort(0x3d5, 79);
+  vga.writePort(0x3d4, 9);
+  vga.writePort(0x3d5, 15);
+  vga.writePort(0x3d4, 18);
+  vga.writePort(0x3d5, 399 & 0xff);
+  vga.writePort(0x3d4, 19);
+  vga.writePort(0x3d5, 40);
+  vga.writePort(0x3d4, 7);
+  vga.writePort(0x3d5, 0x1f);
+
+  // «CIAO» scritto come lo scrive un programma: carattere e attributo alternati
+  // nella finestra a B8000, che è dove il DOS ha scritto per vent'anni.
+  const text = 'CIAO';
+  for (let i = 0; i < text.length; i++) {
+    vga.write(0x18000 + i * 2, text.charCodeAt(i));
+    vga.write(0x18000 + i * 2 + 1, 0x07);
+  }
+  check('80 colonne per 25 righe', vga.columns === 80 && vga.rows === 25, `${vga.columns}x${vga.rows}`);
+  check('il carattere va nel primo piano e l\'attributo nel secondo',
+    vga.memory[0] === 67 && vga.memory[64 * 1024] === 0x07);
+  check('e lo schermo riletto come testo dice quello che c\'è scritto',
+    vga.text()[0].startsWith('CIAO'), vga.text()[0].slice(0, 10));
+  check('rileggere quei byte dà indietro gli stessi', vga.read(0x18000) === 67 && vga.read(0x18001) === 0x07);
+
+  // La maschera dei piani: chiudere un piano vuol dire che quella scrittura non
+  // arriva, ed è il modo in cui si scrive il disegno delle lettere senza toccare
+  // i caratteri.
+  vga.writePort(0x3c4, 2);
+  vga.writePort(0x3c5, 0x00);
+  vga.write(0x18000, 0x5a);
+  check('un piano chiuso non si lascia scrivere', vga.memory[0] === 67);
+
+  // E la grafica: il modo di scrittura 2 prende i quattro bit bassi come colore
+  // e li spalma sui punti che la maschera lascia passare. È così che si disegna
+  // una linea su una scheda a piani.
+  const planar = new VGA(CPU_CLOCK);
+  planar.writePort(0x3c4, 2);
+  planar.writePort(0x3c5, 0x0f);
+  planar.writePort(0x3c4, 4);
+  planar.writePort(0x3c5, 0x06);
+  planar.writePort(0x3ce, 6);
+  planar.writePort(0x3cf, 0x05);
+  planar.writePort(0x3ce, 5);
+  planar.writePort(0x3cf, 0x02);
+  planar.writePort(0x3ce, 8);
+  planar.writePort(0x3cf, 0x80); // solo il punto più a sinistra
+  planar.write(0x0000, 0x09); // colore 9: piani 0 e 3
+  check('in grafica un punto solo si accende sui piani del suo colore',
+    planar.memory[0] === 0x80 && planar.memory[3 * 64 * 1024] === 0x80 && planar.memory[64 * 1024] === 0,
+    hex(planar.memory[0], 2));
+}
+
+if (!have.bios) {
+  console.log(`
+Nessun SeaBIOS in roms/pentium: la prova di accensione è stata saltata.
+\`npm run fetch-roms\` se lo prende da QEMU, se è installato (apt install seabios).`);
+} else {
+  section('Accensione vera: SeaBIOS sulla scheda madre');
+
+  // Qui non c'è niente di finto: questo è il firmware che accende ogni macchina
+  // virtuale di QEMU, e di questo emulatore non sa niente. Se arriva in fondo al
+  // POST, la scheda madre è quella che si aspettava — il PCI risponde, i PAM
+  // fanno la loro parte, l'orologio ha la memoria scritta dove va, e la sua ROM
+  // video gira.
+  const bios = new Uint8Array(readFileSync(romPath(BIOS_SPEC)));
+  check('il BIOS è un\'immagine di firmware di sistema', isSystemBIOS(bios), `${bios.length} byte`);
+  const videoROMs = [];
+  if (have.video) {
+    const video = new Uint8Array(readFileSync(romPath(VIDEO_SPEC)));
+    check('e la ROM della scheda video è una ROM di espansione', isOptionROM(video), `${video.length} byte`);
+    videoROMs.push({ name: VIDEO_SPEC.file, bytes: video });
+  }
+
+  const pc = new Pentium(bios, { videoROMs });
+  let interrupts = 0;
+  const rawInterrupt = pc.cpu.interrupt.bind(pc.cpu);
+  pc.cpu.interrupt = (vector, options) => {
+    if (vector === 8) interrupts++;
+    return rawInterrupt(vector, options);
+  };
+
+  // Si va avanti finché il firmware non si presenta a schermo, che è la fine del
+  // POST: da lì in poi aspetta un tasto per un paio di secondi e poi prova ad
+  // avviare qualcosa.
+  const screen = () => pc.video.text().join('\n');
+  let posted = false;
+  for (let i = 0; i < 600 && !posted; i++) {
+    pc.runCycles(1_000_000);
+    posted = /SeaBIOS \(version/.test(screen()) || /No bootable/.test(screen());
+  }
+
+  let reached = false;
+  for (let i = 0; i < 400 && !reached; i++) {
+    pc.runCycles(1_000_000);
+    reached = /Booting from/.test(screen());
+  }
+
+  check('il firmware si racconta dalla porta di servizio', /SeaBIOS \(version/.test(pc.log), pc.log.split('\n')[0]);
+  check('ed è passato per il modo protetto', pc.everProtected === true);
+  // Il BIOS si è copiato in memoria e gira da lì: è il mestiere dei PAM, e si
+  // vede da due cose — che la RAM sotto la finestra adesso contiene la ROM, e che
+  // le letture vengono da lì.
+  check('si è copiato in RAM e gira da lì',
+    pc.ram[0xfff00] === bios[bios.length - 256] && pc.shadow[15].read === true);
+  check('e ha richiuso la porta dietro di sé, perché nessuno ci scriva sopra',
+    pc.shadow[15].write === false);
+
+  if (have.video) {
+    check('la ROM della scheda video è arrivata dal canale di configurazione e ha girato',
+      /SeaVGABIOS/.test(pc.log), pc.log.split('\n').find((line) => /SeaVGABIOS/.test(line)) ?? '');
+    check('la scheda è nel modo testo che il DOS si aspetta, 80 per 25',
+      pc.video.columns === 80 && pc.video.rows === 25 && !pc.video.graphicsMode,
+      `${pc.video.columns}x${pc.video.rows}`);
+    check('e sullo schermo c\'è scritto chi ha acceso la macchina',
+      /SeaBIOS \(version/.test(screen()), screen().split('\n')[0].trim());
+    check('poi prova ad avviare qualcosa, che è dove finisce il POST',
+      reached, screen().split('\n').find((line) => /Booting/.test(line))?.trim() ?? 'niente');
+  }
+
+  check('e le interruzioni dell\'orologio sono arrivate al processore',
+    interrupts > 0, `${interrupts} tic`);
+}
 
 section('Quanto va');
 

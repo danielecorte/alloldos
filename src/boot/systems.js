@@ -56,6 +56,15 @@ export const SYSTEMS = [
     available: true,
     load: () => import('../systems/pc/index.js'),
   },
+  {
+    id: 'pentium',
+    label: 'PC Pentium — SeaBIOS / i440FX',
+    year: 1995,
+    cpu: 'Intel Pentium @ 66 MHz',
+    memory: '32 MB, VGA, bus PCI',
+    notes: 'Modo protetto, paginazione, firmware libero: la macchina del 1995.',
+    available: false,
+  },
   // Not a machine, but it boots like one — the way GRUB keeps its own entries
   // at the bottom of the list, under the systems.
   {
