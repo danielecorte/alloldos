@@ -23,12 +23,20 @@ import { PPI8255, VIDEO_CGA_80 } from '../src/systems/pc/ppi.js';
 import { XTKeyboard } from '../src/systems/pc/keyboard.js';
 import { CGA, DOTS_PER_LINE, LINES_PER_FRAME } from '../src/systems/pc/cga.js';
 import { FDC765, FloppyDrive, formatOf } from '../src/systems/pc/fdc.js';
-import { XTCF, HardDisk, GEOMETRY, XTCF_BASE, DISK_SIZE } from '../src/systems/pc/ata.js';
+import {
+  XTCF,
+  HardDisk,
+  GEOMETRY,
+  XTCF_BASE,
+  DISK_SIZE,
+  geometryFor,
+} from '../src/systems/pc/ata.js';
 import { keyFor } from '../src/systems/pc/scancodes.js';
 import { PC, CPU_CLOCK, FPS } from '../src/systems/pc/machine.js';
 import { FAT16, shortName } from '../src/systems/pc/fat.js';
 import { isZip, readZip, UnreadableZipError } from '../src/systems/pc/zip.js';
 import { loadIntoDisk } from '../src/systems/pc/files.js';
+import { hardDiskFrom, HDD_SPEC } from '../src/systems/pc/media.js';
 import { bootPC, Session, have, ROMS } from './pcsession.mjs';
 
 let failures = 0;
@@ -756,6 +764,106 @@ section('Il disco fisso (XT-CF)');
   check('una scheda senza disco lascia lo stato a zero', empty.read(reg(7)) === 0);
 }
 
+section('Un disco che arriva da fuori');
+
+{
+  // La geometria non è scritta da nessuna parte in un'immagine di disco, ma è
+  // deducibile: la tabella delle partizioni dice dove finisce la partizione in
+  // due modi — per numero di settore e per cilindro/testina/settore — e c'è una
+  // sola geometria che fa tornare i due conti.
+  const partitioned = (bytes, { heads, sectors }) => {
+    const image = new Uint8Array(bytes);
+    image[510] = 0x55;
+    image[511] = 0xaa;
+    const at = 446;
+    image[at] = 0x80;
+    image[at + 4] = 0x06; // FAT16
+    // Come partiziona FDISK: si comincia dalla seconda traccia — la prima è
+    // della tabella — e si finisce sull'ultimo settore dell'ultimo cilindro
+    // intero, perché una partizione che finisce a metà di un cilindro non si è
+    // mai vista.
+    const track = heads * sectors;
+    const start = sectors;
+    const last = Math.floor(image.length / 512 / track) * track - 1;
+    const cylinder = Math.min(Math.floor(last / track), 1023);
+    image[at + 1] = 1; // comincia dalla testina 1, settore 1, cilindro 0
+    image[at + 2] = 1;
+    image[at + 5] = heads - 1;
+    image[at + 6] = sectors | ((cylinder >> 2) & 0xc0);
+    image[at + 7] = cylinder & 0xff;
+    for (let i = 0; i < 4; i++) {
+      image[at + 8 + i] = (start >>> (i * 8)) & 0xff;
+      image[at + 12 + i] = ((last - start + 1) >>> (i * 8)) & 0xff;
+    }
+    return image;
+  };
+
+  const real = new Uint8Array(readFileSync(join(ROMS, 'hdd.img')));
+  const found = geometryFor(real);
+  check(
+    'la geometria del disco del repository si rilegge dalla sua tabella',
+    found.cylinders === GEOMETRY.cylinders &&
+      found.heads === GEOMETRY.heads &&
+      found.sectors === GEOMETRY.sectors,
+    `${found.cylinders}/${found.heads}/${found.sectors}`,
+  );
+
+  // Un disco da quaranta mega preparato con sedici testine e 63 settori: la
+  // misura è un'altra, la geometria è un'altra, e si leggono entrambe.
+  const forty = partitioned(40 * 1024 * 1024, { heads: 16, sectors: 63 });
+  const big = geometryFor(forty);
+  check(
+    'e quella di un disco più grande preparato altrove',
+    big.heads === 16 && big.sectors === 63 && big.cylinders === Math.floor(81920 / (16 * 63)),
+    `${big.cylinders}/${big.heads}/${big.sectors}`,
+  );
+
+  // Una tabella che non torna — qui il numero di testine è stato cambiato a
+  // mano — non si prende per buona: meglio una traduzione standard che una
+  // geometria sbagliata.
+  const lying = partitioned(40 * 1024 * 1024, { heads: 16, sectors: 63 });
+  lying[446 + 5] = 9;
+  const fallback = geometryFor(lying);
+  check(
+    'una tabella che non torna non viene creduta',
+    fallback.heads !== 10 && fallback.cylinders * fallback.heads * fallback.sectors <= 81920,
+    `${fallback.cylinders}/${fallback.heads}/${fallback.sectors}`,
+  );
+
+  // Senza tabella non c'è niente da dedurre, e si ricade sulle geometrie che i
+  // BIOS tenevano in tabella: quella che fa stare il disco in 1024 cilindri.
+  const bare = geometryFor(new Uint8Array(40 * 1024 * 1024));
+  check(
+    'un disco vergine prende una geometria che ci sta nei 1024 cilindri',
+    bare.cylinders <= 1024 && bare.cylinders * bare.heads * bare.sectors <= 81920,
+    `${bare.cylinders}/${bare.heads}/${bare.sectors}`,
+  );
+
+  // Cambiare il disco alla scheda a macchina accesa: la geometria con cui la
+  // scheda traduce gli indirizzi deve diventare quella del disco nuovo, o i
+  // settori finirebbero nei posti del disco di prima.
+  const card = new XTCF(new HardDisk());
+  const other = new HardDisk(new Uint8Array(40 * 1024 * 1024), {
+    cylinders: 602,
+    heads: 8,
+    sectors: 17,
+  });
+  card.attach(other);
+  check('la scheda prende la geometria del disco che le si infila', card.logical.heads === 8);
+
+  const reg = (index) => XTCF_BASE + index * 2;
+  card.write(reg(6), 0xa0 | 7); // testina 7: sul disco di prima non esisteva
+  card.write(reg(2), 1);
+  card.write(reg(3), 1);
+  card.write(reg(4), 3);
+  card.write(reg(5), 0);
+  card.write(reg(7), 0x30);
+  for (let i = 0; i < 512; i++) card.write(reg(0), 0x5a);
+  const where = (3 * 8 + 7) * 17 * 512;
+  check('e ci scrive dove dice la geometria nuova', other.data[where] === 0x5a);
+  check('il disco di prima non è stato toccato', card.disk === other);
+}
+
 section('La tastiera');
 
 {
@@ -1155,6 +1263,51 @@ Dovrebbe esserci — viaggia col repository — e \`npm run make-hdd\` lo rifà.
   const alone = new Session(bootPC({ disk: 'installed', floppy: false }));
   check('e senza dischetto, senza toccare niente, parte da C:', alone.waitFor(/C:\\>/, 1800), alone.lastLine());
   check('con il lettore vuoto contato lo stesso', /FDD\s+\[ 1 \]/.test(alone.screen()));
+}
+
+if (!have.bios || !have.card || !have.hdd) {
+  console.log(`
+Nessun disco fisso in roms/pc: la prova del disco da fuori è stata saltata.`);
+} else {
+  section('Avvio vero: un disco di un\'altra misura');
+
+  // Un disco che arriva da fuori non è grande venti mega perché lo diciamo
+  // noi: è grande quanto è grande, e la macchina deve andarci sopra così com'è.
+  // Qui il disco del repository viene messo in testa a un'immagine da quaranta
+  // mega — come se fosse stata preparata su una macchina più ricca — e la
+  // prova è che la scheda si accorga della misura nuova e che il DOS ci arrivi
+  // al prompt.
+  const image = new Uint8Array(40 * 1024 * 1024);
+  image.set(new Uint8Array(readFileSync(join(ROMS, HDD_SPEC.file))));
+  const disk = hardDiskFrom(image);
+  check(
+    'la geometria resta quella con cui il disco era stato partizionato',
+    disk.geometry.heads === 4 && disk.geometry.sectors === 17,
+    `${disk.geometry.cylinders}/${disk.geometry.heads}/${disk.geometry.sectors}`,
+  );
+  check('e i cilindri sono quelli che ci stanno nella misura nuova', disk.geometry.cylinders === 1204);
+
+  const pc = bootPC({ disk, floppy: false });
+  const dos = new Session(pc, (text) => console.log(text));
+  check('la scheda dice la misura giusta', dos.waitFor(/Master at 300h: .*40 MB/, 1500), dos.lastLine());
+  check('e il DOS arriva al prompt', dos.waitFor(/C:\\>/, 2500), dos.lastLine());
+
+  // Il DOS legge la partizione dalla tabella, non dalla misura del disco: la
+  // partizione resta quella di venti mega, e i venti che le stanno dietro sono
+  // spazio libero da partizionare — come su un disco vero a cui si è cambiato
+  // il supporto sotto.
+  check('e vede la partizione che c\'era, non una più grande', /size=\s*20 MB/.test(dos.screen()));
+
+  dos.command('dir c:\\');
+  check('con dentro il DOS di prima', /COMMAND\s+COM/.test(dos.screen()), dos.lastLine());
+
+  // E si scrive: il settore scritto deve finire dove dice la geometria nuova,
+  // che è l'unico modo in cui il file si rilegge dopo un riavvio.
+  dos.command('echo quaranta > c:\\misura.txt');
+  dos.reboot('c');
+  check('quello che ci si scrive sopra sopravvive al riavvio', dos.waitFor(/C:\\>/, 2500));
+  dos.command('type c:\\misura.txt');
+  check('e si rilegge', /quaranta/i.test(dos.screen()), dos.lastLine());
 }
 
 if (!have.bios || !have.card || !have.hdd) {

@@ -17,9 +17,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PC } from '../src/systems/pc/machine.js';
-import { HardDisk, DISK_SIZE } from '../src/systems/pc/ata.js';
+import { HardDisk } from '../src/systems/pc/ata.js';
 import { padOptionROM, BIOS_SPEC, CARD_SPEC, CARD_ROM_BASE } from '../src/systems/pc/roms.js';
-import { FREEDOS_SPEC, HDD_SPEC } from '../src/systems/pc/media.js';
+import { FREEDOS_SPEC, HDD_SPEC, hardDiskFrom } from '../src/systems/pc/media.js';
 import { keyFor, SHIFT } from '../src/systems/pc/scancodes.js';
 
 export const ROMS = join(fileURLToPath(import.meta.url), '..', '..', 'roms', 'pc');
@@ -49,7 +49,7 @@ const read = (spec) => new Uint8Array(readFileSync(path(spec)));
  * @param {object} [options]
  * @param {boolean} [options.card] montare la scheda del disco fisso
  * @param {boolean} [options.floppy] mettere il dischetto di FreeDOS in A:
- * @param {'blank'|'installed'|null} [options.disk] cosa c'è sul disco fisso
+ * @param {'blank'|'installed'|HardDisk|null} [options.disk] cosa c'è sul disco fisso
  */
 export function bootPC(options = {}) {
   const { card = true, floppy = true, disk = 'blank' } = options;
@@ -58,10 +58,10 @@ export function bootPC(options = {}) {
     cards.push({ base: CARD_ROM_BASE, bytes: padOptionROM(read(CARD_SPEC)) });
   }
   let hard = null;
-  if (disk === 'installed' && have.hdd) {
-    const image = new Uint8Array(DISK_SIZE);
-    image.set(read(HDD_SPEC).subarray(0, DISK_SIZE));
-    hard = new HardDisk(image);
+  if (disk instanceof HardDisk) {
+    hard = disk; // un disco preparato da chi chiama, di qualunque misura sia
+  } else if (disk === 'installed' && have.hdd) {
+    hard = hardDiskFrom(read(HDD_SPEC));
   } else if (disk) {
     hard = new HardDisk();
   }

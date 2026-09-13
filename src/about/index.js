@@ -293,7 +293,10 @@ class AboutPage {
       Il <b>disco fisso da 20 MB</b> arriva già installato — è l'unica immagine
       che viaggia con alloldos, e si può perché quello che c'è sopra è libero —
       quindi la macchina si accende su <code>C:\></code> senza dischetto,
-      com'era una volta messo via l'ultimo floppy.</p>
+      com'era una volta messo via l'ultimo floppy. Al suo posto se ne può
+      infilare un altro: un'immagine di disco si trascina sulla finestra come
+      un dischetto, di qualunque misura sia, e quello che la macchina ci scrive
+      sopra si riporta via col bottone <i>Salva il disco fisso</i>.</p>
 
       <h3 class="about__heading">Dove trovare le ROM</h3>
       <p>Qui, per una volta, si scarica tutto — e sono tre pezzi distinti,
@@ -342,6 +345,15 @@ class AboutPage {
         di ATA sopra — la geometria di un ST-225 — che parla a otto bit perché
         il bus è a otto bit, e la ROM della scheda che il POST trova da sola
         passando in rassegna la finestra a passi di due KB.</li>
+        <li>Un <b>disco fisso che si cambia</b> trascinandolo sulla finestra,
+        come si fa con un dischetto. Quello che entra è grande quanto è —
+        niente si taglia per farlo stare nei venti mega di prima — e la sua
+        <b>geometria</b> si va a leggere dentro la sua tabella delle
+        partizioni: ogni voce dice dove finisce in due modi, per numero di
+        settore e per cilindro/testina/settore, e c'è una geometria sola che
+        fa tornare i due conti. Poi la macchina si riaccende, perché è al POST
+        che la ROM della scheda chiede al disco chi è; e il disco che esce, se
+        era stato scritto, torna indietro come file prima di uscire.</li>
         <li>La <b>tastiera XT</b> con il suo filo di clock, dove tenerlo a terra
         un attimo vuol dire "ho preso il byte" e tenerlo venti millesimi vuol
         dire "riavviati" — due cose che il chip non deve confondere.</li>

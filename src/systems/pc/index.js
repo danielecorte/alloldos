@@ -18,7 +18,14 @@ import {
   XTIDE_URL,
   XTIDE_SOURCE_URL,
 } from './roms.js';
-import { loadFloppy, loadHardDisk, storeFloppy, classifyImage, FREEDOS_URL } from './media.js';
+import {
+  loadFloppy,
+  loadHardDisk,
+  hardDiskFrom,
+  storeFloppy,
+  classifyImage,
+  FREEDOS_URL,
+} from './media.js';
 import { formatOf } from './fdc.js';
 import {
   loadIntoDisk,
@@ -54,6 +61,7 @@ class PCSession {
     this.lastTime = 0;
     this.frameDebt = 0;
     this.floppyName = '';
+    this.diskName = '';
     this.seenFloppyWrites = 0;
     this.savedFloppyWrites = 0;
     this.savedDiskWrites = 0;
@@ -182,6 +190,7 @@ class PCSession {
 
     this.bios = bios; // se la scheda del disco arriva dopo, la macchina si rifà
     const [card, floppy, disk] = await Promise.all([loadCardROM(), loadFloppy(), loadHardDisk()]);
+    this.card = card;
     this.machine = new PC(bios, {
       disk,
       cards: card ? [{ base: CARD_ROM_BASE, bytes: card }] : [],
@@ -234,6 +243,9 @@ class PCSession {
         <a href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS</a>
         da 720 KB si trascina qui come gli altri — ma non serve per accendere,
         perché il DOS sta già sul disco fisso</li>
+        <li>e un'<b>immagine di disco fisso</b>, se ne hai una: va nella scheda
+        al posto di quella che c'è, grande quanto è, con la geometria letta
+        dalla sua tabella delle partizioni</li>
       </ul>
     `;
 
@@ -357,7 +369,7 @@ class PCSession {
     this.lastDiskWrites = disk?.writes ?? 0;
     this.diskRow.light.classList.toggle('pc__light--on', Boolean(busy));
     this.diskRow.text.textContent = disk
-      ? `${(disk.data.length / 1024 / 1024).toFixed(0)} MB${
+      ? `${megabytes(disk)} MB${this.diskName ? ` — ${this.diskName}` : ''}${
           disk.writes ? ` — ${disk.writes} settori scritti` : ''
         }`
       : 'nessuna scheda';
@@ -376,6 +388,65 @@ class PCSession {
     this.quietAt = 0;
     this.updateDrives();
     this.setStatus(`${this.floppyName} in A: (${format.label}) — Reset per avviarlo`);
+    return true;
+  }
+
+  /**
+   * Un'immagine di disco fisso che arriva da fuori, infilata nella scheda al
+   * posto di quella che c'era. Sul dischetto è un gesto da un secondo; qui è
+   * il gesto di spegnere, cambiare la scheda CompactFlash e riaccendere, e
+   * costa le tre cose che lo distinguono dall'infilare un dischetto:
+   *
+   *  - la geometria. Un dischetto si riconosce dalla lunghezza e basta; un
+   *    disco no, e quella sbagliata non dà un errore, dà un disco illeggibile.
+   *    Si va a leggerla dentro la tabella delle partizioni.
+   *  - la misura. Il disco che entra è grande quanto è grande, e non si taglia
+   *    per farlo entrare nei venti mega di prima.
+   *  - l'accensione. Chi si è segnato la geometria è il BIOS della scheda, e
+   *    l'ha chiesta al POST: finché la macchina non riparte, il DOS continua a
+   *    chiedere i settori del disco di prima.
+   *
+   * E prima di tutto questo, quello che c'era e non è stato salvato torna
+   * indietro come file: un disco che esce dalla scheda non ha nessun posto in
+   * cui aspettare.
+   *
+   * @param {Uint8Array} bytes
+   * @param {string} name
+   * @returns {boolean}
+   */
+  mountHardDisk(bytes, name) {
+    const disk = hardDiskFrom(bytes);
+    if (disk.sectorCount < 2) {
+      this.setStatus('Quell\'immagine è troppo corta per essere un disco');
+      return false;
+    }
+
+    const leaving = this.machine.hdc.disk;
+    const rescued = leaving && leaving.writes !== this.savedDiskWrites ? this.saveHardDisk() : '';
+
+    this.machine.hdc.attach(disk);
+    this.diskName = name.replace(/\.(img|ima|hdd|dsk|raw)$/i, '');
+    this.savedDiskWrites = 0;
+    this.lastDiskWrites = 0;
+    // Il POST da capo, che è l'unico momento in cui la ROM della scheda va a
+    // chiedere al disco chi è: senza, C: resterebbe quello di prima.
+    this.machine.reset();
+    this.updateDrives();
+
+    const g = disk.geometry;
+    const where = this.machine.fdc.drives[0].medium
+      ? 'ma in A: c\'è ancora un dischetto, e la macchina parte da quello'
+      : 'la macchina riparte da lì';
+    this.setStatus(
+      [
+        `${this.diskName || 'disco'} in C: — ${megabytes(disk)} MB,` +
+          ` ${g.cylinders}/${g.heads}/${g.sectors}, ${where}`,
+        this.card ? '' : `senza ${CARD_SPEC.file} però il DOS non lo vedrà`,
+        rescued,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    );
     return true;
   }
 
@@ -423,12 +494,14 @@ class PCSession {
     const disk = this.machine?.hdc.disk;
     if (!disk) {
       this.setStatus('Non c\'è nessuna scheda con un disco');
-      return;
+      return '';
     }
-    const name = `disco fisso ${timestamp()}.img`;
+    const name = `${this.diskName || 'disco fisso'} ${timestamp()}.img`;
     download(this.root, name, disk.data);
     this.savedDiskWrites = disk.writes;
-    this.setStatus(`Scaricato «${name}» — 20 MB, rimettilo qui la prossima volta`);
+    const said = `Scaricato «${name}» — ${megabytes(disk)} MB, rimettilo qui la prossima volta`;
+    this.setStatus(said);
+    return said;
   }
 
   /** Andarsene con un disco scritto e non salvato vuol dire perderlo. */
@@ -544,6 +617,7 @@ class PCSession {
   async mountCardROM() {
     const card = await loadCardROM();
     if (!card) return false;
+    this.card = card;
     const floppy = this.machine.fdc.drives[0].medium;
     this.machine = new PC(this.bios, {
       disk: this.machine.hdc.disk,
@@ -569,7 +643,7 @@ class PCSession {
       return;
     }
     const loose = [];
-    for (const { bytes, name, kind, label } of this.pending.splice(0)) {
+    for (const { bytes, name, kind } of this.pending.splice(0)) {
       if (kind === 'floppy') {
         if (this.insertFloppy(bytes, name)) storeFloppy(bytes);
         continue;
@@ -578,12 +652,7 @@ class PCSession {
         loose.push({ bytes, name });
         continue;
       }
-      const disk = this.machine.hdc.disk;
-      disk.data.set(bytes.subarray(0, disk.data.length));
-      disk.writes = 0;
-      this.savedDiskWrites = 0;
-      this.updateDrives();
-      this.setStatus(`Disco fisso da ${label} montato — premi Reset per avviarlo`);
+      this.mountHardDisk(bytes, name);
     }
     if (loose.length) await this.loadFiles(loose);
   }
@@ -744,6 +813,11 @@ function explain(error) {
   if (error instanceof FullDirectoryError) return 'la cartella principale del disco è piena';
   if (error instanceof UnreadableZipError) return error.message;
   return error.message;
+}
+
+/** La misura di un disco come la direbbe chi l'ha comprato: in mega, tonda. */
+function megabytes(disk) {
+  return (disk.data.length / 1024 / 1024).toFixed(0);
 }
 
 /** Quando è successo, per dare un nome a un file di cui se ne avranno tanti. */

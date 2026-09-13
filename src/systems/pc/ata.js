@@ -68,6 +68,102 @@ export const DISK_SIZE = GEOMETRY.cylinders * GEOMETRY.heads * GEOMETRY.sectors 
 const SECTOR = 512;
 
 /**
+ * La geometria di un'immagine che arriva da fuori.
+ *
+ * Un'immagine di disco fisso è una fila di settori e nient'altro: non dice
+ * quanti cilindri o quante testine avesse il disco da cui viene, e però il
+ * numero conta, perché il DOS chiede i settori per cilindro/testina/settore e
+ * chi traduce è la scheda. Sbagliare la traduzione vuol dire leggere i settori
+ * giusti negli indirizzi sbagliati: la partizione c'è, la FAT c'è, e il disco
+ * risulta illeggibile.
+ *
+ * Per fortuna la geometria, in un disco partizionato, è scritta dentro
+ * l'immagine — non come numero, ma di riflesso. Ogni voce della tabella delle
+ * partizioni dice dove comincia e dove finisce in due modi: per numero
+ * progressivo di settore e per cilindro/testina/settore. I due conti devono
+ * tornare allo stesso posto, e c'è una geometria sola che li fa tornare: le
+ * testine sono quella dell'ultimo settore più una, i settori per traccia sono
+ * il numero dell'ultimo settore. È il conto che fa ogni sistema operativo
+ * quando si trova un disco preparato da un'altra macchina.
+ *
+ * Se la tabella non c'è, o non torna, si ricade su una traduzione standard —
+ * quelle che i BIOS degli anni Novanta tenevano in tabella — scegliendo la
+ * prima che faccia stare il disco dentro i 1024 cilindri che il DOS sa
+ * contare.
+ *
+ * @param {Uint8Array} image
+ * @returns {{cylinders:number, heads:number, sectors:number}}
+ */
+export function geometryFor(image) {
+  const total = Math.floor(image.length / SECTOR);
+  return fromPartitionTable(image, total) ?? translated(total);
+}
+
+/** Quanti cilindri ci stanno, dato il resto della geometria. */
+function cylindersFor(total, heads, sectors) {
+  // Un disco ATA non sa raccontare più di 16383 cilindri, e nessun disco di
+  // questa epoca ci arriva nemmeno vicino.
+  return Math.max(1, Math.min(16383, Math.floor(total / (heads * sectors))));
+}
+
+/**
+ * La geometria che la tabella delle partizioni dà per scontata, se ce n'è una
+ * e se i suoi due modi di dire "dove finisce" vanno d'accordo.
+ */
+function fromPartitionTable(image, total) {
+  if (image.length < 2 * SECTOR) return null;
+  if (image[510] !== 0x55 || image[511] !== 0xaa) return null;
+  const u32 = (at) =>
+    (image[at] | (image[at + 1] << 8) | (image[at + 2] << 16) | (image[at + 3] << 24)) >>> 0;
+
+  for (let i = 0; i < 4; i++) {
+    const at = 446 + i * 16;
+    if (!image[at + 4]) continue; // una voce senza tipo è una voce vuota
+    const heads = image[at + 5] + 1;
+    const sectors = image[at + 6] & 0x3f;
+    // Il cilindro sta in dieci bit, due dei quali rubati al byte del settore:
+    // è il trucco che ha fatto finire i dischi grandi contro il muro dei 1024.
+    const cylinder = image[at + 7] | ((image[at + 6] & 0xc0) << 2);
+    if (sectors < 1 || sectors > 63 || heads > 256) continue;
+    if (heads * sectors > total) continue;
+
+    const last = u32(at + 8) + u32(at + 12) - 1;
+    const chs = (cylinder * heads + image[at + 5]) * sectors + sectors - 1;
+    // Le due misure combaciano, oppure la partizione arriva oltre il
+    // millesimoventiquattresimo cilindro e la sua fine è rimasta appoggiata
+    // lì: è quello che fa FDISK su un disco che non ci sta, e non è un errore.
+    const clipped = cylinder >= 1023 && chs <= last;
+    if (chs !== last && !clipped) continue;
+    return { cylinders: cylindersFor(total, heads, sectors), heads, sectors };
+  }
+  return null;
+}
+
+/**
+ * Le geometrie che i BIOS tenevano in tabella, dalla più piccola alla più
+ * grande: si prende la prima che faccia stare tutto il disco in 1024
+ * cilindri, e se nessuna ci riesce l'ultima, che è il massimo che un disco
+ * ATA sa raccontare in CHS.
+ */
+const TRANSLATIONS = [
+  { heads: 4, sectors: 17 }, // lo ST-225, e tutto quello che gli somiglia
+  { heads: 8, sectors: 17 },
+  { heads: 16, sectors: 17 },
+  { heads: 16, sectors: 63 },
+  { heads: 32, sectors: 63 },
+  { heads: 64, sectors: 63 },
+  { heads: 128, sectors: 63 },
+  { heads: 255, sectors: 63 },
+];
+
+function translated(total) {
+  const fits =
+    TRANSLATIONS.find(({ heads, sectors }) => total <= 1024 * heads * sectors) ??
+    TRANSLATIONS[TRANSLATIONS.length - 1];
+  return { ...fits, cylinders: cylindersFor(total, fits.heads, fits.sectors) };
+}
+
+/**
  * Il disco vero e proprio: un blocco di byte e la sua geometria.
  *
  * Un disco ATA si può indirizzare in due modi — per cilindro/testina/settore,
@@ -108,6 +204,19 @@ export class XTCF {
    * @param {HardDisk|null} disk il disco montato sulla scheda, o niente
    */
   constructor(disk = null) {
+    this.attach(disk);
+  }
+
+  /**
+   * Il disco montato sulla scheda, cambiato a macchina accesa: su una XT-CF si
+   * fa tirando fuori la scheda CompactFlash e infilandone un'altra. La scheda
+   * riparte da zero, perché la geometria del disco nuovo non è quella di
+   * prima; chi se l'era segnata è il BIOS della scheda, che l'ha chiesta al
+   * POST e non la richiede più — quindi dopo questo ci vuole un'accensione.
+   *
+   * @param {HardDisk|null} disk
+   */
+  attach(disk) {
     this.disk = disk;
     /**
      * La geometria che il disco *dice* di avere, che dopo un "initialize
@@ -383,7 +492,10 @@ export class XTCF {
     words[6] = g.sectors;
     put(10, 'ALLOLDOS-CF-1', 20); // numero di serie
     put(23, '1.0', 8); // versione del firmware
-    put(27, 'alloldos XT-CF 20 MB', 40);
+    // Il nome che la scheda si dà, con dentro la sua misura: è quello che
+    // XTIDE stampa a video mentre cerca i dischi, e quindi è il posto in cui
+    // si legge se il disco che è entrato è quello che si credeva.
+    put(27, `alloldos XT-CF ${Math.round(this.disk.data.length / 1024 / 1024)} MB`, 40);
     words[47] = 0x8001; // un settore per volta nei trasferimenti a blocchi
     words[49] = 0x0200; // sa parlare in LBA
     words[51] = 0x0200;

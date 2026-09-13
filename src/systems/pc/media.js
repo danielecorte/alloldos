@@ -16,7 +16,7 @@
 // macchina non è una macchina, è un pomeriggio di FDISK.
 
 import { formatOf } from './fdc.js';
-import { DISK_SIZE, HardDisk } from './ata.js';
+import { DISK_SIZE, HardDisk, geometryFor } from './ata.js';
 import { isZip } from './zip.js';
 
 /** Il progetto, per i crediti e per chi lo vuole andare a prendere. */
@@ -88,10 +88,27 @@ export async function loadFloppy() {
  */
 export async function loadHardDisk() {
   const image = await fetchImage(HDD_SPEC.file);
-  if (image && image.length >= DISK_SIZE) return new HardDisk(image.slice(0, DISK_SIZE));
+  if (image && image.length >= 2 * 512) return hardDiskFrom(image);
   const blank = new Uint8Array(DISK_SIZE);
   if (image) blank.set(image);
   return new HardDisk(blank);
+}
+
+/**
+ * Un'immagine qualunque che diventa un disco da infilare nella scheda: la
+ * misura è quella che ha, e la geometria si ricava da come è partizionata.
+ * Nessun ritaglio — un disco non è un dischetto, non ci sono misure da
+ * rispettare, e tagliare un'immagine da quaranta mega per farla entrare in
+ * venti vuol dire consegnare al DOS una FAT che punta a settori che non ci
+ * sono.
+ *
+ * @param {Uint8Array} image
+ * @returns {HardDisk}
+ */
+export function hardDiskFrom(image) {
+  const sectors = Math.floor(image.length / 512);
+  const bytes = image.length === sectors * 512 ? image : image.subarray(0, sectors * 512);
+  return new HardDisk(bytes, geometryFor(bytes));
 }
 
 /** Un dischetto sta nel deposito del browser; un disco fisso da venti mega no. */

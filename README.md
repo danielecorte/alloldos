@@ -50,7 +50,8 @@ schermo i caratteri arrivati davvero al BASIC; la terza registra un nastro e lo
 fa ricaricare al KERNAL; la quarta prende l'Amiga a pezzi (vedi sotto); la
 quinta monta un DOM finto e fa girare l'intera sessione del browser di tutte e
 tre le macchine, canvas e audio compresi; la sesta accende il PC, gli fa fare il
-POST con il BIOS vero e ci avvia FreeDOS dal dischetto e dal disco fisso; la
+POST con il BIOS vero e ci avvia FreeDOS dal dischetto, dal disco fisso e da un
+disco di un'altra misura montato da fuori; la
 settima accende lo Spectrum, ci fa fare un conto in virgola mobile alla sua ROM
 e gli fa caricare una cassetta.
 
@@ -605,6 +606,44 @@ senza `hdd.img` la macchina monta un disco **vuoto**, venti mega di zeri come si
 comprava, da partizionare e formattare a mano. **Salva il disco fisso** riporta
 via come file quello che c'è dentro adesso, e ritrascinandolo lo si rimette.
 
+#### Cambiare il disco
+
+Un'immagine di disco fisso si trascina sulla finestra come un dischetto, e va
+nella scheda al posto di quella che c'era. Fra i due gesti però ci sono tre
+differenze, e sono tutte e tre nel disco e non nel codice:
+
+- **la misura**. Un dischetto è grande una delle sette misure che esistono, e si
+  riconosce da quella; un disco è grande quanto è. Quello che entra ci entra
+  intero — un'immagine da quaranta mega resta da quaranta mega — perché
+  tagliarla per farla stare nei venti di prima vuol dire consegnare al DOS una
+  FAT che punta a settori che non ci sono.
+- **la geometria**. Un'immagine non dice da quanti cilindri e quante testine
+  veniva, e sbagliare quel numero non dà un errore: dà un disco illeggibile, con
+  la partizione al posto giusto e i settori chiesti nei posti sbagliati. Però la
+  geometria è scritta dentro, di riflesso: ogni voce della tabella delle
+  partizioni dice dove finisce **in due modi**, per numero progressivo di settore
+  e per cilindro/testina/settore, e c'è una geometria sola che fa tornare i due
+  conti — le testine sono quella dell'ultimo settore più una, i settori per
+  traccia sono il numero dell'ultimo settore. È lo stesso conto che faceva ogni
+  sistema operativo trovandosi un disco preparato su un'altra macchina. Se la
+  tabella non c'è, o se non torna, si ricade sulle traduzioni che i BIOS
+  tenevano in tabella, scegliendo la prima che faccia stare il disco nei 1024
+  cilindri che il DOS sa contare.
+- **l'accensione**. La geometria se l'è segnata il BIOS della scheda, e l'ha
+  chiesta al POST: finché la macchina non riparte, il DOS continua a chiedere i
+  settori del disco di prima. Quindi il disco nuovo si monta e la macchina si
+  riaccende da sola — che è esattamente quello che si faceva a mano, spegnendo
+  per cambiare la scheda CompactFlash.
+
+E il disco che esce, se era stato scritto e non salvato, torna indietro come file
+prima di uscire: nella scheda del browser non c'è nessun cassetto in cui posarlo.
+
+La prova, in `pctest.mjs`, prende il disco del repository e lo mette in testa a
+un'immagine da quaranta mega, come se fosse stata preparata su una macchina più
+ricca: la scheda dice «alloldos XT-CF 40 MB», la geometria letta dalla tabella è
+ancora 4 testine e 17 settori su 1204 cilindri, FreeDOS arriva a `C:\>` e vede
+la sua partizione da venti mega con venti mega di spazio libero dietro.
+
 ### Portare dentro un file
 
 Fra il computer di oggi e quello del 1988 non c'è nessun cavo. La macchina
@@ -844,7 +883,7 @@ src/systems/pc/       il PC 286
   ppi.js              8255: tastiera, interruttori a slitta, altoparlante
   dma.js              8237: quattro canali, pagine, e il rinfresco della RAM
   fdc.js              il NEC 765 e il lettore di dischetti
-  ata.js              la scheda XT-CF e i venti mega di disco fisso
+  ata.js              la scheda XT-CF, il disco, e la geometria letta da dentro
   cga.js              la scheda video: testo e le due grafiche
   keyboard.js         la tastiera XT, con il suo filo di clock
   scancodes.js        da tasto del browser a numero di tasto sulla matrice

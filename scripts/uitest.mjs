@@ -725,6 +725,51 @@ if (pc.machine === null) {
     check('and nothing gets written to the disk', pc.machine.hdc.disk.writes === untouched);
   }
 
+  // Un disco fisso trascinato sulla finestra, che è il gesto con cui si porta
+  // dentro il lavoro di un'altra sessione — o un disco preparato altrove. Va
+  // nella scheda al posto di quello che c'era, con la misura e la geometria che
+  // ha lui, e la macchina riparte perché la ROM della scheda chiede la
+  // geometria al POST e poi non la chiede più.
+  const hddPath = join(ROOT, 'roms', 'pc', 'hdd.img');
+  if (existsSync(hddPath)) {
+    const bigger = new Uint8Array(40 * 1024 * 1024);
+    bigger.set(new Uint8Array(readFileSync(hddPath)));
+
+    // Il disco che esce dalla scheda era stato scritto e non salvato: prima di
+    // uscire deve tornare indietro come file, o quel lavoro è perso.
+    let saved = 0;
+    const realCreate = URL.createObjectURL;
+    globalThis.URL.createObjectURL = () => {
+      saved++;
+      return 'blob:stub';
+    };
+    await pc.acceptFiles([asFile('disco grande.img', bigger)]);
+    globalThis.URL.createObjectURL = realCreate;
+
+    const disk = pc.machine.hdc.disk;
+    check('a dropped hard disk image goes into the card', disk.data.length === bigger.length,
+      `${(disk.data.length / 1024 / 1024).toFixed(0)} MB`);
+    check('with the geometry written in its partition table',
+      disk.geometry.heads === 4 && disk.geometry.sectors === 17 && disk.geometry.cylinders === 1204,
+      `${disk.geometry.cylinders}/${disk.geometry.heads}/${disk.geometry.sectors}`);
+    check('and the card translates addresses with that one', pc.machine.hdc.logical.cylinders === 1204);
+    pc.updateDrives();
+    check('the C: row says how big it is and where it came from',
+      pc.diskRow.text.textContent.includes('40 MB') && pc.diskRow.text.textContent.includes('disco grande'),
+      pc.diskRow.text.textContent);
+    check('the one that came out was handed back first', saved > 0, `${saved} file scaricato`);
+
+    // E la macchina riparte da sola: il POST di nuovo, e il DOS del disco
+    // nuovo, che qui è quello di prima con venti mega di spazio dietro.
+    let again = false;
+    for (let i = 0; i < 900 && !again; i++) {
+      pump(4);
+      again = /C:\\>/.test(pc.machine.cga.text().join('\n'));
+    }
+    check('and boots the disk that just went in', again);
+    check('reading the DOS off the image that went in', FAT16.of(disk.data)?.read('COMMAND.COM') !== null);
+  }
+
   // E il caso del sito pubblicato, dove nessuna ROM sta sul server e arriva
   // tutto in un mucchio solo: il BIOS accende la macchina, e il dischetto
   // caduto insieme a lui non deve perdersi per strada — se si perde, la
