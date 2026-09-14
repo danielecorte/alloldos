@@ -51,19 +51,42 @@ export class KBC8042 {
     /** Quello che il chip ha da consegnare, in fila. */
     this.output = [];
     this.fromMouse = false;
-    /** Il byte di comando: cosa fa il chip da sé senza che glielo si chieda. */
-    this.command = 0x45;
+    /**
+     * Il byte di comando: cosa fa il chip da sé senza che glielo si chieda. Le
+     * due interruzioni accese, la traduzione accesa, e il mouse spento — che è
+     * come lo lascia il POST di un AT, e come se lo aspetta chi accende dopo.
+     */
+    this.command = 0x65;
     /** Dove va il prossimo byte scritto sulla porta dei dati. */
     this.expecting = 0;
     this.a20 = true;
-    this.keyboardEnabled = true;
-    this.mouseEnabled = false;
     /** Il modo in cui il mouse risponde: quattro numeri e una risoluzione. */
     this.mouse = { reporting: false, resolution: 2, sampleRate: 100, scaling: 1 };
     this.lastByte = 0;
   }
 
   // ------------------------------------------------------------------ la fila
+
+  /**
+   * Se le due porte sono aperte.
+   *
+   * Non sono due interruttori a parte: sono **due bit del byte di comando**, e
+   * questo è il genere di dettaglio che non si vede finché non si accende
+   * qualcosa di vero sopra. I comandi ADh e AEh — «spegni la tastiera», «riaccendila»
+   * — non fanno altro che alzare e abbassare il bit 4; ma un firmware può anche
+   * riscrivere il byte intero, e allora la tastiera si riaccende senza che nessuno
+   * abbia mai mandato AEh. È esattamente quello che fa SeaBIOS: spegne la
+   * tastiera per fare il suo autotest in pace, e poi la riaccende scrivendo il
+   * byte nuovo. Chi tiene lo stato da un'altra parte resta con una tastiera
+   * spenta per sempre, e non se ne accorge finché non prova a battere qualcosa.
+   */
+  get keyboardEnabled() {
+    return (this.command & 0x10) === 0;
+  }
+
+  get mouseEnabled() {
+    return (this.command & 0x20) === 0;
+  }
 
   /** Un byte dalla tastiera, che il chip mette in fila e annuncia con la IRQ 1. */
   fromKeyboard(byte) {
@@ -163,7 +186,6 @@ export class KBC8042 {
         return;
       case 0xa8:
         this.command &= ~0x20;
-        this.mouseEnabled = true;
         return;
       case 0xa9:
         this.push(0x00, false); // la porta del mouse c'è e funziona
@@ -176,11 +198,9 @@ export class KBC8042 {
         this.push(0x00, false); // e la prova della porta della tastiera
         return;
       case 0xad:
-        this.keyboardEnabled = false;
         this.command |= 0x10;
         return;
       case 0xae:
-        this.keyboardEnabled = true;
         this.command &= ~0x10;
         return;
       case 0xc0:

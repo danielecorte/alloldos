@@ -86,9 +86,13 @@ export class CMOS {
     this.bytes[0x12] = 0xf0;
     this.bytes[0x19] = 47;
     this.bytes[0x14] = 0x05; // lettore presente, schermo VGA
-    // Da dove provare a partire, in ordine: dischetto, disco fisso, CD.
+    // Da dove provare a partire, in ordine. Il byte tiene due scelte in due mezzi
+    // byte — 1 è il dischetto, 2 il disco fisso, 3 il CD — e il primo tentativo
+    // sta in quello *basso*. Dischetto e poi disco fisso è l'ordine con cui si
+    // accendeva un PC: chi voleva partire da un altro sistema lo infilava in A:,
+    // e se A: era vuoto si andava avanti senza chiedere.
     this.bytes[0x38] = 0x00;
-    this.bytes[0x3d] = 0x12;
+    this.bytes[0x3d] = 0x21;
     this.bytes[0x5f] = 0x00; // un processore solo
   }
 

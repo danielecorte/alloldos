@@ -24,8 +24,10 @@ Ce ne sono quattro che partono davvero:
 
 E ce n'è una quinta a metà strada: un **PC Pentium** del 1995 — modo protetto,
 paginazione, bus PCI, VGA — con sopra **SeaBIOS**, che arriva in fondo al POST e
-lo scrive sullo schermo. Nel menu è una voce che non si avvia ancora: le mancano
-i dischi, che sono il pezzo da cui parte un sistema operativo.
+avvia **FreeDOS** dal disco IDE fino al prompt, o dal dischetto. È lo stesso file
+di disco che si accende sul 286 di sopra, letto a sedici bit da un controllore
+diverso su porte diverse. Nel menu è ancora una voce che non si avvia: quello che
+le manca adesso non è più la macchina, è la sessione nel browser.
 
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
 eseguono il loro firmware. Il firmware però non è incluso — è di chi lo ha
@@ -59,8 +61,11 @@ POST con il BIOS vero e ci avvia FreeDOS dal dischetto, dal disco fisso e da un
 disco di un'altra misura montato da fuori; la
 settima accende lo Spectrum, ci fa fare un conto in virgola mobile alla sua ROM
 e gli fa caricare una cassetta; l'ottava prende il Pentium — il processore nei suoi
-tre mondi, i chip della scheda madre uno per uno — e poi ci accende sopra SeaBIOS,
-che arriva in fondo al POST e lo scrive sullo schermo.
+tre mondi, i chip della scheda madre uno per uno, il disco IDE registro per
+registro — e poi ci accende sopra SeaBIOS, che arriva in fondo al POST e avvia
+FreeDOS dal disco fisso: si batte `dir` sulla tastiera, ci si scrive sopra un
+file e lo si ritrova dopo aver spento e riacceso. E dal dischetto, dove la prova
+si ferma appena il kernel si è caricato per intero.
 
 Se in cartella c'è un `.tap`, l'ultima prova ci carica dentro anche quello e poi
 **ci gioca**: tiene premuta una direzione e guarda dove finisce il personaggio.
@@ -839,9 +844,10 @@ nastro: qui le cassette si leggono e non si scrivono.
 ## PC Pentium
 
 La macchina del 1995, e la seconda di questa collezione che gira su **firmware
-libero fino in fondo**. Non si accende ancora dal menu di boot — le manca il
-pezzo da cui parte un sistema operativo, cioè i dischi — ma il POST arriva in
-fondo e lo si vede scritto sullo schermo.
+libero fino in fondo**. Dal menu di boot non si accende ancora — le manca la
+sessione nel browser, che è il pezzo che fa di una macchina emulata una finestra
+— ma la macchina c'è tutta: il POST arriva in fondo e sopra ci si avvia FreeDOS,
+dal disco fisso o dal dischetto, fino al prompt.
 
 Fra lei e il 286 di sopra ci sono sette anni e due cose che cambiano tutto:
 
@@ -947,6 +953,54 @@ caratteri, il piano 1 gli attributi, e il piano 2 il **disegno delle lettere** �
 che quindi non è in una ROM ma in RAM, ed è per questo che sul DOS si potevano
 ridefinire i caratteri.
 
+### I dischi
+
+Il nome lo dice tutto: **IDE**, *Integrated Drive Electronics*. Prima, su un PC,
+il controllore era una scheda e il disco era un motore con dei piatti: la scheda
+sapeva com'erano fatti i piatti, e cambiare disco voleva dire cambiare scheda.
+Nel 1986 a qualcuno viene in mente di prendere la scheda e avvitarla *sopra* il
+disco, lasciando sul bus solo i registri. Da quel momento il disco è una scatola
+nera che parla un protocollo, e la "scheda" sulla scheda madre non deve sapere
+niente di niente — nel 1995 non è più una scheda, è mezzo chip del ponte sud.
+
+È lo stesso protocollo della scheda XT-CF del 286 di sopra, perché è lo stesso
+protocollo: cinque registri per dire quanti settori e dove, uno per il comando, e
+i byte che passano dalla porta dei dati mentre il bit DRQ è alto. Le differenze
+sono due, e sono quelle che fanno di questa la macchina di dieci anni dopo:
+
+- **i dati passano a sedici bit.** Sul bus a otto bit dell'XT il disco parlava un
+  byte per volta; qui la porta dei dati è larga una parola, e un settore sono 256
+  letture invece di 512. È l'unica porta di tutta la macchina che è larga davvero:
+  tutte le altre, a leggerle a sedici bit, si leggono due volte a otto;
+- **c'è l'indirizzamento lineare.** Cilindro/testina/settore nel 1986
+  corrispondeva ancora a com'erano fatti i piatti, nel 1995 non più: i dischi
+  hanno tracce con un numero variabile di settori, e la geometria che raccontano è
+  una bugia gentile. L'LBA — il settore contato dall'inizio — è la verità, e a
+  tradurre fra le due è il disco, che è tutto il punto dell'IDE.
+
+Il resto è il pezzo di architettura più longevo che il PC abbia: le porte 1F0h e
+170h, i due canali con due dischi ciascuno, il "master" e lo "slave" scelti da un
+bit. I due dischi di un canale non sono due dispositivi su un bus: condividono i
+registri, e risponde quello selezionato. È per questo che su un cavo IDE il disco
+lento rallentava anche quello veloce. Trent'anni e tre generazioni di cavi dopo,
+un disco SATA si presenta ancora con IDENTIFY DEVICE.
+
+Accanto c'è il **lettore di dischetti**, ed è lo stesso NEC 765 del 286 — stesso
+chip, stesso codice, stesso DMA: nel 1995 è ancora quello, dentro il ponte sud
+invece che su una scheda. Le due schede si dividono perfino un indirizzo: la
+porta 3F7h ha il bit 7 del lettore di dischetti e gli altri sette del disco fisso,
+che è il genere di cosa che succede quando gli indirizzi finiscono.
+
+Una cosa che il firmware vero insegna e i manuali dicono a mezza voce: il byte
+del setup che dice **che lettore è montato** conta più del dischetto che c'è
+dentro. Un lettore da 1,44 e un dischetto da 720 KB hanno geometrie diverse, e se
+il byte dice la prima mentre dentro c'è il secondo il settore di avvio si legge —
+è il primo della prima traccia, e lì le due geometrie coincidono — e tutto il
+resto no. Quindi questa macchina dichiara il lettore che serve al dischetto che
+c'è, e quando non c'è nessun dischetto dichiara di non avere il lettore: che è
+vero, e che risparmia al firmware cinque secondi passati a interrogare un lettore
+vuoto.
+
 ### Dove si è arrivati
 
 `npm test` accende la macchina con SeaBIOS dentro e guarda cosa succede. Il
@@ -963,10 +1017,23 @@ firmware, che di questo emulatore non sa niente:
   c'è uno schermo su cui leggere;
 - ci scrive chi ha acceso la macchina, e poi prova ad avviare qualcosa.
 
-Lì si fermano le prove di adesso, perché lì manca il pezzo dopo: i dischi. Senza
-IDE e senza lettore di dischetti il firmware arriva in fondo, non trova niente da
-cui partire e lo dice — `No bootable device` — esattamente come farebbe una
-macchina vera con i cavi staccati.
+E lì trova qualcosa. Legge il primo settore del disco IDE, ci salta dentro, e da
+quel momento non è più lui a guidare: è **FreeDOS**, che carica il suo kernel un
+settore per volta attraverso gli stessi registri e arriva al suo prompt. Da lì la
+prova è quella di una macchina: si batte `dir c:\` sulla tastiera — che vuol dire
+un codice per volta dall'8042, con la sua interruzione ogni volta — si scrive un
+file, si spegne e si riaccende, e il file è ancora dov'era.
+
+Il disco è **lo stesso file** che il 286 di sopra avvia dalla sua scheda XT-CF.
+Che la stessa immagine si accenda su due macchine con dieci anni, due processori
+e due controllori diversi in mezzo non è un caso: è quello che vuol dire che un
+disco è un disco.
+
+E l'altra strada: senza disco fisso e con un dischetto nel lettore, il firmware
+prova prima quello — come si accendeva un PC, che chi voleva partire da un altro
+sistema lo infilava in A: — e il kernel di FreeDOS si carica da lì, novanta
+settori su cinque tracce con due cambi di testina, portati dal NEC 765 attraverso
+il DMA.
 
 Una cosa che solo il firmware vero ha trovato: **`mov %ss,%edi` con gli operandi a
 trentadue bit azzera i sedici bit alti**. Sul 386 erano indefiniti, dal Pentium
@@ -978,13 +1045,18 @@ a che fare con l'errore.
 
 ### Cosa manca
 
-I **dischi** — l'IDE del ponte sud e il lettore di dischetti — che sono il pezzo
-per cui sopra ci si accende un sistema operativo. La **virgola mobile**, che sul
-Pentium è dentro il processore per la prima volta: finché non c'è, CPUID dice che
-non c'è, perché un processore che dichiara un coprocessore che non ha è peggio di
-uno che dichiara di non averlo. Il **cambio di anello** con il TSS e il **modo
-virtuale 8086**. E la sessione nel browser: per adesso questa macchina si accende
-solo dalle prove, e nel menu di boot è una voce che non si avvia.
+La **sessione nel browser**: per adesso questa macchina si accende solo dalle
+prove, e nel menu di boot è una voce che non si avvia. È il pezzo dopo, ed è
+tutto lavoro di finestra — canvas, tastiera, dischi che si trascinano dentro — non
+più di macchina.
+
+Poi la **virgola mobile**, che sul Pentium è dentro il processore per la prima
+volta: finché non c'è, CPUID dice che non c'è, perché un processore che dichiara
+un coprocessore che non ha è peggio di uno che dichiara di non averlo. Il
+**cambio di anello** con il TSS e il **modo virtuale 8086**. E la velocità: la
+macchina gira, ma gira a una frazione dei sessantasei megahertz che dichiara, e
+per farci sopra qualcosa di più di un prompt del DOS quella frazione andrà
+alzata.
 
 ## Schermo intero
 
@@ -1075,6 +1147,7 @@ src/systems/pentium/  il PC del 1995
   kbc.js              l'8042: tastiera, mouse, cancello A20, reset
   vga.js              la VGA: quattro piani, modo testo e grafica
   fwcfg.js            il canale da cui il firmware chiede com'è la macchina
+  ide.js              i due canali IDE: i registri, l'LBA, e i settori a parole
   roms.js             dove trovare SeaBIOS e la sua ROM video
 ```
 

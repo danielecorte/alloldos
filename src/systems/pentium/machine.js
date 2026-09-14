@@ -33,7 +33,9 @@ import { CMOS, CMOS_INDEX } from './cmos.js';
 import { KBC8042, KBC_DATA } from './kbc.js';
 import { VGA } from './vga.js';
 import { FirmwareConfig, FWCFG_SELECTOR, FWCFG_DATA } from './fwcfg.js';
+import { IDE, PRIMARY, SECONDARY } from './ide.js';
 import { PIC8259 } from '../pc/pic.js';
+import { FDC765 } from '../pc/fdc.js';
 import { PIT8253, PIT_CLOCK } from '../pc/pit.js';
 import { DMA8237 } from '../pc/dma.js';
 
@@ -122,6 +124,17 @@ class InterruptChain {
     return this.master.request() >= 0;
   }
 
+  /**
+   * Se c'è qualcosa che chiede, senza guardare le priorità.
+   *
+   * Serve a essere chiesto **a ogni istruzione**, e quindi deve costare due
+   * letture e un AND. La domanda precisa — chi ha la priorità, e se qualcosa è
+   * ancora in servizio — la si fa dopo, solo se questa dice sì.
+   */
+  get raised() {
+    return (this.master.irr & ~this.master.imr) !== 0;
+  }
+
   read(port) {
     return port < 0xa0 ? this.master.read(port) : this.slave.read(port);
   }
@@ -194,6 +207,18 @@ export class Pentium {
     this.video = new VGA(CPU_CLOCK);
 
     /**
+     * I dischi. Il lettore di dischetti è lo stesso NEC 765 del 286 di qui
+     * accanto — è lo stesso chip, e nel 1995 è ancora quello, dentro il ponte sud
+     * invece che su una scheda — e i dischi fissi sono IDE sulle porte di sempre.
+     */
+    this.floppy = new FDC765({ dma: this.dma, onInterrupt: () => this.pics.pulse(6) });
+    this.disks = new IDE((irq, active) => this.pics.setLine(irq, active));
+    if (options.disk) this.disks.channels[0].attach(0, options.disk);
+    if (options.disk2) this.disks.channels[0].attach(1, options.disk2);
+    if (options.floppy) this.insertFloppy(options.floppy);
+    else this.describeFloppy(null);
+
+    /**
      * Il canale da cui il firmware chiede alla macchina com'è fatta, e da cui
      * riceve la ROM della scheda video: su una macchina come questa quella ROM non
      * sta dentro una scheda, gliela passa la scheda madre come file. È quello che
@@ -232,6 +257,8 @@ export class Pentium {
     this.dma16.reset();
     this.kbc.reset();
     this.video?.reset();
+    this.floppy.reset();
+    this.disks.reset();
     this.a20 = true;
     // I PAM tornano come li trova l'accensione: la ROM risponde a tutta la
     // memoria alta, e la RAM che c'è sotto non la vede nessuno.
@@ -246,6 +273,39 @@ export class Pentium {
     /** L'altoparlante e il bit di rinfresco, che stanno nella porta 61h. */
     this.portB = 0;
     this.nmiEnabled = false;
+  }
+
+  /**
+   * Un dischetto nel lettore, e la scheda madre che se ne accorge.
+   *
+   * La seconda metà conta quanto la prima: il firmware non guarda che dischetto
+   * c'è, guarda com'è **configurata la macchina** — un byte nella memoria
+   * dell'orologio, scritto dal setup del BIOS, che dice che lettore è montato. Un
+   * lettore da 1,44 MB e un dischetto da 720 KB hanno geometrie diverse, e se il
+   * byte dice la prima mentre dentro c'è la seconda il settore di avvio si legge
+   * e il resto no.
+   *
+   * Quindi la macchina dichiara il lettore che serve al dischetto che c'è. È una
+   * finzione onesta: quel byte è il setup, e il setup descrive la macchina che hai
+   * — e una macchina senza dischetti, nel 1995 come adesso, è una macchina in cui
+   * il lettore non c'è. Dichiararlo comunque costa al firmware cinque secondi
+   * passati a interrogare un lettore vuoto.
+   *
+   * @param {Uint8Array} bytes
+   */
+  insertFloppy(bytes) {
+    if (!this.floppy.drives[0].insert(bytes)) return false;
+    this.describeFloppy(this.floppy.drives[0].format);
+    return true;
+  }
+
+  /** Il byte del setup che dice che lettore c'è, e quello dell'equipaggiamento. */
+  describeFloppy(format) {
+    const type = { 368640: 1, 1228800: 2, 737280: 3, 1474560: 4 }[format?.size] ?? 0;
+    this.cmos.bytes[0x10] = type << 4;
+    // Il byte dell'equipaggiamento: il bit 0 dice se c'è un lettore, i bit 6-7
+    // quanti. E lo schermo, che è sempre una VGA.
+    this.cmos.bytes[0x14] = (type ? 0x01 : 0x00) | 0x04;
   }
 
   // ------------------------------------------------------------- la mappa
@@ -349,11 +409,18 @@ export class Pentium {
     if (port === 0x92) return this.a20 ? 0x02 : 0x00;
     if (port >= 0xa0 && port < 0xa4) return this.pics.read(0xa0 | (port & 1));
     if (port >= 0xc0 && port < 0xe0) return this.dma16.read((port - 0xc0) >> 1);
-    if (port >= 0x1f0 && port < 0x1f8) return this.disks?.read(port) ?? 0;
-    if (port === 0x3f6 || port === 0x3f7) return this.disks?.read(port) ?? 0;
-    if (port >= 0x170 && port < 0x178) return 0; // il secondo canale, vuoto
-    if (port === 0x376) return 0;
-    if (port >= 0x3f0 && port < 0x3f6) return this.floppy?.read(port) ?? 0xff;
+    if (port >= PRIMARY.command && port < PRIMARY.command + 8) return this.disks.read(port);
+    if (port >= SECONDARY.command && port < SECONDARY.command + 8) return this.disks.read(port);
+    if (port === PRIMARY.control || port === SECONDARY.control) return this.disks.read(port);
+    if (port >= 0x3f0 && port < 0x3f6) return this.floppy.read(port);
+    if (port === 0x3f7) {
+      // La porta che i due si dividono: il bit 7 è del lettore di dischetti — dice
+      // che il dischetto è stato cambiato — e gli altri sette del disco fisso. Due
+      // schede diverse sullo stesso byte, che è il genere di cosa che succede
+      // quando gli indirizzi finiscono.
+      const inserted = this.floppy.drives[0]?.medium;
+      return (inserted ? 0x00 : 0x80) | (this.disks.read(0x3f7) & 0x7f);
+    }
     if (port >= 0x3b0 && port < 0x3e0) return this.video?.readPort(port) ?? 0xff;
     if (port >= PCI_ADDRESS && port < PCI_ADDRESS + 8) return this.pci.read(port);
     if (port === FWCFG_SELECTOR || port === FWCFG_DATA) return this.fwcfg.read(port);
@@ -388,9 +455,11 @@ export class Pentium {
     if (port >= 0xa0 && port < 0xa4) return this.pics.write(0xa0 | (port & 1), value);
     if (port >= 0xc0 && port < 0xe0) return this.dma16.write((port - 0xc0) >> 1, value);
     if (port === 0x402 || port === 0x403) return this.trace(value);
-    if (port >= 0x1f0 && port < 0x1f8) return this.disks?.write(port, value);
-    if (port === 0x3f6 || port === 0x3f7) return this.disks?.write(port, value);
-    if (port >= 0x3f0 && port < 0x3f6) return this.floppy?.write(port, value);
+    if (port >= PRIMARY.command && port < PRIMARY.command + 8) return this.disks.write(port, value);
+    if (port >= SECONDARY.command && port < SECONDARY.command + 8) return this.disks.write(port, value);
+    if (port === PRIMARY.control || port === SECONDARY.control) return this.disks.write(port, value);
+    if (port >= 0x3f0 && port < 0x3f6) return this.floppy.write(port, value);
+    if (port === 0x3f7) return undefined; // il registro della velocità, che qui non cambia niente
     if (port >= 0x3b0 && port < 0x3e0) return this.video?.writePort(port, value);
     if (port >= PCI_ADDRESS && port < PCI_ADDRESS + 8) return this.pci.write(port, value);
     if (port >= FWCFG_SELECTOR && port <= FWCFG_SELECTOR + 1) return this.fwcfg.write(port, value);
@@ -411,6 +480,60 @@ export class Pentium {
       return undefined;
     }
     return undefined;
+  }
+
+  /**
+   * Le porte larghe più di un byte.
+   *
+   * Sul bus ISA quasi tutto è a otto bit, e un accesso a sedici si fa in due
+   * volte: è quello che succede qui per ogni porta tranne una. La porta dei dati
+   * del disco è larga una parola davvero — è la differenza fra questo disco e
+   * quello del 286 — e un settore la attraversa 256 volte invece di 512.
+   */
+  inw(port) {
+    port &= 0xffff;
+    if (this.disks.isData(port)) {
+      this.catchUp();
+      return this.disks.readData(port, 2);
+    }
+    return this.inb(port) | (this.inb(port + 1) << 8);
+  }
+
+  outw(port, value) {
+    port &= 0xffff;
+    if (this.disks.isData(port)) {
+      this.catchUp();
+      this.disks.writeData(port, value & 0xffff, 2);
+      return;
+    }
+    this.outb(port, value & 0xff);
+    this.outb(port + 1, (value >> 8) & 0xff);
+  }
+
+  /**
+   * A trentadue bit c'è una distinzione che conta. Una porta normale occupa
+   * quattro indirizzi consecutivi, e un accesso largo li tocca tutti e quattro:
+   * è così che si scrive in un colpo solo l'indirizzo di configurazione del PCI.
+   * La porta dei dati di un disco invece è una **finestra su una fila**: quattro
+   * byte li si prendono dallo stesso indirizzo, uno dietro l'altro. Confondere le
+   * due cose vuol dire scrivere due volte la metà bassa di un indirizzo, e non
+   * trovare più il ponte nord.
+   */
+  ind(port) {
+    port &= 0xffff;
+    if (this.disks.isData(port)) return (this.inw(port) | (this.inw(port) << 16)) >>> 0;
+    return (this.inw(port) | (this.inw(port + 2) << 16)) >>> 0;
+  }
+
+  outd(port, value) {
+    port &= 0xffff;
+    if (this.disks.isData(port)) {
+      this.outw(port, value & 0xffff);
+      this.outw(port, (value >>> 16) & 0xffff);
+      return;
+    }
+    this.outw(port, value & 0xffff);
+    this.outw(port + 2, (value >>> 16) & 0xffff);
   }
 
   /**
@@ -485,6 +608,17 @@ export class Pentium {
     while (this.cycles < end) {
       if (this.cpu.halted) this.cycles = Math.min(end, this.idleUntil());
       else this.cycles += this.cpu.step();
+      // Le interruzioni si guardano fra un'istruzione e l'altra, come le guarda
+      // il processore, e non ogni tanto. Non è un dettaglio di precisione: il
+      // firmware, mentre aspetta un disco, apre le interruzioni per **tre
+      // istruzioni** — `sti`, `nop`, `pause`, `cli` — e chi guarda ogni cento
+      // cicli quella finestra non la vede mai, e aspetta per sempre una cosa che
+      // era già arrivata. Costa due letture per istruzione, e la domanda vera la
+      // si fa solo quando quelle due dicono di sì.
+      if (this.pics.raised && this.cpu.if_ && !this.cpu.stiDelay) {
+        this.catchUp();
+        this.serviceInterrupts();
+      }
       if (this.cycles >= this.nextSync) {
         if (this.cpu.protectedMode) this.sawProtected = true;
         this.catchUp();
@@ -545,6 +679,8 @@ export class Pentium {
     this.dma16.reset();
     this.kbc.reset();
     this.video.reset();
+    this.floppy.reset();
+    this.disks.reset();
     this.a20 = true;
     for (const page of this.shadow) {
       page.read = false;

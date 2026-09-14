@@ -103,10 +103,13 @@ for (let i = 0; i < 256; i++) {
   PARITY[i] = bits & 1 ? 0 : 1;
 }
 
-/** La maschera di una misura: un byte, una parola, una parola doppia. */
-const MASK = { 1: 0xff, 2: 0xffff, 4: 0xffffffff };
-/** Dov'è il bit del segno, per ogni misura. */
-const SIGN = { 1: 0x80, 2: 0x8000, 4: 0x80000000 };
+/**
+ * La maschera di una misura e il suo bit del segno, indicizzati dalla misura
+ * stessa: uno, due o quattro byte. Sono array e non oggetti perché qui si passa
+ * milioni di volte al secondo, e un indice costa meno di una proprietà.
+ */
+const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
+const SIGN = [0, 0x80, 0x8000, 0, 0x80000000];
 
 /** Un valore di quella misura, senza segno e senza sorprese. */
 const trim = (size, value) => (size === 4 ? value >>> 0 : value & MASK[size]);
@@ -466,12 +469,20 @@ export class CPU586 {
 
   // ---------------------------------------------------- la memoria lineare
 
+  /**
+   * Un byte all'indirizzo lineare. Il controllo della paginazione sta qui e non
+   * dentro `translate`, e non è pignoleria: da questa riga passa ogni byte di
+   * ogni istruzione, e quando la paginazione è spenta — cioè per tutto il DOS e
+   * tutto il firmware — una chiamata di funzione in meno si sente.
+   */
   readLinear8(linear) {
-    return this.readPhys8(this.translate(linear, false));
+    if (this.cr0 & CR0_PG) return this.bus.read8(this.translate(linear, false)) & 0xff;
+    return this.bus.read8(linear >>> 0) & 0xff;
   }
 
   writeLinear8(linear, value) {
-    this.writePhys8(this.translate(linear, true), value);
+    if (this.cr0 & CR0_PG) this.bus.write8(this.translate(linear, true), value & 0xff);
+    else this.bus.write8(linear >>> 0, value & 0xff);
   }
 
   /**
@@ -541,10 +552,11 @@ export class CPU586 {
   // ----------------------------------------------------- leggere l'istruzione
 
   fetch8() {
-    const byte = this.readLinear8(this.seg[CS].base + this.eip);
-    this.eip = (this.eip + 1) >>> 0;
-    if (!this.seg[CS].big) this.eip &= 0xffff;
-    return byte;
+    const code = this.seg[CS];
+    const at = (code.base + this.eip) >>> 0;
+    const byte = this.cr0 & CR0_PG ? this.bus.read8(this.translate(at, false)) : this.bus.read8(at);
+    this.eip = code.big ? (this.eip + 1) >>> 0 : (this.eip + 1) & 0xffff;
+    return byte & 0xff;
   }
 
   fetch16() {

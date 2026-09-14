@@ -712,9 +712,8 @@ section('Le interruzioni in modo protetto');
 
 // ============================================================ la scheda madre
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { Pentium, CPU_CLOCK, RAM_SIZE } from '../src/systems/pentium/machine.js';
 import { PCIFunction, VENDOR_ID, DEVICE_ID, SUBSYSTEM_VENDOR, SUBSYSTEM_ID } from '../src/systems/pentium/pci.js';
@@ -724,17 +723,11 @@ import { KBC8042 } from '../src/systems/pentium/kbc.js';
 import { FirmwareConfig, FWCFG_SELECTOR, FWCFG_DATA } from '../src/systems/pentium/fwcfg.js';
 import { VGA } from '../src/systems/pentium/vga.js';
 import { BIOS_SPEC, VIDEO_SPEC, isSystemBIOS, isOptionROM } from '../src/systems/pentium/roms.js';
+import { IDE, IDEChannel, PRIMARY, SECONDARY } from '../src/systems/pentium/ide.js';
+import { HardDisk } from '../src/systems/pc/ata.js';
+import { bootPentium, Session, have, ROMS } from './pentiumsession.mjs';
 
-const ROMS = join(fileURLToPath(import.meta.url), '..', '..', 'roms', 'pentium');
 const romPath = (spec) => join(ROMS, spec.file);
-const have = {
-  get bios() {
-    return existsSync(romPath(BIOS_SPEC));
-  },
-  get video() {
-    return existsSync(romPath(VIDEO_SPEC));
-  },
-};
 
 /** Una macchina spenta con dentro un BIOS finto, per provare i chip. */
 function mainboard() {
@@ -1013,6 +1006,181 @@ section('La scheda video');
     hex(planar.memory[0], 2));
 }
 
+section('Il disco IDE');
+
+{
+  // Un disco piccolo e riconoscibile: ogni settore è pieno di una figura che
+  // dipende dal suo numero, e non si ripete. Serve a sapere non solo che i byte
+  // arrivano, ma che arrivano *quelli giusti e nell'ordine giusto* — che è dove
+  // si nascondono gli errori da un settore intero di scarto.
+  const image = new Uint8Array(64 * 512);
+  for (let lba = 0; lba < 64; lba++) {
+    for (let i = 0; i < 512; i++) image[lba * 512 + i] = (lba * 31 + i * 7) & 0xff;
+  }
+  const disk = new HardDisk(image, { cylinders: 4, heads: 2, sectors: 8 });
+  let interrupts = 0;
+  const channel = new IDEChannel(PRIMARY, (active) => {
+    if (active) interrupts++;
+  });
+  channel.attach(0, disk);
+
+  /** Il registro delle testine, che è anche quello che sceglie il disco. */
+  const REG_DRIVE = 6;
+  const put = (register, value) => channel.write(PRIMARY.command + register, value);
+  const get = (register) => channel.read(PRIMARY.command + register);
+  const status = () => channel.status;
+  /** Un settore preso dalla porta dei dati, a parole di sedici bit. */
+  const sector = () => {
+    const bytes = new Uint8Array(512);
+    for (let i = 0; i < 256; i++) {
+      const word = channel.readData(2);
+      bytes[i * 2] = word & 0xff;
+      bytes[i * 2 + 1] = (word >> 8) & 0xff;
+    }
+    return bytes;
+  };
+  const onDisk = (lba) => image.subarray(lba * 512, (lba + 1) * 512);
+  const same = (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i]);
+  /** L'indirizzo detto in numeri: il bit 6 dice «questo non è una geometria». */
+  const seek = (lba, count = 1) => {
+    put(REG_DRIVE, 0xe0 | ((lba >>> 24) & 0x0f));
+    put(2, count);
+    put(3, lba & 0xff);
+    put(4, (lba >>> 8) & 0xff);
+    put(5, (lba >>> 16) & 0xff);
+  };
+
+  // Il secondo posto del cavo, dove non c'è niente. Un disco che non c'è non
+  // risponde *zero* per sbaglio: risponde zero apposta, ed è così che il
+  // firmware conta i dischi senza sapere quanti sono.
+  put(REG_DRIVE, 0xf0);
+  check('un posto vuoto del cavo non risponde', get(7) === 0 && get(1) === 0xff);
+  put(REG_DRIVE, 0xe0);
+
+  interrupts = 0;
+  put(7, 0xec); // IDENTIFY DEVICE
+  check('il disco si presenta quando glielo si chiede', (status() & 0x08) !== 0);
+  const identity = new Uint16Array(sector().buffer);
+  check('e dice quanti settori ha davvero, contati dall\'inizio',
+    identity[60] + identity[61] * 65536 === 64, `${identity[60]}`);
+  const text = (index, length) => {
+    let out = '';
+    for (let i = 0; i < length / 2; i++) {
+      out += String.fromCharCode(identity[index + i] >> 8, identity[index + i] & 0xff);
+    }
+    return out.trim();
+  };
+  // Le stringhe dell'ATA sono scritte a parole rovesciate, e lo sono per una
+  // ragione che nel 1986 sembrava buona: il disco è big-endian, il PC no, e
+  // nessuno ha voluto cedere. Da allora ogni driver del mondo le rigira.
+  check('con il suo nome, scritto a parole rovesciate come vuole l\'ATA',
+    text(27, 40).startsWith('alloldos IDE'), text(27, 40));
+  check('e la geometria che racconta',
+    identity[1] === 4 && identity[3] === 2 && identity[6] === 8);
+  check('presentandosi ha alzato il filo una volta sola', interrupts === 1 && channel.irq === true);
+  get(7);
+  check('e leggere lo stato vuol dire «ho visto»', channel.irq === false);
+
+  interrupts = 0;
+  seek(10);
+  put(7, 0x20); // READ SECTORS
+  check('un settore chiesto per numero è quello che c\'è sul disco', same(sector(), onDisk(10)));
+  check('e il comando finito è un\'altra interruzione', interrupts === 1);
+  get(7);
+
+  // Lo stesso settore detto nell'altra lingua. Con otto settori per traccia e
+  // due testine, il numero 10 è il terzo settore della seconda testina del
+  // cilindro zero — e deve uscire lo stesso identico mezzo kilobyte.
+  put(REG_DRIVE, 0xa0 | 1);
+  put(2, 1);
+  put(3, 3); // i settori si contano da uno: è l'ultimo residuo del 1981
+  put(4, 0);
+  put(5, 0);
+  put(7, 0x20);
+  check('e lo stesso settore detto in cilindri, testine e settori è lo stesso',
+    same(sector(), onDisk(10)));
+  get(7);
+
+  const written = disk.writes;
+  const payload = new Uint8Array(512).map((_, i) => (200 - i * 3) & 0xff);
+  seek(20);
+  put(7, 0x30); // WRITE SECTORS
+  check('in scrittura il disco chiede i byte prima di dire qualunque cosa',
+    (status() & 0x08) !== 0 && channel.irq === false);
+  for (let i = 0; i < 256; i++) {
+    channel.writeData(payload[i * 2] | (payload[i * 2 + 1] << 8), 2);
+  }
+  check('e quando li ha presi tutti li mette sui piatti',
+    same(disk.data.subarray(20 * 512, 21 * 512), payload) && disk.writes === written + 1);
+  get(7);
+
+  interrupts = 0;
+  seek(0, 2);
+  put(7, 0x20);
+  const first = sector();
+  check('chiesti due settori, il secondo arriva dietro al primo senza altri comandi',
+    same(first, onDisk(0)) && (status() & 0x08) !== 0 && get(2) === 1);
+  check('e il secondo è il secondo', same(sector(), onDisk(1)));
+  check('poi il disco smette di chiedere', (status() & 0x08) === 0);
+  get(7);
+
+  seek(64); // un settore oltre la fine
+  put(7, 0x20);
+  check('un settore che non c\'è è un errore, non mezzo kilobyte di zeri',
+    (get(7) & 0x01) !== 0 && (get(1) & 0x10) !== 0);
+
+  put(7, 0xa1); // IDENTIFY PACKET DEVICE
+  check('e alla domanda «sei un lettore di CD?» un disco risponde rifiutando',
+    (get(7) & 0x01) !== 0 && (get(1) & 0x04) !== 0);
+
+  channel.write(PRIMARY.control, 0x04); // il reset del canale, che si tira a mano
+  channel.write(PRIMARY.control, 0x00);
+  check('dopo un reset il disco si presenta con la firma di un disco',
+    get(2) === 1 && get(3) === 1 && get(4) === 0 && get(5) === 0);
+
+  channel.write(PRIMARY.control, 0x02); // il bit che zittisce le interruzioni
+  interrupts = 0;
+  seek(1);
+  put(7, 0x20);
+  check('e col bit che le zittisce lavora senza alzare il filo',
+    interrupts === 0 && (status() & 0x08) !== 0 && same(sector(), onDisk(1)));
+}
+
+{
+  const both = new IDE(() => {});
+  check('i due canali stanno alle porte di sempre, dal 1986',
+    both.channelFor(0x1f0) === both.channels[0] &&
+      both.channelFor(0x3f6) === both.channels[0] &&
+      both.channelFor(0x170) === both.channels[1] &&
+      both.channelFor(0x376) === both.channels[1]);
+  check('e l\'unica porta larga più di un byte è quella dei dati',
+    both.isData(PRIMARY.command) && both.isData(SECONDARY.command) && !both.isData(0x1f1));
+}
+
+section('Il lettore di dischetti, e il byte che lo descrive');
+
+{
+  // Il firmware non guarda che dischetto c'è: guarda com'è configurata la
+  // macchina. Se il setup dice «lettore da 1,44» e dentro c'è un 720 KB, il
+  // settore di avvio si legge e il resto no.
+  const pc = mainboard();
+  check('a macchina vuota il setup non dichiara nessun lettore',
+    pc.cmos.bytes[0x10] === 0x00 && (pc.cmos.bytes[0x14] & 0x01) === 0);
+
+  // La porta 3F7h se la dividono in due: il bit 7 è del lettore di dischetti e
+  // dice che il dischetto è stato cambiato, gli altri sette sono del disco
+  // fisso. Due schede diverse sullo stesso byte, perché gli indirizzi finiscono.
+  check('e sulla porta che i due si dividono, il lettore vuoto lo dice',
+    (pc.inb(0x3f7) & 0x80) !== 0);
+
+  check('messo dentro un dischetto, il setup dichiara il lettore che gli serve',
+    pc.insertFloppy(new Uint8Array(737280)) && pc.cmos.bytes[0x10] === 0x30);
+  check('e il byte dell\'equipaggiamento conta un lettore e uno schermo VGA',
+    (pc.cmos.bytes[0x14] & 0x01) !== 0 && (pc.cmos.bytes[0x14] & 0x30) === 0x00);
+  check('e la porta divisa in due adesso dice che c\'è qualcosa',
+    (pc.inb(0x3f7) & 0x80) === 0);
+}
+
 if (!have.bios) {
   console.log(`
 Nessun SeaBIOS in roms/pentium: la prova di accensione è stata saltata.
@@ -1082,6 +1250,90 @@ Nessun SeaBIOS in roms/pentium: la prova di accensione è stata saltata.
 
   check('e le interruzioni dell\'orologio sono arrivate al processore',
     interrupts > 0, `${interrupts} tic`);
+}
+
+if (!have.bios || !have.video || !have.disk) {
+  console.log(`
+Manca qualcosa fra il BIOS, la sua ROM video e il disco: la prova di avvio del
+DOS sul Pentium è stata saltata. \`npm run fetch-roms\` prende le prime due.`);
+} else {
+  section('Avvio vero: FreeDOS dal disco fisso');
+
+  // Il giro intero, e la sola prova che conta davvero: un firmware che non sa
+  // niente di questo emulatore legge un settore da un disco IDE, ci salta
+  // dentro, e da lì in poi guida un sistema operativo che non sa niente
+  // nemmeno lui. E il disco è **lo stesso file** che il 286 di qui accanto
+  // avvia dalla sua scheda XT-CF, letto a sedici bit da un controllore diverso
+  // su porte diverse: che si accenda su tutte e due le macchine non è un caso,
+  // è quello che vuol dire che un disco è un disco.
+  const pc = bootPentium();
+  const dos = new Session(pc, (text) => console.log(text));
+
+  check('SeaBIOS trova il disco e ci salta dentro',
+    dos.waitFor(/Booting from Hard Disk/, 400), dos.lastLine());
+  check('il kernel di FreeDOS si presenta', dos.waitFor(/FreeDOS kernel/, 400), dos.lastLine());
+  check('poi la riga del prompt, che è dove finisce un avvio',
+    dos.waitFor(/C:\\>/, 400), dos.lastLine());
+  // Il kernel racconta il disco che ha trovato leggendo la tabella delle
+  // partizioni: la stessa che ci ha scritto FDISK girando sul 286.
+  check('e ha trovato la partizione che c\'è sul disco', /size=\s*20 MB/.test(dos.screen()));
+
+  dos.command('dir c:\\');
+  check('il DOS legge la radice del disco', /COMMAND\s+COM/.test(dos.screen()), dos.lastLine());
+
+  // La tastiera è passata di qui: la riga di sopra non l'ha scritta nessuno a
+  // mano nella memoria del BIOS, è arrivata dall'8042 un codice per volta, con
+  // la sua interruzione ogni volta.
+  const written = pc.disks.master.writes;
+  dos.command('echo ok>c:\\p.txt');
+  dos.command('type c:\\p.txt');
+  check('ci si scrive sopra, e si rilegge', /^ok$/m.test(dos.screen()), dos.lastLine());
+  check('e la scrittura è arrivata ai piatti', pc.disks.master.writes > written);
+
+  // Quella che vale per tutte: spegnere e riaccendere. Se il settore fosse
+  // finito nel posto sbagliato il file sarebbe ancora nella memoria del DOS ma
+  // non più sul disco, e riaccendendo sparirebbe.
+  dos.reboot();
+  check('e sopravvive a un riavvio', dos.waitFor(/C:\\>/, 600), dos.lastLine());
+  dos.command('type c:\\p.txt');
+  check('il file è ancora dov\'era', /^ok$/m.test(dos.screen()), dos.lastLine());
+}
+
+if (!have.bios || !have.video || !have.floppy) {
+  console.log(`
+Nessun dischetto in roms/pc: la prova di avvio dal lettore è stata saltata.`);
+} else {
+  section('Avvio vero: FreeDOS dal dischetto');
+
+  // L'altra strada, quella di sempre: niente disco fisso, un dischetto nel
+  // lettore, e il firmware che prova prima quello. Qui il lavoro lo fa il NEC
+  // 765 — lo stesso chip del 286, dentro il ponte sud invece che su una scheda —
+  // e il DMA, che di questa macchina è il pezzo più vecchio che ci sia.
+  const pc = bootPentium({ disk: null, floppy: true });
+  const dos = new Session(pc, (text) => console.log(text));
+
+  check('il firmware prova prima il lettore, com\'era l\'ordine di un PC',
+    dos.waitFor(/Booting from Floppy/, 400), dos.lastLine());
+  // Il kernel di FreeDOS sono quarantaseimila byte: novanta settori, che stanno
+  // su cinque tracce e vogliono due cambi di testina. Che arrivi a leggersi il
+  // CONFIG.SYS e a disegnarne il menu vuol dire che il 765 ha cercato, letto e
+  // cambiato faccia al dischetto, e che il DMA ha portato ogni settore dove
+  // andava.
+  check('il dischetto parte e il kernel si carica per intero',
+    dos.waitFor(/FreeDOS 1\.3 Floppy Edition/, 200), dos.lastLine());
+  check('e gira, fino a chiedere in che lingua vogliamo che ci parli',
+    /Select from Menu \[123456\]/.test(dos.screen()));
+  // E il byte del setup diceva la verità: il dischetto è un 720 KB, e il
+  // lettore dichiarato è quello che ci va. Se avesse dichiarato un 1,44 il
+  // settore di avvio si sarebbe letto lo stesso — è il primo della prima
+  // traccia, dove le due geometrie coincidono — e il resto del kernel no.
+  check('perché il setup dichiarava il lettore che serviva a questo dischetto',
+    pc.cmos.bytes[0x10] === 0x30, hex(pc.cmos.bytes[0x10], 2));
+
+  // Di qui in avanti c'è il programma di installazione di FreeDOS, che ci mette
+  // due minuti di macchina emulata a caricarsi per chiedere se vogliamo davvero
+  // installare. Non aggiunge niente a quello che si è già visto: gli stessi
+  // settori, dallo stesso lettore. Le prove si fermano qui.
 }
 
 section('Quanto va');
