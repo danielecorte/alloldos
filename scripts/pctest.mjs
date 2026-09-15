@@ -838,6 +838,47 @@ section('La Sound Blaster');
   check('con l\'altoparlante spento il DAC non si sente', pc.sound.takeSamples().every((sample) => sample === 0));
   dsp(0xf2);
   check('e F2h alza l\'interruzione da sola, per chi cerca quale IRQ ha la scheda', (pc.pic.lines & 0x80) !== 0);
+  pc.inb(0x22e);
+
+  // L'ADPCM a quattro bit: un byte di riferimento, 80h, e poi codici 7 — il
+  // passo più grande in su, ogni volta. Le tabelle di Creative dicono dove si
+  // arriva: 87h, 96h, B4h, F0h, e poi il tetto.
+  pc.ram[0x20000] = 0x80;
+  for (let i = 1; i < 8; i++) pc.ram[0x20000 + i] = 0x77;
+  program(0x49);
+  const interruptsBefore = pc.sound.dsp.interrupts;
+  dsp(0xd1, 0x75, 0x07, 0x00);
+  const heard = [];
+  for (let i = 0; i < 80; i++) {
+    seconds(1 / 32000);
+    if (heard[heard.length - 1] !== pc.sound.dsp.dac) heard.push(pc.sound.dsp.dac);
+  }
+  // Il convertitore parte da dove l'aveva lasciato la prova di prima: conta
+  // quello che viene dopo il byte di riferimento.
+  const decoded = heard.slice(heard.indexOf(0x80) + 1);
+  check('l\'ADPCM a quattro bit sale come dicono le tabelle',
+    heard.includes(0x80) && decoded.join() === [0x87, 0x96, 0xb4, 0xf0, 0xff].join(),
+    heard.map((value) => hex(value, 2)).join(' '));
+  check('e anche lui finisce con la sua interruzione', pc.sound.dsp.interrupts === interruptsBefore + 1);
+  pc.inb(0x22e);
+  dsp(0xd3);
+
+  // L'altoparlante del PC, che passa per la stessa uscita: il contatore 2 a
+  // mille hertz, i due bit della porta 61h accesi, e si conta.
+  pc.outb(0x43, 0xb6);
+  pc.outb(0x42, 0xa9);
+  pc.outb(0x42, 0x04); // 1193182 / 1193 fa mille
+  pc.outb(0x61, 0x03);
+  pc.sound.takeSamples();
+  seconds(0.55);
+  const beep = pc.sound.takeSamples().slice(pc.sound.sampleRate / 20);
+  let rises = 0;
+  for (let i = 1; i < beep.length; i++) if (beep[i - 1] < 0 && beep[i] >= 0) rises++;
+  const pitch = rises / (beep.length / pc.sound.sampleRate);
+  check('l\'altoparlante esce in campioni, alla nota del contatore', Math.abs(pitch - 1000) < 15, `${pitch.toFixed(1)} Hz`);
+  pc.outb(0x61, 0x00);
+  seconds(0.3);
+  check('e spento il bit, tace', pc.sound.takeSamples().slice(-2000).every((sample) => Math.abs(sample) < 0.01));
 }
 
 section('Il disco fisso (XT-CF)');
@@ -1694,6 +1735,24 @@ const VGA13 = Uint8Array.from([
 ]);
 
 /**
+ * I due modi grafici della CGA, chiesti alla VGA: il modo 4 con quattro colori
+ * nella prima riga e il colore 1 nella seconda — che sta nell'altro banco, 8 KB
+ * più in là — poi un tasto, il modo 6 con un punto per riga, un altro tasto, e
+ * il testo.
+ */
+const CGA46 = Uint8Array.from([
+  0xb8, 0x04, 0x00, 0xcd, 0x10, 0xb8, 0x00, 0xb8, 0x8e, 0xc0, // modo 4, ES = B800h
+  0x26, 0xc6, 0x06, 0x00, 0x00, 0xe4, // [es:0] = 11 10 01 00b
+  0x26, 0xc6, 0x06, 0x00, 0x20, 0x55, // [es:2000h] = 01 01 01 01b
+  0xb4, 0x00, 0xcd, 0x16,
+  0xb8, 0x06, 0x00, 0xcd, 0x10, 0xb8, 0x00, 0xb8, 0x8e, 0xc0, // modo 6
+  0x26, 0xc6, 0x06, 0x00, 0x00, 0x80, // [es:0] = il primo punto
+  0x26, 0xc6, 0x06, 0x00, 0x20, 0x01, // [es:2000h] = l'ottavo
+  0xb4, 0x00, 0xcd, 0x16,
+  0xb8, 0x03, 0x00, 0xcd, 0x10, 0xcd, 0x20,
+]);
+
+/**
  * Il secondo fa quello che fa ogni gioco con una Sound Blaster: mette il suo
  * gestore sulla IRQ 7 e la apre sul PIC, riavvia il DSP e aspetta AAh,
  * programma il canale 1 del DMA sul suo buffer, e fa suonare 256 byte a 8 kHz.
@@ -1734,6 +1793,7 @@ sotto DOS sono state saltate. \`npm run build-vgabios\` lo compila per il 286.`)
   const volume = { data: image, writes: 0 };
   await loadIntoDisk(volume, 'vga13.com', VGA13);
   await loadIntoDisk(volume, 'sbplay.com', SBPLAY);
+  await loadIntoDisk(volume, 'cga46.com', CGA46);
   const pc = bootPC({ disk: hardDiskFrom(image), floppy: false, vga: true });
   let invalid = 0;
   const deliver = pc.cpu.interrupt.bind(pc.cpu);
@@ -1759,6 +1819,28 @@ sotto DOS sono state saltate. \`npm run build-vgabios\` lo compila per il 286.`)
     pixels[0] === 0xffffffff && pixels[319] === 0xff0000aa, `${hex(pixels[0], 8)} ${hex(pixels[319], 8)}`);
   dos.type(' ');
   check('un tasto, e si torna al testo e al prompt', dos.waitFor(/C:\\>/, 300) && !pc.vga.graphicsMode, dos.lastLine());
+
+  // I modi della CGA, che la VGA fa con gli indirizzi di quella: le righe
+  // dispari otto KB più in là delle pari.
+  dos.type('c:\\scaricati\\cga46\n');
+  dos.run(60);
+  const four = pc.vga.render();
+  const at4 = (x, y) => four[y * pc.vga.width + x];
+  check('il modo 4 della CGA, dalla VGA: 320 per 200', pc.vga.graphicsMode && pc.vga.width === 320 && pc.vga.height === 200,
+    `${pc.vga.width}x${pc.vga.height}`);
+  check('con i quattro colori di un byte, uno per punto',
+    new Set([at4(0, 0), at4(1, 0), at4(2, 0), at4(3, 0)]).size === 4 && at4(3, 0) === 0xff000000);
+  check('e la seconda riga presa dal secondo banco', at4(0, 1) === at4(2, 0) && at4(3, 1) === at4(2, 0));
+  dos.type(' ');
+  dos.run(60);
+  const six = pc.vga.render();
+  const at6 = (x, y) => six[y * pc.vga.width + x];
+  check('il modo 6: 640 per 200 in bianco e nero', pc.vga.width === 640 && pc.vga.height === 200,
+    `${pc.vga.width}x${pc.vga.height}`);
+  check('un bit per punto, e anche qui la riga dispari nell\'altro banco',
+    at6(0, 0) !== 0xff000000 && at6(1, 0) === 0xff000000 && at6(7, 1) === at6(0, 0) && at6(0, 1) === 0xff000000);
+  dos.type(' ');
+  check('e un tasto riporta al prompt', dos.waitFor(/C:\\>/, 300) && !pc.vga.graphicsMode, dos.lastLine());
 
   section('Avvio vero: la Sound Blaster, da un programma DOS');
 

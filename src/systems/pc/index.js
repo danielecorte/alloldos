@@ -3,7 +3,6 @@
 
 import { PC, FPS } from './machine.js';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from './cga.js';
-import { Speaker } from './speaker.js';
 import { AudioOutput } from '../zx/audio.js';
 import { SCANCODES } from './scancodes.js';
 import {
@@ -68,8 +67,7 @@ class PCSession {
     this.container = container;
     this.onExit = options.onExit;
     this.machine = null;
-    this.audio = null;
-    /** Il suono della Sound Blaster, che a differenza dell'altoparlante sono campioni. */
+    /** Il suono: la Sound Blaster e l'altoparlante, in campioni. */
     this.sound = null;
     this.running = false;
     this.paused = false;
@@ -253,12 +251,9 @@ class PCSession {
     setLayout(disk.data, preferredLayout());
 
     try {
-      this.audio = new Speaker();
       this.sound = new AudioOutput();
     } catch {
-      // un browser senza audio: la macchina va lo stesso
-      this.audio = null;
-      this.sound = null;
+      this.sound = null; // un browser senza audio: la macchina va lo stesso
     }
 
     this.machine = this.buildMachine(disk);
@@ -422,7 +417,6 @@ class PCSession {
 
     for (let i = 0; i < frames; i++) this.machine.runFrame();
 
-    this.audio?.update(this.machine);
     this.playSound();
     this.present();
     this.updateDrives();
@@ -670,13 +664,12 @@ class PCSession {
   }
 
   toggleMute() {
-    if (!this.audio) {
+    if (!this.sound) {
       this.setStatus('Questo browser non ha voluto darci l\'audio');
       return;
     }
-    const muted = !this.audio.muted;
-    this.audio.setMuted(muted);
-    this.sound?.setMuted(muted);
+    const muted = !this.sound.muted;
+    this.sound.setMuted(muted);
     this.muteButton.textContent = muted ? 'Audio off' : 'Audio on';
   }
 
@@ -954,7 +947,6 @@ class PCSession {
 
   /** L'audio si accende al primo gesto, che è quello che vogliono i browser. */
   startAudio() {
-    this.audio?.start();
     Promise.resolve(this.sound?.start()).catch(() => {});
   }
 
@@ -967,7 +959,6 @@ class PCSession {
     for (const [target, type, handler] of this.listeners ?? []) {
       target.removeEventListener(type, handler);
     }
-    this.audio?.close();
     this.sound?.close();
     this.root.remove();
   }

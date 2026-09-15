@@ -282,7 +282,9 @@ export class PC {
       this.cga.advance(dots);
     }
 
-    this.sound.advance(delta);
+    // Il filo dell'altoparlante: il bit dei dati della porta 61h in AND con
+    // l'uscita del contatore 2. Va nello stesso suono della Sound Blaster.
+    this.sound.advance(delta, this.speaker?.data && this.pit.speakerOutput ? 1 : 0);
   }
 
   /**

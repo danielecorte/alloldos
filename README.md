@@ -817,6 +817,13 @@ identici a ogni compilazione, e viaggiano col repository perché non c'è nessun
 altro posto da cui prenderli. La prova li accende contando le interruzioni 6:
 zero.
 
+I programmi scritti per la CGA la VGA li fa girare con gli indirizzi di quella:
+nei modi 4 e 6 il registro 17h del CRTC fa del contatore dei righi il
+tredicesimo bit di indirizzo, e le righe dispari stanno otto KB più in là delle
+pari, com'erano sulla CGA. Nel modo 4 i due bit di ogni punto stanno in byte
+pari e dispari su due piani diversi, e la scheda li rimette in fila. La prova
+accende i due modi dal BIOS della scheda e guarda i punti delle prime due righe.
+
 Senza `vgabios.bin` la macchina monta la CGA, com'era un XT prima del 1987. Il
 BIOS della VGA si trascina sulla finestra come le altre ROM; quello per il 386
 si riconosce dalla firma e viene rifiutato, invece di lasciare la macchina ferma.
@@ -851,11 +858,18 @@ Dentro sono due schede in una:
   soprattutto i blocchi portati dal **canale 1 del DMA** — uno per volta o uno
   dietro l'altro — con la IRQ 7 alla fine di ognuno. Ci sono anche l'alta
   velocità, la registrazione, che registra silenzio perché un microfono non c'è,
-  e i blocchi di silenzio.
+  i blocchi di silenzio, e l'**ADPCM** di Creative: quattro, tre o due bit per
+  campione invece di otto, con un passo che si allarga quando il suono cambia
+  in fretta e si stringe quando sta fermo. Le tabelle sono quelle del DSP; sul
+  dischetto di un gioco del 1991 erano la differenza fra avere le voci e non
+  averle.
 
 Il suono esce in campioni, alla velocità che vuole il browser, dallo stesso
-worklet dello Spectrum. L'altoparlante del PC resta quello che era: un
-oscillatore che segue il contatore.
+worklet dello Spectrum. Nello stesso suono entra l'**altoparlante del PC**, e non
+più come un oscillatore che segue il contatore: si segue il filo, il bit dei
+dati della porta 61h in AND con l'uscita del contatore 2, intervallo per
+intervallo. È così che si sentono anche i programmi che il bit lo muovono a mano
+— le voci fatte con un bit solo, che l'oscillatore non poteva fare.
 
 La prova, in `pctest.mjs`, guida la scheda dalle porte — il reset, la AdLib
 trovata, un La a 440 Hz che si spegne quando si lascia il tasto, un blocco col
@@ -881,18 +895,19 @@ Scrive `SB OK`.
   testo a ottanta colonne con il disegno delle lettere preso dalla ROM del
   BIOS, cursore che lampeggia, e le due grafiche — 320×200 a quattro colori e
   640×200 in bianco e nero;
-- la **Sound Blaster 2.0**: l'OPL2 e il DSP con il suo DMA e la sua IRQ;
+- la **Sound Blaster 2.0**: l'OPL2 e il DSP con il suo DMA, la sua IRQ e
+  l'ADPCM;
 - l'**altoparlante**: un bit e un contatore, che è tutto il suono che il PC ha
-  avuto per dieci anni;
+  avuto per dieci anni — seguito campione per campione;
 - una **FAT16** che sa scrivere (`fat.js`) e un lettore di **zip** (`zip.js`),
   che è il solo modo che un file di oggi ha di entrare in un disco del 1988.
 
-Manca il suono **ADPCM** della Sound Blaster — i blocchi compressi si consumano
-alla velocità giusta e finiscono con la loro interruzione, ma quello che si
-sente è silenzio — e con lei la MIDI; sulla VGA, i modi grafici della CGA, che
-la VGA fa con un indirizzamento a righe alternate che qui non è disegnato. Poi
-il suono campionato dall'altoparlante — quello che pilota il bit a mano invece
-di lasciar fare al contatore — e il modo protetto, che il DOS non usa.
+Manca la **MIDI** della Sound Blaster. Non per pigrizia: sulla scheda è una
+porta seriale che manda le note a un sintetizzatore esterno, e per sentirla
+servirebbe il sintetizzatore — uno strumento General MIDI intero, con i suoi
+centoventotto strumenti campionati, che è un altro progetto. I comandi MIDI il
+DSP li ascolta e non ne fa niente, come una scheda senza niente attaccato. E
+manca il modo protetto, che il DOS non usa.
 
 ### Le tre cose che solo un BIOS vero ha trovato
 
@@ -1386,7 +1401,6 @@ src/systems/pc/       il PC 286
   opl2.js             lo Yamaha YM3812: nove voci in modulazione di frequenza
   keyboard.js         la tastiera XT, con il suo filo di clock
   scancodes.js        da tasto del browser a numero di tasto sulla matrice
-  speaker.js          l'altoparlante: un bit e un contatore
   media.js            i dischi: dove trovarli e come riconoscerli
   roms.js             dove trovare GLaBIOS e la ROM della scheda del disco
   index.js            la sessione: canvas, audio, dischi, tastiera, comandi

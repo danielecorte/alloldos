@@ -395,17 +395,21 @@ class AboutPage {
         320×200 a quattro colori e 640×200 in bianco e nero, con i righi pari e
         dispari in due metà separate di memoria.</li>
         <li>L'<b>altoparlante</b>: un bit e un contatore, che è tutto il suono
-        che il PC ha avuto per dieci anni.</li>
+        che il PC ha avuto per dieci anni. Si segue il filo campione per
+        campione, e quindi si sentono anche le voci che i giochi facevano
+        muovendo il bit a mano.</li>
         <li>La <b>VGA</b>, con gli interruttori del video a 00 perché GLaBIOS
         lasci fare al BIOS della scheda — il testo in 720 per 400 con i
-        caratteri da nove punti, e il modo 13h dei giochi.</li>
+        caratteri da nove punti, il modo 13h dei giochi, e i modi della CGA con
+        le loro righe dispari otto KB più in là.</li>
         <li>L'<b>OPL2</b>, lo Yamaha YM3812: nove voci da due operatori in
         modulazione di frequenza, le quattro forme d'onda, gli inviluppi, la
         batteria, e i due contatori con cui ogni gioco scopriva la AdLib. Le
         ampiezze in logaritmo, con le tabelle del chip.</li>
         <li>Il <b>DSP</b> della Sound Blaster: il reset con AAh, la versione
         2.01, i blocchi portati dal canale 1 del DMA, uno per volta o in fila,
-        con la IRQ 7 alla fine di ognuno.</li>
+        con la IRQ 7 alla fine di ognuno, e l'ADPCM di Creative a quattro, tre
+        e due bit.</li>
       </ul>
 
       <h3 class="about__heading">La cosa che solo un BIOS vero ha trovato</h3>
@@ -425,12 +429,9 @@ class AboutPage {
 
       <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li>L'<b>ADPCM</b> della Sound Blaster, che per ora si consuma alla
-        velocità giusta ma suona silenzio, e la MIDI.</li>
-        <li>Sulla VGA, i <b>modi grafici della CGA</b>, con le loro righe
-        alternate.</li>
-        <li>Il suono <b>campionato</b> dall'altoparlante — quello che pilota il
-        bit a mano invece di lasciar fare al contatore.</li>
+        <li>La <b>MIDI</b> della Sound Blaster: sulla scheda è una porta seriale
+        verso un sintetizzatore esterno, e per sentirla servirebbe il
+        sintetizzatore.</li>
         <li>Il <b>modo protetto</b>, che il DOS non usa: Windows 3 e i DOS
         extender sono un altro progetto.</li>
       </ul>

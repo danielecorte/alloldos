@@ -479,7 +479,7 @@ export class VGA {
       const dots = this.columns * 8;
       // Con i colori a otto bit un punto sono due battiti del pennello: il
       // quadro è largo 640 battiti, e i punti del modo 13h sono 320.
-      return this.shiftMode === 1 || this.attribute[0x10] & 0x40 ? dots >> 1 : dots;
+      return this.attribute[0x10] & 0x40 ? dots >> 1 : dots;
     }
     return this.columns * this.charWidth;
   }
@@ -490,9 +490,23 @@ export class VGA {
     const drawn = this.crtc[9] & 0x80 ? lines >> 1 : lines;
     // In grafica i "righi per carattere" del registro 9 ripetono ogni riga di
     // punti: il modo 13h ci scrive 1, e i suoi 200 righi ne occupano 400 —
-    // l'altro modo di arrivare allo stesso quadro.
-    if (this.graphicsMode) return Math.max(1, Math.floor(drawn / ((this.crtc[9] & 0x1f) + 1)));
+    // l'altro modo di arrivare allo stesso quadro. Con l'indirizzamento della
+    // CGA invece i due righi di un carattere sono due righe diverse, una per
+    // banco, e non si ripete niente.
+    if (this.graphicsMode && !this.cgaAddressing) {
+      return Math.max(1, Math.floor(drawn / ((this.crtc[9] & 0x1f) + 1)));
+    }
     return drawn;
+  }
+
+  /**
+   * Il bit 0 del registro 17h a zero: il contatore dei righi fa da tredicesimo
+   * bit di indirizzo, come sulla CGA, e le righe dispari stanno otto KB più in
+   * là delle pari. È il modo in cui la VGA fa i modi grafici della CGA senza
+   * che i programmi scritti per quella se ne accorgano.
+   */
+  get cgaAddressing() {
+    return (this.crtc[0x17] & 1) === 0;
   }
 
   get shiftMode() {
@@ -614,8 +628,28 @@ export class VGA {
       }
       return;
     }
+    // Dove comincia una riga: di seguito, o a banchi alterni come sulla CGA.
+    const cga = this.cgaAddressing;
+    const rowStart = (y, units) => (cga ? ((y & 1) << 13) + (y >> 1) * units : y * units);
+    if (this.shiftMode === 1) {
+      // I quattro colori della CGA: due bit per punto, quattro punti per byte,
+      // e i byte pari e dispari su due piani diversi — che è come la VGA tiene
+      // la memoria di una CGA senza cambiarle gli indirizzi. Qui si ragiona
+      // negli indirizzi della CGA, e il piano lo sceglie il bit più basso.
+      const units = stride * 2;
+      const start = this.startAddress * 2;
+      for (let y = 0; y < height; y++) {
+        const row = start + rowStart(y, units);
+        for (let x = 0; x < width; x++) {
+          const at = row + (x >> 2);
+          const byte = this.memory[(at & 1) * PLANE + ((at >> 1) & 0xffff)];
+          pixels[y * width + x] = this.colour((byte >> (6 - ((x & 3) << 1))) & 3);
+        }
+      }
+      return;
+    }
     for (let y = 0; y < height; y++) {
-      const row = (this.startAddress + y * stride) & 0xffff;
+      const row = (this.startAddress + rowStart(y, stride)) & 0xffff;
       for (let x = 0; x < width; x++) {
         const at = (row + (x >> 3)) & 0xffff;
         const bit = 7 - (x & 7);

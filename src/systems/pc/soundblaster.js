@@ -38,9 +38,48 @@ const PARAMETERS = {
   0x74: 2, 0x75: 2, 0x76: 2, 0x77: 2, 0x80: 2, 0xe0: 1, 0xe4: 1,
 };
 
-/** Quanto pesano le due voci nel suono che esce: il DSP a piena scala copre il chip FM. */
+/** Quanto pesano le voci nel suono che esce: il DSP a piena scala copre il chip FM. */
 const DSP_GAIN = 0.5;
 const FM_GAIN = 1.5;
+const SPEAKER_GAIN = 0.25;
+
+/**
+ * L'ADPCM di Creative, con le tabelle del DSP. Ogni codice compresso, sommato
+ * al passo corrente, sceglie di quanto spostare il campione (`scale`) e di
+ * quanto allargare o stringere il passo (`adjust`): un passo che si allarga
+ * quando il suono cambia in fretta e si stringe quando sta fermo. Quattro, tre
+ * o due bit per campione invece di otto: la metà, un terzo, un quarto dei byte
+ * — e sul disco di un gioco del 1991 era la differenza fra avere le voci e
+ * non averle.
+ */
+const ADPCM4 = {
+  scale: [
+    0, 1, 2, 3, 4, 5, 6, 7, 0, -1, -2, -3, -4, -5, -6, -7,
+    1, 3, 5, 7, 9, 11, 13, 15, -1, -3, -5, -7, -9, -11, -13, -15,
+    2, 6, 10, 14, 18, 22, 26, 30, -2, -6, -10, -14, -18, -22, -26, -30,
+    4, 12, 20, 28, 36, 44, 52, 60, -4, -12, -20, -28, -36, -44, -52, -60,
+  ],
+  adjust: [
+    0, 0, 0, 0, 0, 16, 16, 16, 0, 0, 0, 0, 0, 16, 16, 16,
+    240, 0, 0, 0, 0, 16, 16, 16, 240, 0, 0, 0, 0, 16, 16, 16,
+    240, 0, 0, 0, 0, 16, 16, 16, 240, 0, 0, 0, 0, 16, 16, 16,
+    240, 0, 0, 0, 0, 0, 0, 0, 240, 0, 0, 0, 0, 0, 0, 0,
+  ],
+};
+const ADPCM3 = {
+  scale: [
+    0, 1, 2, 3, 0, -1, -2, -3, 1, 3, 5, 7, -1, -3, -5, -7, 2, 6, 10, 14,
+    -2, -6, -10, -14, 4, 12, 20, 28, -4, -12, -20, -28, 5, 15, 25, 35, -5, -15, -25, -35,
+  ],
+  adjust: [
+    0, 0, 0, 8, 0, 0, 0, 8, 248, 0, 0, 8, 248, 0, 0, 8, 248, 0, 0, 8,
+    248, 0, 0, 8, 248, 0, 0, 8, 248, 0, 0, 8, 248, 0, 0, 0, 248, 0, 0, 0,
+  ],
+};
+const ADPCM2 = {
+  scale: [0, 1, 0, -1, 1, 3, -1, -3, 2, 6, -2, -6, 4, 12, -4, -12, 8, 24, -8, -24, 16, 48, -16, -48],
+  adjust: [0, 4, 0, 4, 252, 4, 252, 4, 252, 4, 252, 4, 252, 4, 252, 4, 252, 4, 252, 4, 252, 0, 252, 0],
+};
 
 export class SoundBlaster {
   /**
@@ -76,6 +115,13 @@ export class SoundBlaster {
     this.fmSum = 0;
     this.fmCount = 0;
     this.fmLast = 0;
+    // L'altoparlante, che arriva da fuori: quanto è stato acceso nell'ultimo
+    // intervallo, e il filtro che gli toglie la componente continua.
+    this.speakerArea = 0;
+    this.speakerTime = 0;
+    this.speakerLast = 0;
+    this.dcIn = 0;
+    this.dcOut = 0;
   }
 
   resetDSP() {
@@ -101,6 +147,11 @@ export class SoundBlaster {
       paused: false,
       samplesPerByte: 1,
       subSample: 0,
+      /** L'ADPCM: se il primo byte è il campione di partenza, dove si è, e il passo. */
+      reference: false,
+      adpcmByte: 0,
+      adpcmValue: 0x80,
+      adpcmStep: 0,
       time: 0,
       irq: false,
       /** Quante interruzioni ha alzato: serve a chi lo guarda da fuori. */
@@ -202,29 +253,29 @@ export class SoundBlaster {
       case 0x90: // alta velocità, blocchi uno dietro l'altro
         this.start('output', dsp.blockSize, true, 1);
         break;
-      // L'ADPCM: due, tre o quattro campioni per byte, compressi. Qui i byte
-      // si consumano alla velocità giusta e l'interruzione arriva quando deve,
-      // ma quello che si sente è silenzio.
+      // L'ADPCM: due, tre o quattro campioni per byte, compressi. I comandi
+      // dispari cominciano con un byte di riferimento — il campione da cui si
+      // parte — e i pari riprendono da dove si era rimasti.
       case 0x74:
       case 0x75:
-        this.start('adpcm', length(), false, 2);
+        this.start('adpcm', length(), false, 2, command === 0x75);
         break;
       case 0x76:
       case 0x77:
-        this.start('adpcm', length(), false, 3);
+        this.start('adpcm', length(), false, 3, command === 0x77);
         break;
       case 0x16:
       case 0x17:
-        this.start('adpcm', length(), false, 4);
+        this.start('adpcm', length(), false, 4, command === 0x17);
         break;
       case 0x7d:
-        this.start('adpcm', dsp.blockSize, true, 2);
+        this.start('adpcm', dsp.blockSize, true, 2, true);
         break;
       case 0x7f:
-        this.start('adpcm', dsp.blockSize, true, 3);
+        this.start('adpcm', dsp.blockSize, true, 3, true);
         break;
       case 0x1f:
-        this.start('adpcm', dsp.blockSize, true, 4);
+        this.start('adpcm', dsp.blockSize, true, 4, true);
         break;
       case 0x20: // un campione dal microfono: che qui non c'è, quindi silenzio
         dsp.output.push(0x80);
@@ -292,7 +343,7 @@ export class SoundBlaster {
     }
   }
 
-  start(mode, length, autoInit, samplesPerByte) {
+  start(mode, length, autoInit, samplesPerByte, reference = false) {
     const dsp = this.dsp;
     dsp.mode = mode;
     dsp.remaining = length;
@@ -300,7 +351,32 @@ export class SoundBlaster {
     dsp.paused = false;
     dsp.samplesPerByte = samplesPerByte;
     dsp.subSample = 0;
+    dsp.reference = reference;
     dsp.time = 0;
+  }
+
+  /** Un campione ADPCM dal byte in corso: prima i bit alti, poi i bassi. */
+  decode(sub) {
+    const dsp = this.dsp;
+    const byte = dsp.adpcmByte;
+    let code;
+    let table;
+    if (dsp.samplesPerByte === 2) {
+      code = sub === 0 ? byte >> 4 : byte & 0x0f;
+      table = ADPCM4;
+    } else if (dsp.samplesPerByte === 3) {
+      // Due codici da tre bit e l'ultimo da due, allungato di uno: 2,6 bit a
+      // campione, che è il nome con cui Creative lo vendeva.
+      code = sub === 0 ? (byte >> 5) & 7 : sub === 1 ? (byte >> 2) & 7 : (byte & 3) << 1;
+      table = ADPCM3;
+    } else {
+      code = (byte >> (6 - 2 * sub)) & 3;
+      table = ADPCM2;
+    }
+    const index = Math.min(table.scale.length - 1, code + dsp.adpcmStep);
+    dsp.adpcmValue = Math.max(0, Math.min(255, dsp.adpcmValue + table.scale[index]));
+    dsp.adpcmStep = (dsp.adpcmStep + table.adjust[index]) & 0xff;
+    return dsp.adpcmValue;
   }
 
   interrupt() {
@@ -318,13 +394,29 @@ export class SoundBlaster {
    */
   step() {
     const dsp = this.dsp;
-    if (dsp.mode === 'output' || dsp.mode === 'adpcm') {
+    if (dsp.mode === 'output') {
+      const byte = this.dma.transfer(SB_DMA);
+      if (byte < 0) return;
+      dsp.dac = byte;
+      dsp.remaining--;
+    } else if (dsp.mode === 'adpcm') {
       if (dsp.subSample === 0) {
         const byte = this.dma.transfer(SB_DMA);
         if (byte < 0) return;
-        if (dsp.mode === 'output') dsp.dac = byte;
         dsp.remaining--;
+        if (dsp.reference) {
+          // Il primo byte non è compresso: è il campione da cui si parte, e
+          // il passo ricomincia dal più piccolo.
+          dsp.reference = false;
+          dsp.adpcmValue = byte;
+          dsp.adpcmStep = 0;
+          dsp.dac = byte;
+          this.blockDone();
+          return;
+        }
+        dsp.adpcmByte = byte;
       }
+      dsp.dac = this.decode(dsp.subSample);
       dsp.subSample = (dsp.subSample + 1) % dsp.samplesPerByte;
       if (dsp.subSample !== 0) return;
     } else if (dsp.mode === 'input') {
@@ -333,6 +425,12 @@ export class SoundBlaster {
     } else {
       dsp.remaining--;
     }
+    this.blockDone();
+  }
+
+  /** Se il blocco è finito: l'interruzione, e poi il blocco dopo o niente. */
+  blockDone() {
+    const dsp = this.dsp;
     if (dsp.remaining > 0) return;
     this.interrupt();
     if (dsp.autoInit) dsp.remaining = dsp.blockSize;
@@ -345,9 +443,20 @@ export class SoundBlaster {
    * Manda avanti la scheda di un certo numero di cicli del processore: il chip
    * FM calcola i suoi campioni, il DSP prende i suoi dal DMA, e in fondo esce
    * il suono alla velocità che vuole chi ascolta.
+   *
+   * Nello stesso suono entra l'altoparlante del PC, come nel cavetto che molte
+   * schede avevano apposta per lui: `speaker` è il livello del suo filo in
+   * questo intervallo, uno o zero. Seguirlo intervallo per intervallo invece
+   * di nota per nota è quello che fa sentire anche i programmi che il bit lo
+   * muovono a mano — le voci digitalizzate fatte con un bit solo.
+   *
+   * @param {number} cycles
+   * @param {number} [speaker] il filo dell'altoparlante, 0 o 1
    */
-  advance(cycles) {
+  advance(cycles, speaker = 0) {
     const seconds = cycles / this.clock;
+    this.speakerArea += speaker * cycles;
+    this.speakerTime += cycles;
 
     this.oplTime += seconds * OPL_RATE;
     while (this.oplTime >= 1) {
@@ -377,7 +486,17 @@ export class SoundBlaster {
         this.fmCount = 0;
       }
       const voice = dsp.speaker ? ((dsp.dac - 128) / 128) * DSP_GAIN : 0;
-      let sample = voice + (this.fmLast / 32768) * FM_GAIN;
+      // L'altoparlante: la media del filo nell'intervallo, che è quello che
+      // sente un cono con la sua inerzia, e poi un filtro che toglie la parte
+      // continua — un filo lasciato acceso non è un suono.
+      if (this.speakerTime) {
+        this.speakerLast = this.speakerArea / this.speakerTime;
+        this.speakerArea = 0;
+        this.speakerTime = 0;
+      }
+      this.dcOut = this.speakerLast - this.dcIn + 0.995 * this.dcOut;
+      this.dcIn = this.speakerLast;
+      let sample = voice + (this.fmLast / 32768) * FM_GAIN + this.dcOut * SPEAKER_GAIN;
       if (sample > 1) sample = 1;
       else if (sample < -1) sample = -1;
       if (this.count < this.buffer.length) this.buffer[this.count++] = sample;
