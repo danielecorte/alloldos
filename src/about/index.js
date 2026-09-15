@@ -519,8 +519,11 @@ class AboutPage {
 
       <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li><b>Windows 3.1</b>, che è il motivo per cui questa macchina esiste,
-        non è provato: servono un disco con Windows sopra, e più velocità.</li>
+        <li>La <b>velocità</b>: dichiara trentatré megahertz e ne fa una
+        frazione. Il Setup di Windows 3.1 — i dischetti si trascinano sulla
+        finestra — arriva fino a Windows che si accende in modo standard, e
+        lungo la strada ha trovato tre guasti del processore che adesso non ci
+        sono più; il resto dell'installazione non è ancora provato.</li>
       </ul>
     `;
   }

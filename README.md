@@ -1377,12 +1377,38 @@ dietro al ponte sud, e le porte, la IRQ 7 e il canale 1 del DMA sono gli stessi
 Nello stesso suono entra l'altoparlante, e la pagina ha il suo pulsante per
 l'audio.
 
+### Windows 3.1
+
+Il motivo per cui questa macchina esiste. I dischetti non viaggiano con
+alloldos — sono di Microsoft — ma chi li ha li trascina sulla finestra uno alla
+volta, come si infilavano allora: `A:`, `SETUP`, e la parte in modo testo copia
+i file del primo dischetto e chiede il secondo; poi Setup accende Windows in
+**modo standard** — il DOS extender, il modo protetto a sedici bit — e il resto
+dell'installazione è già Windows, a 640 per 480.
+
+Arrivarci ha voluto dire trovare tre guasti del processore, e tutti e tre li ha
+trovati Setup, nessuno una prova scritta a mano:
+
+- **dopo STI le interruzioni aspettano un'istruzione, e una sola.** Il BIOS di
+  Bochs aspetta un tasto con `sti` e un salto indietro al `cli`, e la sua
+  finestra è tutta in quel salto; chiusa un'istruzione più in là, la tastiera
+  non entrava mai, e Setup restava fermo al primo Invio;
+- **CMP non scrive.** Il DOS extender confronta una tabella che tiene dentro il
+  suo segmento di codice, e in modo protetto un segmento di codice si legge ma
+  non si scrive: la CMP che riscriveva il risultato era un #GP, e Windows si
+  fermava con *Fault in MS-DOS Extender*;
+- **LAR è una domanda.** Windows passa in rassegna i selettori con LAR per
+  sapere quali esistono, e a un selettore fuori dalla tabella il processore
+  risponde spegnendo ZF, non con un'eccezione. Lo stesso per LSL, VERR e VERW,
+  che adesso controllano anche i privilegi e il tipo come il chip.
+
 ### Cosa manca
 
-Windows 3.1, che è il motivo per cui questa macchina esiste, non è provato: gli
-servono un disco con Windows sopra, che alloldos non ha, e più velocità di quella
-che la macchina ha adesso. E la velocità in generale: il 386 dichiara trentatré
-megahertz e ne fa una frazione.
+La velocità: il 386 dichiara trentatré megahertz e ne fa una frazione, e
+Windows se ne accorge. E la prova dell'installazione arriva solo fino a Windows
+che si accende e disegna il suo Setup grafico: il resto — il nome, i dischetti
+dal terzo al sesto, il primo avvio — vuole qualcuno che risponda ai dialoghi, e
+non è ancora provato.
 
 ## Schermo intero
 

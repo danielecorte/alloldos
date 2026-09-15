@@ -689,6 +689,32 @@ export class CPU586 {
   }
 
   /**
+   * Il descrittore di un selettore, se c'è, senza eccezioni: è quello che
+   * vogliono LAR, LSL, VERR e VERW, che chiedono com'è fatto un segmento senza
+   * caricarlo. Un selettore nullo o fuori dalla tabella per loro non è un
+   * errore, è la risposta "no".
+   *
+   * @returns {?object}
+   */
+  peekDescriptor(selector) {
+    if ((selector & 0xfffc) === 0) return null;
+    const table = selector & 4 ? this.ldt : this.gdt;
+    if ((selector & 0xfff8) + 7 > table.limit) return null;
+    this.systemAccess++;
+    try {
+      return this.descriptorAt(selector);
+    } finally {
+      this.systemAccess--;
+    }
+  }
+
+  /** Se un descrittore si lascia vedere da qui: il codice conforme sempre, il resto solo dai privilegiati. */
+  visible(d, selector) {
+    if (!d.system && (d.type & 0x0c) === 0x0c) return true;
+    return d.dpl >= Math.max(this.cpl, selector & 3);
+  }
+
+  /**
    * Caricare un segmento. In real mode è una moltiplicazione per sedici; in
    * modo protetto è l'unico momento in cui si legge la tabella, e quindi l'unico
    * in cui si può dire di no.
@@ -1915,14 +1941,21 @@ export class CPU586 {
     if (opcode < 0x40 && (opcode & 7) < 6) {
       const op = (opcode >> 3) & 7;
       switch (opcode & 7) {
-        case 0:
+        case 0: {
           this.modrm();
-          this.writeRM(1, this.alu(op, 1, this.readRM(1), this.get8(this.reg)));
+          const result = this.alu(op, 1, this.readRM(1), this.get8(this.reg));
+          // CMP non scrive: in modo protetto il suo operando può stare in un
+          // segmento di sola lettura — un segmento di codice, per esempio — e
+          // riscriverlo sarebbe un #GP che il processore vero non dà.
+          if (op !== 7) this.writeRM(1, result);
           return 2;
-        case 1:
+        }
+        case 1: {
           this.modrm();
-          this.writeRM(size, this.alu(op, size, this.readRM(size), this.get(size, this.reg)));
+          const result = this.alu(op, size, this.readRM(size), this.get(size, this.reg));
+          if (op !== 7) this.writeRM(size, result);
           return 2;
+        }
         case 2:
           this.modrm();
           this.set8(this.reg, this.alu(op, 1, this.get8(this.reg), this.readRM(1)));
@@ -2146,7 +2179,8 @@ export class CPU586 {
       case 0x82: {
         this.modrm();
         const op = this.reg;
-        this.writeRM(1, this.alu(op, 1, this.readRM(1), this.fetch8()));
+        const result = this.alu(op, 1, this.readRM(1), this.fetch8());
+        if (op !== 7) this.writeRM(1, result); // CMP legge e basta
         return 2;
       }
       case 0x81:
@@ -2154,7 +2188,10 @@ export class CPU586 {
         this.modrm();
         const op = this.reg;
         const value = opcode === 0x81 ? this.fetch(size) : trim(size, this.fetchSigned8());
-        this.writeRM(size, this.alu(op, size, this.readRM(size), value));
+        const result = this.alu(op, size, this.readRM(size), value);
+        // CMP legge e basta: è quello che fa DOSX, il DOS extender di Windows
+        // 3.1, con una tabella che tiene dentro il suo segmento di codice.
+        if (op !== 7) this.writeRM(size, result);
         return 2;
       }
       case 0x84:
@@ -2631,8 +2668,12 @@ export class CPU586 {
         this.if_ = 1;
         // Le interruzioni entrano dopo l'istruzione *seguente*: è il rinvio che
         // fa funzionare `sti` seguito da `hlt`, e che ogni gestore di interrupt
-        // del mondo dà per scontato.
-        this.stiDelay = 2;
+        // del mondo dà per scontato. Una sola istruzione, però, e non due: il
+        // BIOS di Bochs aspetta un tasto con `sti` e un `jmp` che torna al `cli`,
+        // e la sua finestra è tutta in quel salto. Chiusa per un'istruzione di
+        // troppo, la tastiera non entrava mai — ed è lì che si fermava il
+        // programma di installazione di Windows 3.1, al primo Invio.
+        this.stiDelay = 1;
         return 1;
       case 0xfc:
         this.df = 0;
@@ -2780,15 +2821,19 @@ export class CPU586 {
         // LAR e LSL: chiedere alla tabella com'è fatto un segmento senza
         // caricarlo. Serve a un sistema operativo per controllare un selettore
         // che gli è arrivato da fuori.
+        // Sono domande, e un selettore che non c'è è una risposta: ZF spento,
+        // nessuna eccezione. Windows 3.1 ci conta — passa in rassegna i
+        // selettori con LAR per sapere quali esistono.
         this.modrm();
         const selector = this.readRM(2);
-        if ((selector & 0xfffc) === 0) {
-          this.zf = 0;
-          return 3;
+        const d = this.peekDescriptor(selector);
+        const system = opcode === 0x02 ? [1, 2, 3, 4, 5, 9, 11, 12] : [1, 2, 3, 9, 11];
+        const ok = d !== null && (!d.system || system.includes(d.type)) && this.visible(d, selector);
+        this.zf = ok ? 1 : 0;
+        if (ok) {
+          const value = opcode === 0x02 ? d.high & (size === 4 ? 0x00f0ff00 : 0xff00) : d.limit;
+          this.set(size, this.reg, size === 4 ? value >>> 0 : value & 0xffff);
         }
-        const d = this.descriptorAt(selector);
-        this.zf = d.present ? 1 : 0;
-        if (d.present) this.set(size, this.reg, opcode === 0x02 ? d.high & 0x00ffff00 : d.limit);
         return 3;
       }
       case 0x06:
@@ -3210,15 +3255,12 @@ export class CPU586 {
       case 5: {
         // VERR e VERW: si può leggere? si può scrivere? senza provarci.
         const selector = this.readRM(2);
-        if ((selector & 0xfffc) === 0) {
-          this.zf = 0;
-          return 3;
-        }
-        const d = this.descriptorAt(selector);
-        const code = (d.type & 8) !== 0;
+        const d = this.peekDescriptor(selector);
+        const code = d !== null && (d.type & 8) !== 0;
         const ok =
+          d !== null &&
           !d.system &&
-          d.present &&
+          this.visible(d, selector) &&
           (this.reg === 4 ? !code || (d.type & 2) !== 0 : !code && (d.type & 2) !== 0);
         this.zf = ok ? 1 : 0;
         return 3;

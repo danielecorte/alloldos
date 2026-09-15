@@ -486,6 +486,17 @@ section('Lo stesso motore, da 386');
   check('su un Pentium risponde, e dice chi è', cpuid(586) === 0x6547, hex(cpuid(586), 4));
 }
 
+{
+  // Dopo uno STI le interruzioni restano fuori per un'istruzione, e una sola:
+  // il BIOS di Bochs aspetta un tasto con `sti` e un salto indietro al `cli`, e
+  // se la finestra si chiudesse un'istruzione dopo non entrerebbe mai niente.
+  const { cpu } = realMode([0xfb, 0xeb, 0x00, 0xfa, HLT]); // sti; jmp $+2; cli
+  cpu.step();
+  const shadow = cpu.stiDelay !== 0;
+  cpu.step();
+  check('dopo STI le interruzioni aspettano un\'istruzione, e una sola', shadow && cpu.stiDelay === 0 && cpu.if_ === 1);
+}
+
 section('Il coprocessore');
 
 {
@@ -900,6 +911,39 @@ section('Le interruzioni in modo protetto');
     `${hex(cpu.get32(EDX))} ${hex(cpu.get32(EBX), 4)} ${hex(cpu.get32(ECX))} ${hex(cpu.get32(EBP), 4)}`);
   check('e RETF 4 torna all\'anello 3 con lo stack com\'era prima del parametro',
     cpu.get32(EDI) === cpu.get32(ESI), `${hex(cpu.get32(EDI))} contro ${hex(cpu.get32(ESI))}`);
+}
+
+{
+  // LAR è una domanda: un selettore fuori dalla GDT spegne ZF e basta, senza
+  // eccezioni. Windows 3.1 in modo standard passa in rassegna i selettori così,
+  // e un #GP al primo che non esiste lo fermava prima ancora di partire.
+  const { cpu } = crossOver([
+    0xbb, ...dw(0x380), // mov ebx, 380h: molto oltre la fine della GDT
+    0x0f, 0x02, 0xc3, // lar eax, ebx
+    0x0f, 0x94, 0xc1, // setz cl
+    0xba, ...dw(0x10), // mov edx, 10h: il segmento di dati
+    0x0f, 0x02, 0xc2, // lar eax, edx
+    0x0f, 0x94, 0xc5, // setz ch
+    HLT,
+  ]);
+  run(cpu);
+  check('LAR su un selettore che non c\'è spegne ZF, senza eccezioni', cpu.get8(1) === 0 && !cpu.tripleFault);
+  check('e su uno che c\'è lo accende, e dà i diritti del segmento',
+    cpu.get8(5) === 1 && (cpu.get32(EAX) & 0xff00) === 0x9200, hex(cpu.get32(EAX)));
+}
+
+{
+  // CMP non scrive. In modo protetto un segmento di codice si legge ma non si
+  // scrive, e il DOS extender di Windows 3.1 confronta una tabella che tiene
+  // proprio lì dentro: una CMP che riscrivesse il risultato darebbe un #GP.
+  const { cpu } = crossOver([
+    0x2e, 0x83, 0x3d, ...dw(WIDE_AT), 0x00, // cmp dword [cs:WIDE_AT], 0
+    0x2e, 0x39, 0x05, ...dw(WIDE_AT), // cmp [cs:WIDE_AT], eax
+    0xbb, ...dw(0x77), // mov ebx, 77h: ci si arriva solo senza #GP
+    HLT,
+  ]);
+  run(cpu);
+  check('CMP su un segmento di codice legge e non scrive', cpu.get32(EBX) === 0x77 && !cpu.tripleFault);
 }
 
 {
