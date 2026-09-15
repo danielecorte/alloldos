@@ -1219,7 +1219,8 @@ a che fare con l'errore.
 
 La **velocità**: la macchina gira, ma gira a una frazione dei sessantasei
 megahertz che dichiara, e per farci sopra qualcosa di più di un prompt del DOS
-quella frazione andrà alzata. La virgola mobile, il cambio di task e il modo
+quella frazione andrà alzata — il lavoro da fare è la traduzione a blocchi,
+raccontata nel 386 qui sotto, che vale per tutte e due le macchine. La virgola mobile, il cambio di task e il modo
 virtuale 8086 invece ci sono: sono gli stessi del 386 qui sotto, perché il
 motore è lo stesso, e sono raccontati lì — e sul Pentium CPUID dichiara il
 coprocessore, che per la prima volta sta dentro il processore.
@@ -1405,7 +1406,25 @@ trovati Setup, nessuno una prova scritta a mano:
 ### Cosa manca
 
 La velocità: il 386 dichiara trentatré megahertz e ne fa una frazione, e
-Windows se ne accorge. E la prova dell'installazione arriva solo fino a Windows
+Windows se ne accorge. Oggi trenta secondi di Windows 3.1 in grafica costano
+ottanta secondi veri, circa sei milioni di istruzioni al secondo. I ritocchi
+fatti fin qui — la RAM toccata direttamente dal processore, le letture di più
+byte in un colpo, i prefissi con una tabella — ne hanno dato un terzo in più, e
+i prossimi renderebbero pochi punti ciascuno.
+
+Il salto vero è un lavoro da fare: la **traduzione a blocchi**. Oggi il
+processore interpreta un'istruzione alla volta — la legge, la decodifica, la
+esegue, e ricomincia — anche quando è la stessa istruzione del giro prima di un
+ciclo che ne fa un milione. Tradurre a blocchi vuol dire prendere un pezzo di
+codice fino al primo salto, decodificarlo una volta sola in una funzione
+JavaScript, e rieseguire quella funzione ogni volta che il processore ci
+ritorna, finché qualcuno non scrive sopra quel codice. È come fanno gli
+emulatori veloci, e vale per il 386 e il Pentium insieme, perché il processore
+è lo stesso. Deve restare tutto quello che c'è: le eccezioni a metà istruzione,
+le interruzioni guardate fra un'istruzione e l'altra, il codice che si
+riscrive da sé, e le prove, che devono passare tutte come adesso.
+
+E la prova dell'installazione arriva solo fino a Windows
 che si accende e disegna il suo Setup grafico: il resto — il nome, i dischetti
 dal terzo al sesto, il primo avvio — vuole qualcuno che risponda ai dialoghi, e
 non è ancora provato.
