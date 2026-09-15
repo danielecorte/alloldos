@@ -27,6 +27,7 @@ import {
   preferredLayout,
   storePreferredLayout,
 } from '../pc/layouts.js';
+import { setCDROM } from '../pc/cdrom.js';
 import { AudioOutput } from '../zx/audio.js';
 
 const MAX_CATCHUP_FRAMES = 4;
@@ -65,6 +66,7 @@ export class BoardSession {
     this.frameDebt = 0;
     this.floppyName = '';
     this.diskName = '';
+    this.cdName = '';
     this.savedDiskWrites = 0;
     this.savedFloppyWrites = 0;
     /** Il mouse: quanto si è mosso dall'ultimo pacchetto, e i tasti. */
@@ -100,6 +102,7 @@ export class BoardSession {
       this.button('Togli il dischetto', () => this.ejectFloppy()),
       this.button('Salva il dischetto', () => this.saveFloppy()),
       this.button('Salva il disco fisso', () => this.saveHardDisk()),
+      this.button('Togli il CD', () => this.ejectCD()),
       this.button('Menu di boot', () => this.onExit()),
       this.status,
     );
@@ -107,7 +110,8 @@ export class BoardSession {
     this.drives = element('div', 'pc__drives');
     this.floppyRow = this.driveRow('A:', 'vuoto');
     this.diskRow = this.driveRow('C:', 'disco fisso');
-    this.drives.append(this.floppyRow.row, this.diskRow.row);
+    this.cdRow = this.driveRow('CD:', 'vuoto');
+    this.drives.append(this.floppyRow.row, this.diskRow.row, this.cdRow.row);
 
     this.fileInput = element('input', 'pc__file');
     this.fileInput.type = 'file';
@@ -215,6 +219,7 @@ export class BoardSession {
     const [video, disk] = await Promise.all([this.roms.loadVideoROM(), loadHardDisk()]);
     this.video = video;
     setLayout(disk.data, preferredLayout());
+    setCDROM(disk.data, true);
     try {
       this.sound = new AudioOutput();
     } catch {
@@ -328,6 +333,33 @@ export class BoardSession {
     this.diskRow.text.textContent = disk
       ? `${megabytes(disk)} MB${this.diskName ? ` — ${this.diskName}` : ''}${disk.writes ? ` — ${disk.writes} settori scritti` : ''}`
       : 'nessun disco';
+    const cd = this.machine.cdrom;
+    this.cdRow.light.classList.toggle('pc__light--on', cd.phase === 'data');
+    this.cdRow.text.textContent = cd.image ? `${this.cdName || 'CD'} — ${megabytes({ data: cd.image })} MB` : 'vuoto';
+  }
+
+  /**
+   * Un CD nel cassetto. Al contrario del dischetto non serve riaccendere: il
+   * lettore c'è sempre, e al primo comando dice al driver che il disco è
+   * cambiato, che è la stessa cosa che succedeva chiudendo il cassetto.
+   */
+  insertCD(bytes, name) {
+    this.machine.cdrom.insert(bytes);
+    this.cdName = name.replace(/\.iso$/i, '');
+    this.updateDrives();
+    this.setStatus(`${this.cdName} nel lettore di CD — in FreeDOS è D:`);
+  }
+
+  ejectCD() {
+    const cd = this.machine?.cdrom;
+    if (!cd?.image) {
+      this.setStatus('Nel lettore non c\'è nessun CD');
+      return;
+    }
+    cd.eject();
+    this.cdName = '';
+    this.updateDrives();
+    this.setStatus('Lettore di CD vuoto');
   }
 
   get hardDisk() {
@@ -521,7 +553,8 @@ export class BoardSession {
       this.video = await this.roms.loadVideoROM();
       const disk = this.hardDisk;
       const floppy = this.machine.floppy.drives[0].medium;
-      this.machine = this.profile.build(this.bios, { video: this.video, disk, floppy });
+      const cd = this.machine.cdrom.image;
+      this.machine = this.profile.build(this.bios, { video: this.video, disk, floppy, cd });
       this.tuneSound();
       this.setStatus('BIOS della scheda video montato — la macchina riparte');
     }
@@ -536,6 +569,7 @@ export class BoardSession {
     const loose = [];
     for (const { bytes, name, kind } of this.pending.splice(0)) {
       if (kind === 'floppy') this.insertFloppy(bytes, name);
+      else if (kind === 'cd') this.insertCD(bytes, name);
       else if (kind === 'file') loose.push({ bytes, name });
       else this.mountHardDisk(bytes, name);
     }

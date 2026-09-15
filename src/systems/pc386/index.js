@@ -26,8 +26,9 @@ export const RAM = 8 * 1024 * 1024;
  * @param {?Uint8Array} [options.video]
  * @param {?object} [options.disk]
  * @param {?Uint8Array} [options.floppy]
+ * @param {?Uint8Array} [options.cd] un'immagine ISO nel lettore di CD
  */
-export function build386(bios, { video = null, disk = null, floppy = null } = {}) {
+export function build386(bios, { video = null, disk = null, floppy = null, cd = null } = {}) {
   const machine = new Pentium(bios, {
     model: 386,
     clock: CLOCK,
@@ -35,6 +36,7 @@ export function build386(bios, { video = null, disk = null, floppy = null } = {}
     cards: video ? [{ base: roms.VIDEO_ROM_BASE, bytes: video }] : [],
     disk,
     floppy,
+    cd,
   });
   declareFloppyDrive(machine);
   return machine;

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FAT16 } from '../src/systems/pc/fat.js';
+import { makeISO } from './iso.mjs';
 import { LAYOUTS, layoutOf } from '../src/systems/pc/layouts.js';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
@@ -936,6 +937,15 @@ if (pentium.machine === null) {
   check('a key press reaches the 8042', pentium.machine.kbc.output.some((entry) => entry.byte === 0x1e));
   sendKey('keyup', 'KeyA', 'a');
   check('and the Sound Blaster is on the board, turning out samples', pentium.machine.sound.sampleRate > 0);
+  // Un .iso trascinato sulla finestra: si riconosce dal contenuto e va nel
+  // lettore di CD, senza riaccendere la macchina.
+  const iso = makeISO([{ name: 'A.TXT', bytes: new Uint8Array([65]) }]);
+  await pentium.acceptFiles([{ name: 'prova.iso', arrayBuffer: async () => iso.buffer }]);
+  check('a dropped .iso goes into the CD drive', pentium.machine.cdrom.image?.length === iso.length,
+    pentium.status.textContent);
+  check('and the drive row says so', pentium.cdRow.text.textContent.startsWith('prova'), pentium.cdRow.text.textContent);
+  pentium.ejectCD();
+  check('and the CD comes out again', pentium.machine.cdrom.image === null);
 }
 pentium.dispose();
 check('the Pentium shuts down cleanly', pentium.running === false);

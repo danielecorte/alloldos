@@ -18,12 +18,14 @@ import * as roms from './roms.js';
  * @param {?Uint8Array} [options.video]
  * @param {?object} [options.disk]
  * @param {?Uint8Array} [options.floppy]
+ * @param {?Uint8Array} [options.cd] un'immagine ISO nel lettore di CD
  */
-export function buildPentium(bios, { video = null, disk = null, floppy = null } = {}) {
+export function buildPentium(bios, { video = null, disk = null, floppy = null, cd = null } = {}) {
   return new Pentium(bios, {
     videoROMs: video ? [{ name: roms.VIDEO_SPEC.file, bytes: video }] : [],
     disk,
     floppy,
+    cd,
   });
 }
 

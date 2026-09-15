@@ -503,6 +503,8 @@ class AboutPage {
         <li>Il <b>cambio di task</b>, con i TSS, le porte di task e il ritorno
         con IRET.</li>
         <li>La <b>Sound Blaster</b> del 286, sulla stessa scheda del Pentium.</li>
+        <li>Il <b>lettore di CD</b> del Pentium, sullo stesso canale: il BIOS di
+        Bochs lo vede, e un <code>.iso</code> trascinato sulla finestra è D:.</li>
       </ul>
 
       <h3 class="about__heading">Le cose che solo un BIOS diverso ha trovato</h3>
@@ -604,6 +606,11 @@ class AboutPage {
         bit e l'indirizzamento lineare, e il lettore di dischetti — lo stesso
         NEC 765 del 286. Sopra ci si avvia <b>FreeDOS</b> fino al prompt, dal
         disco fisso o dal dischetto, e il disco è lo stesso file del 286.</li>
+        <li>Il <b>lettore di CD</b>, sul secondo canale: parla <b>ATAPI</b>, cioè
+        comandi SCSI da dodici byte dentro il protocollo dei dischi. Un
+        <code>.iso</code> trascinato sulla finestra finisce nel cassetto, e sotto
+        FreeDOS è D:, con i driver liberi UDVD2 e SHSUCDX e HIMEMX a dargli la
+        memoria estesa.</li>
         <li>Il <b>cambio di anello</b>: lo stack dell'anello interno preso dal
         TSS, e le porte di chiamata che ricopiano i parametri da uno stack
         all'altro.</li>

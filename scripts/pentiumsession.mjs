@@ -66,7 +66,7 @@ export function installedDisk() {
  * @returns {Pentium}
  */
 export function bootPentium(options = {}) {
-  const { video = true, disk = 'installed', floppy = false } = options;
+  const { video = true, disk = 'installed', floppy = false, cd = null } = options;
   const videoROMs = [];
   if (video && have.video) {
     videoROMs.push({ name: VIDEO_SPEC.file, bytes: new Uint8Array(readFileSync(romPath(VIDEO_SPEC))) });
@@ -76,6 +76,7 @@ export function bootPentium(options = {}) {
     videoROMs,
     disk: hard,
     floppy: floppy && have.floppy ? new Uint8Array(readFileSync(join(PC_ROMS, FREEDOS_SPEC.file))) : null,
+    cd,
   });
 }
 

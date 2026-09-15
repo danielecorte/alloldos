@@ -162,8 +162,23 @@ export function storeFloppy(bytes) {
  * @param {Uint8Array} bytes
  * @returns {?{kind:'floppy'|'hdd', label:string}}
  */
+/**
+ * Se dei byte sono un'immagine di CD: la firma «CD001» del descrittore del
+ * volume, che sta sempre al settore 16 da 2048 byte — i primi sedici sono
+ * lasciati liberi per chi vuole metterci qualcos'altro, e certe immagini ci
+ * mettono una tabella delle partizioni, per questo si guarda prima di tutto.
+ */
+export function isISO(bytes) {
+  return (
+    bytes.length >= 17 * 2048 &&
+    bytes.length % 2048 === 0 &&
+    String.fromCharCode(...bytes.subarray(0x8001, 0x8006)) === 'CD001'
+  );
+}
+
 export function classifyImage(bytes) {
   if (isZip(bytes)) return null;
+  if (isISO(bytes)) return { kind: 'cd', label: `CD da ${Math.round(bytes.length / 1024 / 1024)} MB` };
   const format = formatOf(bytes);
   if (format) return { kind: 'floppy', label: format.label };
   const partitioned = bytes.length > 512 && bytes[510] === 0x55 && bytes[511] === 0xaa;

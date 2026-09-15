@@ -815,6 +815,10 @@ class PCSession {
         loose.push({ bytes, name });
         continue;
       }
+      if (kind === 'cd') {
+        this.setStatus(`«${name}» è un CD, e questo 286 il lettore non ce l'ha: prova il 386 o il Pentium`);
+        continue;
+      }
       this.mountHardDisk(bytes, name);
     }
     if (loose.length) await this.loadFiles(loose);

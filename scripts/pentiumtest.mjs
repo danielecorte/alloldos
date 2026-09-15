@@ -1108,6 +1108,8 @@ import { existsSync as fileExists } from 'node:fs';
 import { build386 } from '../src/systems/pc386/index.js';
 import { BIOS_SPEC as PC386_BIOS, VIDEO_SPEC as PC386_VIDEO } from '../src/systems/pc386/roms.js';
 import { SCANCODES, scanBytes } from '../src/systems/pc/scancodes.js';
+import { makeISO } from './iso.mjs';
+import { setCDROM } from '../src/systems/pc/cdrom.js';
 
 const romPath = (spec) => join(ROMS, spec.file);
 
@@ -1132,6 +1134,51 @@ function pciWriteByte(pc, device, fn, register, value) {
   const address = (0x80000000 | (device << 11) | (fn << 8) | (register & 0xfc)) >>> 0;
   for (let i = 0; i < 4; i++) pc.outb(0xcf8 + i, (address >>> (i * 8)) & 0xff);
   pc.outb(0xcfc + (register & 3), value);
+}
+
+// La misura sta qui, subito dopo le prove del solo processore, e non in fondo:
+// dopo un quarto d'ora di macchine intere accese il JIT di Node ha già
+// ottimizzato il processore per tutt'altro, e il ciclo stretto misurerebbe
+// quello invece del processore.
+section('Quanto va');
+
+{
+  // Non è una prova, è una misura: serve a sapere se sopra questo processore ci
+  // si potrà mettere una macchina che gira a velocità onesta. Un ciclo stretto in
+  // real mode, e lo stesso ciclo con la paginazione accesa — che costa, perché
+  // ogni byte letto passa da una traduzione.
+  const measure = (cpu, count) => {
+    const start = process.hrtime.bigint();
+    for (let i = 0; i < count; i++) cpu.step();
+    return count / (Number(process.hrtime.bigint() - start) / 1e9) / 1e6;
+  };
+
+  const { cpu } = realMode([
+    0x66, 0xb9, ...dw(0x7fffffff), // mov ecx, un numero grande
+    0x66, 0x49, // dec ecx
+    0x75, 0xfc, // jnz
+  ]);
+  const flat = measure(cpu, 2_000_000);
+  check('in real mode va più di due milioni di istruzioni al secondo', flat > 2,
+    `${flat.toFixed(1)} milioni`);
+
+  const PD = 0x20000;
+  const PT0 = 0x21000;
+  const { cpu: paged, bus } = crossOver([
+    0xb8, ...dw(PD),
+    0x0f, 0x22, 0xd8,
+    0x0f, 0x20, 0xc0,
+    0x0d, ...dw(0x80000000),
+    0x0f, 0x22, 0xc0,
+    0xb9, ...dw(0x7fffffff),
+    0x49, // dec ecx
+    0x75, 0xfd,
+  ]);
+  for (let i = 0; i < 1024; i++) write32(bus, PT0 + i * 4, (i * 0x1000) | 3);
+  write32(bus, PD, PT0 | 3);
+  for (let i = 0; i < 200; i++) paged.step(); // il tempo di accendere tutto
+  const virtual = measure(paged, 2_000_000);
+  check('e con la paginazione accesa più di uno', virtual > 1, `${virtual.toFixed(1)} milioni`);
 }
 
 section('Il bus PCI');
@@ -1539,6 +1586,128 @@ section('Il disco IDE');
     both.isData(PRIMARY.command) && both.isData(SECONDARY.command) && !both.isData(0x1f1));
 }
 
+/**
+ * Il CD delle prove: un file di testo, e uno più lungo di un settore con una
+ * figura che non si ripete, per sapere che i settori arrivano nell'ordine giusto.
+ */
+const BIG = Uint8Array.from({ length: 3 * 2048 + 700 }, (_, i) => (i * 13 + (i >> 11) * 101) & 0xff);
+const TEST_CD = makeISO([
+  { name: 'HELLO.TXT', bytes: new TextEncoder().encode('ciao dal CD\r\n') },
+  { name: 'BIG.BIN', bytes: BIG },
+]);
+
+section('Il lettore di CD');
+
+{
+  let interrupts = 0;
+  const channel = new IDEChannel(SECONDARY, (active) => {
+    if (active) interrupts++;
+  });
+  const cd = channel.attachCD(0, TEST_CD);
+  channel.reset();
+  const put = (register, value) => channel.write(SECONDARY.command + register, value);
+  const get = (register) => channel.read(SECONDARY.command + register);
+
+  check('si presenta con la firma dei lettori ATAPI, 14EBh', get(4) === 0x14 && get(5) === 0xeb, `${hex(get(4), 2)} ${hex(get(5), 2)}`);
+  put(6, 0xa0);
+  put(7, 0xec);
+  check('e alla domanda dei dischi risponde di no', (get(7) & 0x01) !== 0 && (get(1) & 0x04) !== 0);
+  check('rimettendo la firma, così il BIOS capisce', get(4) === 0x14 && get(5) === 0xeb);
+
+  put(7, 0xa1);
+  const identity = new Uint16Array(256);
+  for (let i = 0; i < 256; i++) identity[i] = channel.readData(2);
+  check('IDENTIFY PACKET DEVICE: un lettore di CD, rimovibile, pacchetti da 12 byte',
+    identity[0] === 0x85c0, hex(identity[0], 4));
+  check('e dopo i 512 byte la porta dei dati si chiude', (get(7) & 0x08) === 0);
+
+  /** Un comando SCSI dentro PACKET: i dodici byte, e poi i dati a pezzi. */
+  const packet = (bytes, limit = 0xfffe) => {
+    put(1, 0);
+    put(4, limit & 0xff);
+    put(5, limit >> 8);
+    put(7, 0xa0);
+    const asked = (get(7) & 0x08) !== 0 && get(2) === 0x01;
+    const command = [...bytes, ...new Array(12 - bytes.length).fill(0)];
+    interrupts = 0;
+    for (let i = 0; i < 12; i += 2) channel.writeData(command[i] | (command[i + 1] << 8), 2);
+    const data = [];
+    const pieces = [];
+    while (get(7) & 0x08) {
+      const size = get(4) | (get(5) << 8);
+      pieces.push(size);
+      for (let i = 0; i < size; i += 2) {
+        const word = channel.readData(2);
+        data.push(word & 0xff, word >> 8);
+      }
+    }
+    return { asked, data: Uint8Array.from(data), pieces, failed: (get(7) & 0x01) !== 0, reason: get(2), interrupts };
+  };
+  const sense = () => {
+    const { data } = packet([0x03, 0, 0, 0, 18]);
+    return [data[2] & 0x0f, data[12]];
+  };
+  const read10 = (lba, count) => [0x28, 0, lba >>> 24, (lba >> 16) & 0xff, (lba >> 8) & 0xff, lba & 0xff, 0, 0, count];
+
+  const ready = packet([0x00]);
+  check('il comando PACKET chiede i dodici byte', ready.asked);
+  check('TEST UNIT READY: il disco c\'è', !ready.failed && ready.reason === 0x03);
+
+  const capacity = packet([0x25]).data;
+  const last = (capacity[0] << 24) | (capacity[1] << 16) | (capacity[2] << 8) | capacity[3];
+  check('READ CAPACITY: l\'ultimo settore e i 2048 byte di ognuno',
+    last === TEST_CD.length / 2048 - 1 && capacity[6] === 0x08, `${last}`);
+
+  const volume = packet(read10(16, 1)).data;
+  check('READ: il settore 16 è il descrittore del volume, CD001',
+    String.fromCharCode(...volume.subarray(1, 6)) === 'CD001');
+
+  const three = packet(read10(21, 3), 2048);
+  check('tre settori col limite a 2048 byte arrivano in tre pezzi', three.pieces.join() === '2048,2048,2048', three.pieces.join());
+  check('ognuno col suo avviso, più quello della fine', three.interrupts === 4, `${three.interrupts}`);
+  check('e sono i byte giusti, nell\'ordine giusto',
+    three.data.every((byte, i) => byte === TEST_CD[21 * 2048 + i]));
+
+  const toc = packet([0x43, 0, 0, 0, 0, 0, 0, 0, 20]).data;
+  const leadOut = (toc[16] << 24) | (toc[17] << 16) | (toc[18] << 8) | toc[19];
+  check('READ TOC: una traccia di dati, e la fine del disco dopo l\'ultimo settore',
+    toc[2] === 1 && toc[5] === 0x14 && toc[14] === 0xaa && leadOut === TEST_CD.length / 2048);
+
+  const beyond = packet(read10(TEST_CD.length / 2048, 1));
+  check('leggere oltre la fine è un errore', beyond.failed);
+  const invalid = sense().join();
+  check('che REQUEST SENSE sa spiegare: richiesta non valida', invalid === '5,33', invalid);
+
+  const inquiry = packet([0x12, 0, 0, 0, 36]).data;
+  check('INQUIRY: un lettore di CD, rimovibile', inquiry[0] === 0x05 && inquiry[1] === 0x80);
+
+  cd.eject();
+  packet([0x00]);
+  const empty = packet([0x00]);
+  check('col cassetto vuoto il lettore dice che non è pronto', empty.failed);
+  const absent = sense().join();
+  check('perché il disco non c\'è', absent === '2,58', absent);
+  cd.insert(TEST_CD);
+  check('un disco appena messo lo si dice al primo comando', packet([0x00]).failed && sense().join() === '6,40');
+  check('e al secondo il lettore è pronto', !packet([0x00]).failed);
+
+  // Le due righe del DOS: si mettono, non si ripetono, e si tolgono.
+  if (have.disk) {
+    const disk = installedDisk();
+    const first = setCDROM(disk.data, true);
+    const again = setCDROM(disk.data, true);
+    const files = FAT16.of(disk.data);
+    const text = (name) => new TextDecoder().decode(files.read(name));
+    check('il driver del CD finisce nel CONFIG.SYS', first.changed && /UDVD2\.SYS \/D:CDROM001/.test(text('CONFIG.SYS')));
+    check('e prima di tutto HIMEMX, che gli dà la memoria estesa', /^DEVICE=C:\\FDOS\\BIN\\HIMEMX\.EXE\r\n/.test(text('CONFIG.SYS')));
+    check('e SHSUCDX nell\'AUTOEXEC.BAT dopo il PATH', /path[^\n]*\n[^\n]*shsucdx \/D:CDROM001/i.test(text('AUTOEXEC.BAT')));
+    check('una volta sola, anche a chiederlo due volte', !again.changed);
+    setCDROM(disk.data, false);
+    check('e si tolgono, lasciando il resto com\'era',
+      !/udvd2|shsucdx|himemx/i.test(text('CONFIG.SYS') + text('AUTOEXEC.BAT')));
+  }
+}
+
 section('Il lettore di dischetti, e il byte che lo descrive');
 
 {
@@ -1852,7 +2021,15 @@ stata saltata. \`npm run fetch-roms\` lo prende dal repository di FreeDOS.`);
   const dos = new Session(pc, (text) => console.log(text));
   check('JEMMEX si carica', dos.waitFor(/JemmEx loaded/, 1500), dos.lastLine());
   check('e il DOS arriva al prompt lo stesso', dos.waitFor(/C:\\>/, 1500), dos.lastLine());
-  check('ma adesso in modo virtuale 8086, all\'anello 3', pc.cpu.vm === 1 && pc.cpu.cpl === 3 && pc.cpu.protectedMode);
+  // Si guarda alla fine di qualche quadro: in un istante qualunque il
+  // processore può essere passato un momento dall'anello 0, per servire
+  // un'interruzione, ma il DOS gira lassù.
+  let virtual = 0;
+  for (let i = 0; i < 10; i++) {
+    dos.run(1);
+    if (pc.cpu.vm === 1 && pc.cpu.cpl === 3 && pc.cpu.protectedMode) virtual++;
+  }
+  check('ma adesso in modo virtuale 8086, all\'anello 3', virtual >= 5, `${virtual} quadri su 10`);
   check('con la paginazione accesa', (pc.cpu.cr0 & 0x80000000) !== 0);
   dos.command('c:\\jemm\\emsstat', { limit: 1200 });
   check('e la memoria sopra il primo mega diventa memoria espansa', /EMS page frame/.test(dos.screen()), dos.lastLine());
@@ -1860,45 +2037,49 @@ stata saltata. \`npm run fetch-roms\` lo prende dal repository di FreeDOS.`);
   check('e il DOS legge il disco, da dentro il modo virtuale', /JEMMEX\s+EXE/.test(dos.screen()), dos.lastLine());
 }
 
-section('Quanto va');
+if (!have.bios || !have.video || !have.disk) {
+  console.log(`
+Manca qualcosa fra SeaBIOS, la sua ROM video e il disco: la prova del lettore di
+CD sotto FreeDOS è stata saltata.`);
+} else {
+  section('Avvio vero: il CD in D:, sul Pentium');
 
-{
-  // Non è una prova, è una misura: serve a sapere se sopra questo processore ci
-  // si potrà mettere una macchina che gira a velocità onesta. Un ciclo stretto in
-  // real mode, e lo stesso ciclo con la paginazione accesa — che costa, perché
-  // ogni byte letto passa da una traduzione.
-  const measure = (cpu, count) => {
-    const start = process.hrtime.bigint();
-    for (let i = 0; i < count; i++) cpu.step();
-    return count / (Number(process.hrtime.bigint() - start) / 1e9) / 1e6;
-  };
+  // Il giro intero anche qui: il driver UDVD2 cerca il lettore da sé sui due
+  // canali, gli parla in pacchetti, e SHSUCDX legge il filesystem del CD e lo
+  // fa comparire come D:. Nessuno dei due sa niente di questo emulatore.
+  const disk = installedDisk();
+  setCDROM(disk.data, true);
+  const pc = bootPentium({ disk, cd: TEST_CD });
+  const dos = new Session(pc, (text) => console.log(text));
+  check('il DOS arriva al prompt col driver del CD caricato', dos.waitFor(/C:\\>/, 1200), dos.lastLine());
+  dos.command('dir d:\\', { limit: 1200 });
+  check('in D: c\'è il CD, con i suoi file', /HELLO\s+TXT/.test(dos.screen()) && /BIG\s+BIN/.test(dos.screen()), dos.lastLine());
+  dos.command('type d:\\hello.txt', { limit: 1200 });
+  check('e si legge', /^ciao dal CD$/m.test(dos.screen()), dos.lastLine());
+  dos.command('copy d:\\big.bin c:\\', { limit: 1200 });
+  const copied = FAT16.of(pc.disks.master.data).read('BIG.BIN');
+  check('un file di quattro settori copiato dal CD al disco arriva identico',
+    copied?.length === BIG.length && copied.every((byte, i) => byte === BIG[i]), `${copied?.length}`);
+}
 
-  const { cpu } = realMode([
-    0x66, 0xb9, ...dw(0x7fffffff), // mov ecx, un numero grande
-    0x66, 0x49, // dec ecx
-    0x75, 0xfc, // jnz
-  ]);
-  const flat = measure(cpu, 2_000_000);
-  check('in real mode va più di due milioni di istruzioni al secondo', flat > 2,
-    `${flat.toFixed(1)} milioni`);
+if (!fileExists(join(PC386_ROMS, PC386_BIOS.file)) || !fileExists(join(PC386_ROMS, PC386_VIDEO.file)) || !have.disk) {
+  console.log(`
+Nessun BIOS di Bochs in roms/pc386: la prova del CD sul 386 è stata saltata.`);
+} else {
+  section('Il CD anche sul 386');
 
-  const PD = 0x20000;
-  const PT0 = 0x21000;
-  const { cpu: paged, bus } = crossOver([
-    0xb8, ...dw(PD),
-    0x0f, 0x22, 0xd8,
-    0x0f, 0x20, 0xc0,
-    0x0d, ...dw(0x80000000),
-    0x0f, 0x22, 0xc0,
-    0xb9, ...dw(0x7fffffff),
-    0x49, // dec ecx
-    0x75, 0xfd,
-  ]);
-  for (let i = 0; i < 1024; i++) write32(bus, PT0 + i * 4, (i * 0x1000) | 3);
-  write32(bus, PD, PT0 | 3);
-  for (let i = 0; i < 200; i++) paged.step(); // il tempo di accendere tutto
-  const virtual = measure(paged, 2_000_000);
-  check('e con la paginazione accesa più di uno', virtual > 1, `${virtual.toFixed(1)} milioni`);
+  const disk = installedDisk();
+  setCDROM(disk.data, true);
+  const pc = build386(new Uint8Array(readFileSync(join(PC386_ROMS, PC386_BIOS.file))), {
+    video: new Uint8Array(readFileSync(join(PC386_ROMS, PC386_VIDEO.file))),
+    disk,
+    cd: TEST_CD,
+  });
+  const dos = new Session(pc, (text) => console.log(text));
+  check('il BIOS di Bochs vede il lettore sul secondo canale', dos.waitFor(/ata1 master: .*ATAPI/, 300), dos.lastLine());
+  check('e FreeDOS arriva al prompt', dos.waitFor(/C:\\>/, 1200), dos.lastLine());
+  dos.command('type d:\\hello.txt', { limit: 1200 });
+  check('e legge il CD in D:', /^ciao dal CD$/m.test(dos.screen()), dos.lastLine());
 }
 
 console.log(failures === 0 ? '\nPentium OK.' : `\n${failures} problema/i.`);

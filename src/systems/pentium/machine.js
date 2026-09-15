@@ -241,6 +241,9 @@ export class Pentium {
     this.disks = new IDE((irq, active) => this.pics.setLine(irq, active));
     if (options.disk) this.disks.channels[0].attach(0, options.disk);
     if (options.disk2) this.disks.channels[0].attach(1, options.disk2);
+    // Il lettore di CD, al suo posto di sempre: il primo del secondo canale. C'è
+    // anche col cassetto vuoto, come su qualunque PC del 1995.
+    this.cdrom = this.disks.channels[1].attachCD(0, options.cd ?? null);
     if (options.floppy) this.insertFloppy(options.floppy);
     else this.describeFloppy(null);
 

@@ -28,6 +28,7 @@ import {
 } from '../src/systems/pc/roms.js';
 import { FREEDOS_SPEC, FREEDOS_URL } from '../src/systems/pc/media.js';
 import { KEYB_PACKAGES } from '../src/systems/pc/layouts.js';
+import { CD_PACKAGES } from '../src/systems/pc/cdrom.js';
 import {
   BIOS_SPEC as PC386_BIOS,
   VIDEO_SPEC as PC386_VIDEO,
@@ -300,10 +301,11 @@ if (haveFloppy) {
   console.log(`  ${FREEDOS_URL} \u2014 GPL, and it is the machine's operating system`);
 }
 
-// KEYB e le sue tastiere: sul dischetto di avvio non ci sono, stanno in due
-// pacchetti del repository di FreeDOS 1.3. Servono solo a `npm run make-hdd`,
-// che li mette sul disco fisso \u2014 il disco che viaggia col repository li ha gi\u00e0.
-for (const spec of KEYB_PACKAGES) {
+// KEYB e le sue tastiere, e i due driver del lettore di CD: sul dischetto di
+// avvio non ci sono, stanno nei pacchetti del repository di FreeDOS 1.3.
+// Servono solo a `npm run make-hdd`, che li mette sul disco fisso \u2014 il disco
+// che viaggia col repository li ha gi\u00e0.
+for (const spec of [...KEYB_PACKAGES, ...CD_PACKAGES]) {
   await fetchInto(spec, (bytes) => bytes[0] === 0x50 && bytes[1] === 0x4b);
 }
 

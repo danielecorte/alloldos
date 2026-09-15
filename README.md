@@ -1173,6 +1173,40 @@ c'è, e quando non c'è nessun dischetto dichiara di non avere il lettore: che �
 vero, e che risparmia al firmware cinque secondi passati a interrogare un lettore
 vuoto.
 
+### Il lettore di CD
+
+Sul secondo canale, al primo posto, c'è un **lettore di CD**, anche col cassetto
+vuoto. Un `.iso` trascinato sulla finestra ci finisce dentro — si riconosce dalla
+firma `CD001` al settore 16, non dal nome — e **Togli il CD** lo tira fuori. Non
+serve riaccendere: il lettore c'è sempre, e al primo comando dopo il cambio dice
+al driver che il disco è cambiato, com'era chiudendo il cassetto.
+
+Dal cavo il lettore sembra un disco come gli altri, ma parla un'altra lingua:
+**ATAPI**, cioè comandi SCSI infilati nel protocollo dei dischi. Il comando ATA è
+sempre lo stesso, PACKET, e dietro ci vanno dodici byte che dicono cosa si vuole.
+È così che nel 1994 il lettore di CD è diventato una cosa da quaranta dollari:
+invece di una scheda sua, gli bastava un posto libero sul cavo del disco fisso.
+Il lettore (`pentium/ide.js`) si presenta con la firma **14EBh** e con IDENTIFY
+PACKET DEVICE, e poi risponde ai comandi che i driver usano: TEST UNIT READY,
+REQUEST SENSE, INQUIRY, READ CAPACITY, READ(10) e (12), READ TOC, MODE SENSE,
+START STOP e gli altri. I dati passano dalla porta a sedici bit, a pezzi grandi
+quanto il limite che il driver ha chiesto e ognuno con la sua interruzione.
+Legge dischi di dati da 2048 byte a settore: CD audio no.
+
+Il DOS da solo un CD non lo vede. Servivano due pezzi: il **driver del lettore**,
+caricato dal `CONFIG.SYS`, e **MSCDEX**, che dava al CD una lettera e ne
+traduceva il filesystem. Qui sono quelli liberi di FreeDOS, **UDVD2** e
+**SHSUCDX**, più **HIMEMX** — il driver tiene i dati letti in 128 KB di memoria
+estesa, e senza un gestore della memoria XMS si rifiuta di caricarsi. Stanno
+tutti e tre sul disco fisso in `C:\FDOS\BIN`. Le righe che li caricano invece
+le mette la pagina di questa macchina e del 386 — il 286 il lettore non ce l'ha,
+e HIMEMX vuole un 386 — nello stesso modo in cui si sceglie la tastiera
+(`pc/cdrom.js`). Se nel `CONFIG.SYS` c'è già un gestore della memoria, HIMEMX
+non si aggiunge. Il CD è **D:**.
+
+Il firmware lo vede anche lui, e SeaBIOS prova il CD prima del disco fisso: un CD
+che si avvia parte, uno che non si avvia viene saltato.
+
 ### Dove si è arrivati
 
 `npm test` accende la macchina con SeaBIOS dentro e guarda cosa succede. Il
@@ -1310,7 +1344,9 @@ quanto si è spostato. E lo **schermo che cambia misura**: la canvas segue la VG
 720×400 in modo testo e quello che serve nei modi grafici. Il resto è uguale: i
 dischetti e i dischi fissi si trascinano sulla finestra, i file sciolti e gli zip
 finiscono su C:, e la tastiera si sceglie dalla barra con la stessa riga di KEYB
-nell'AUTOEXEC.BAT.
+nell'AUTOEXEC.BAT. E c'è il **lettore di CD** del Pentium, sullo stesso canale e
+con gli stessi driver: un `.iso` trascinato sulla finestra è D:, e il BIOS di
+Bochs lo vede anche lui (`ata1 master: … ATAPI`).
 
 ### Il 387
 
@@ -1498,6 +1534,7 @@ src/systems/pc/       il PC 286
   keyboard.js         la tastiera XT, con il suo filo di clock
   scancodes.js        da tasto del browser a numero di tasto sulla matrice
   media.js            i dischi: dove trovarli e come riconoscerli
+  cdrom.js            i driver del CD sul disco, e le due righe che li caricano
   roms.js             dove trovare GLaBIOS e la ROM della scheda del disco
   index.js            la sessione: canvas, audio, dischi, tastiera, comandi
 src/systems/zx/       lo ZX Spectrum 48K
@@ -1519,7 +1556,7 @@ src/systems/pentium/  il PC del 1995
   kbc.js              l'8042: tastiera, mouse, cancello A20, reset
   vga.js              la VGA: quattro piani, modo testo e grafica
   fwcfg.js            il canale da cui il firmware chiede com'è la macchina
-  ide.js              i due canali IDE: i registri, l'LBA, e i settori a parole
+  ide.js              i due canali IDE: i registri, l'LBA, i settori a parole, e il CD ATAPI
   roms.js             dove trovare SeaBIOS e la sua ROM video
   fpu.js              il 387: la pila di otto registri e gli ottanta bit
   session.js          la pagina della scheda: canvas, dischi, tastiera, mouse, suono
