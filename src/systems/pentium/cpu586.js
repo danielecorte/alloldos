@@ -110,6 +110,21 @@ for (const opcode of [0x30, 0x31, 0x32, 0xa2, 0xc7]) {
   NEWER_0F[opcode] = 586; // WRMSR, RDTSC, RDMSR, CPUID, CMPXCHG8B
 }
 
+/**
+ * I prefissi, riconosciuti con una tabella invece che con dieci confronti a
+ * ogni istruzione: 1-6 sono i segmenti (più uno), 7 e 8 le due misure, 9 le
+ * ripetizioni, 10 il LOCK.
+ */
+const PREFIX = new Uint8Array(256);
+for (const [byte, index] of [[0x26, ES], [0x2e, CS], [0x36, SS], [0x3e, DS], [0x64, FS], [0x65, GS]]) {
+  PREFIX[byte] = index + 1;
+}
+PREFIX[0x66] = 7;
+PREFIX[0x67] = 8;
+PREFIX[0xf2] = 9;
+PREFIX[0xf3] = 9;
+PREFIX[0xf0] = 10;
+
 /** La parità di un byte, che è l'unico flag che si conta e non si calcola. */
 const PARITY = new Uint8Array(256);
 for (let i = 0; i < 256; i++) {
@@ -145,6 +160,17 @@ export class CPU586 {
    */
   constructor(bus, { model = 586 } = {}) {
     this.bus = bus;
+    /**
+     * La RAM della scheda, se la scheda la presta. Le letture e le scritture che
+     * cadono nella memoria vera — i 640 KB in fondo e tutto quello sopra il
+     * primo mega — la toccano direttamente, senza chiedere alla scheda chi
+     * risponde a quell'indirizzo: è di gran lunga la strada più battuta, e la
+     * risposta la si sa già. Il resto — la finestra video, le ROM, i PAM, il
+     * cancello A20 chiuso — passa dalla scheda come sempre.
+     */
+    this.ram = bus.ram instanceof Uint8Array ? bus.ram : null;
+    this.lowEnd = this.ram ? 0xa0000 : 0;
+    this.ramEnd = this.ram ? Math.min(bus.ramSize ?? this.ram.length, this.ram.length) : 0;
     /**
      * Che processore fa: 386, 486 o 586. Lo stesso motore fa anche i due di
      * prima, spegnendo quello che non avevano — le istruzioni arrivate dopo, CR4,
@@ -224,7 +250,7 @@ export class CPU586 {
     this.gdt = { base: 0, limit: 0xffff };
     this.idt = { base: 0, limit: 0xffff };
     this.ldt = { selector: 0, base: 0, limit: 0 };
-    this.tr = { selector: 0, base: 0, limit: 0, busy: false };
+    this.tr = { selector: 0, base: 0, limit: 0, busy: false, wide: false };
 
     /** Il livello di privilegio attuale, che è quello del codice in esecuzione. */
     this.cpl = 0;
@@ -239,6 +265,10 @@ export class CPU586 {
      */
     this.tsc = 0;
     this.tlb = new Map();
+    /** La pagina del codice tradotta per ultima, e con che diritti. */
+    this.codePage = -1;
+    this.codePhys = 0;
+    this.codeCpl = 0;
     /** Quanti accessi di sistema sono in corso: finché non è zero, niente diritti dell'utente. */
     this.systemAccess = 0;
     this.fpu.reset();
@@ -400,15 +430,29 @@ export class CPU586 {
 
   // ------------------------------------------------------- la memoria fisica
 
+  /** Se `size` byte da `addr` stanno tutti nella RAM che si tocca direttamente. */
+  inRAM(addr, size) {
+    return addr + size <= this.lowEnd || (addr >= 0x100000 && addr + size <= this.ramEnd && this.bus.a20);
+  }
+
   readPhys8(addr) {
-    return this.bus.read8(addr >>> 0) & 0xff;
+    addr >>>= 0;
+    if (this.inRAM(addr, 1)) return this.ram[addr];
+    return this.bus.read8(addr) & 0xff;
   }
 
   writePhys8(addr, value) {
-    this.bus.write8(addr >>> 0, value & 0xff);
+    addr >>>= 0;
+    if (this.inRAM(addr, 1)) this.ram[addr] = value;
+    else this.bus.write8(addr, value & 0xff);
   }
 
   readPhys32(addr) {
+    addr >>>= 0;
+    if (this.inRAM(addr, 4)) {
+      const r = this.ram;
+      return (r[addr] | (r[addr + 1] << 8) | (r[addr + 2] << 16) | (r[addr + 3] << 24)) >>> 0;
+    }
     return (
       (this.readPhys8(addr) |
         (this.readPhys8(addr + 1) << 8) |
@@ -513,6 +557,7 @@ export class CPU586 {
   flushTLB(page = -1) {
     if (page < 0) this.tlb.clear();
     else this.tlb.delete(page >>> 0);
+    this.codePage = -1;
   }
 
   // ---------------------------------------------------- la memoria lineare
@@ -524,13 +569,11 @@ export class CPU586 {
    * tutto il firmware — una chiamata di funzione in meno si sente.
    */
   readLinear8(linear) {
-    if (this.cr0 & CR0_PG) return this.bus.read8(this.translate(linear, false)) & 0xff;
-    return this.bus.read8(linear >>> 0) & 0xff;
+    return this.readPhys8(this.cr0 & CR0_PG ? this.translate(linear, false) : linear);
   }
 
   writeLinear8(linear, value) {
-    if (this.cr0 & CR0_PG) this.bus.write8(this.translate(linear, true), value & 0xff);
-    else this.bus.write8(linear >>> 0, value & 0xff);
+    this.writePhys8(this.cr0 & CR0_PG ? this.translate(linear, true) : linear, value & 0xff);
   }
 
   /**
@@ -540,12 +583,38 @@ export class CPU586 {
    * esserci, e allora il page fault deve arrivare nel mezzo.
    */
   readLinear(size, linear) {
+    linear >>>= 0;
+    // Dentro una pagina sola, e tutto in RAM: un indirizzo da tradurre e i
+    // byte presi insieme. Il giro lungo resta per chi sta a cavallo di due
+    // pagine, dove il page fault può arrivare a metà.
+    if (size > 1 && (linear & 0xfff) <= 0x1000 - size) {
+      const phys = this.cr0 & CR0_PG ? this.translate(linear, false) : linear;
+      if (this.inRAM(phys, size)) {
+        const r = this.ram;
+        if (size === 2) return r[phys] | (r[phys + 1] << 8);
+        return (r[phys] | (r[phys + 1] << 8) | (r[phys + 2] << 16) | (r[phys + 3] << 24)) >>> 0;
+      }
+    }
     let value = 0;
     for (let i = 0; i < size; i++) value |= this.readLinear8(linear + i) << (i * 8);
     return trim(size, value);
   }
 
   writeLinear(size, linear, value) {
+    linear >>>= 0;
+    if (size > 1 && (linear & 0xfff) <= 0x1000 - size) {
+      const phys = this.cr0 & CR0_PG ? this.translate(linear, true) : linear;
+      if (this.inRAM(phys, size)) {
+        const r = this.ram;
+        r[phys] = value;
+        r[phys + 1] = value >>> 8;
+        if (size === 4) {
+          r[phys + 2] = value >>> 16;
+          r[phys + 3] = value >>> 24;
+        }
+        return;
+      }
+    }
     for (let i = 0; i < size; i++) this.writeLinear8(linear + i, (value >>> (i * 8)) & 0xff);
   }
 
@@ -612,9 +681,21 @@ export class CPU586 {
   fetch8() {
     const code = this.seg[CS];
     const at = (code.base + this.eip) >>> 0;
-    const byte = this.cr0 & CR0_PG ? this.bus.read8(this.translate(at, false)) : this.bus.read8(at);
+    let phys = at;
+    if (this.cr0 & CR0_PG) {
+      // La pagina del codice che si sta eseguendo, tradotta una volta: le
+      // istruzioni vengono una dietro l'altra, e quasi sempre dalla stessa.
+      if (at >>> 12 === this.codePage && this.cpl === this.codeCpl) phys = this.codePhys | (at & 0xfff);
+      else {
+        phys = this.translate(at, false);
+        this.codePage = at >>> 12;
+        this.codePhys = (phys & 0xfffff000) >>> 0;
+        this.codeCpl = this.cpl;
+      }
+    }
     this.eip = code.big ? (this.eip + 1) >>> 0 : (this.eip + 1) & 0xffff;
-    return byte & 0xff;
+    if (phys < this.lowEnd || (phys >= 0x100000 && phys < this.ramEnd && this.bus.a20)) return this.ram[phys];
+    return this.bus.read8(phys) & 0xff;
   }
 
   fetch16() {
@@ -1705,25 +1786,21 @@ export class CPU586 {
     this.resetPrefixes();
     this.startEIP = this.eip;
     this.startCS = this.s[CS];
-    this.startESP = this.get32(ESP);
+    this.startESP = this.r[ESP];
     const delay = this.stiDelay;
 
     let cost = 1;
     try {
       let opcode = this.fetch8();
-      for (;;) {
-        if (opcode === 0x26) this.segmentOverride = ES;
-        else if (opcode === 0x2e) this.segmentOverride = CS;
-        else if (opcode === 0x36) this.segmentOverride = SS;
-        else if (opcode === 0x3e) this.segmentOverride = DS;
-        else if (opcode === 0x64) this.segmentOverride = FS;
-        else if (opcode === 0x65) this.segmentOverride = GS;
-        else if (opcode === 0x66) this.opsizePrefix = true;
-        else if (opcode === 0x67) this.addrsizePrefix = true;
-        else if (opcode === 0xf2 || opcode === 0xf3) this.repeat = opcode;
-        else if (opcode === 0xf0) this.lock = true;
-        else break;
+      let kind = PREFIX[opcode];
+      while (kind !== 0) {
+        if (kind <= 6) this.segmentOverride = kind - 1;
+        else if (kind === 7) this.opsizePrefix = true;
+        else if (kind === 8) this.addrsizePrefix = true;
+        else if (kind === 9) this.repeat = opcode;
+        else this.lock = true;
         opcode = this.fetch8();
+        kind = PREFIX[opcode];
       }
       this.instructions++;
       cost = this.execute(opcode) || 1;
@@ -3338,5 +3415,11 @@ function descriptorCache() {
     /** Di chi è, e se c'è. */
     dpl: 0,
     present: true,
+    /**
+     * Se è codice conforme. C'è da subito anche se lo si usa solo in modo
+     * protetto: un oggetto a cui si aggiunge una proprietà cambia forma, e il
+     * codice che V8 aveva compilato per la forma di prima si butta.
+     */
+    conforming: false,
   };
 }
