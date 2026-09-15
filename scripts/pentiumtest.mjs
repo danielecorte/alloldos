@@ -447,6 +447,45 @@ const read32 = (bus, at) =>
   (bus.memory[at] | (bus.memory[at + 1] << 8) | (bus.memory[at + 2] << 16) | (bus.memory[at + 3] << 24)) >>> 0;
 const write32 = (bus, at, value) => bus.memory.set(Uint8Array.from(dw(value)), at);
 
+section('Lo stesso motore, da 386');
+
+{
+  // Il 386 si riconosce da quello che non ha. Il bit AC di EFLAGS è del 486:
+  // un programma prova ad accenderlo, e se ricade sa di avere davanti un 386 —
+  // è il test che fanno tutti, Windows compreso. CPUID, poi, sul 386 non è
+  // un'istruzione: è un opcode non valido, e parte l'eccezione 6.
+  const flags = [
+    0x66, 0x9c, // pushfd
+    0x66, 0x58, // pop eax
+    0x66, 0x0d, ...dw(0x40000), // or eax, 40000h — il bit AC
+    0x66, 0x50, // push eax
+    0x66, 0x9d, // popfd
+    0x66, 0x9c, // pushfd
+    0x66, 0x5b, // pop ebx
+    HLT,
+  ];
+  const acOn = (model) => {
+    const { cpu } = realMode(flags);
+    cpu.model = model;
+    run(cpu);
+    return (cpu.get32(EBX) & 0x40000) !== 0;
+  };
+  check('su un 386 il bit AC ricade', !acOn(386));
+  check('su un 486 resta acceso', acOn(486));
+
+  const cpuid = (model) => {
+    const { cpu, bus } = realMode([0x66, 0x31, 0xc0, 0x0f, 0xa2, HLT]); // xor eax, eax; cpuid
+    cpu.model = model;
+    // Il gestore dell'opcode non valido, a 1000:0100: si segna e si ferma.
+    bus.memory.set(Uint8Array.from([...dh(0x100), ...dh(0x1000)]), 6 * 4);
+    bus.memory.set(Uint8Array.from([0xbb, ...dh(0x66), HLT]), 0x10100);
+    run(cpu);
+    return cpu.get16(EBX);
+  };
+  check('su un 386 CPUID è un opcode non valido', cpuid(386) === 0x66, hex(cpuid(386), 4));
+  check('su un Pentium risponde, e dice chi è', cpuid(586) === 0x6547, hex(cpuid(586), 4));
+}
+
 section('Il passaggio al modo protetto');
 
 {
@@ -688,6 +727,116 @@ section('Le interruzioni in modo protetto');
 }
 
 {
+  // Il cambio di anello. Il sistema operativo carica un TSS con lo stack
+  // dell'anello 0, e con un IRET scende all'anello 3 dando al programma il
+  // diritto di usare le porte. Il programma fa un INT: il gestore sta
+  // all'anello 0, e non può usare lo stack del programma — il processore
+  // prende quello scritto nel TSS e ci impila sopra, prima di tutto, lo stack
+  // di prima. Poi IRET torna all'anello 3, su quello stack. È il giro che fa
+  // Windows 3.1 ogni volta che un programma chiede qualcosa al sistema.
+  const TSS_AT = 0x12000;
+  const RING3_AT = 0x11800;
+  const tss = [0xff, 0x00, ...dh(TSS_AT & 0xffff), TSS_AT >>> 16, 0x89, 0x00, 0x00];
+  const { cpu, bus } = crossOver(
+    [
+      0x66, 0xb8, ...dh(0x28), // mov ax, 28h
+      0x0f, 0x00, 0xd8, // ltr ax
+      0x6a, 0x23, // push 23h — SS dell'anello 3
+      0x68, ...dw(0x5000), // push 5000h — il suo ESP
+      0x68, ...dw(0x3002), // push 3002h — EFLAGS, con IOPL 3
+      0x6a, 0x1b, // push 1Bh — CS dell'anello 3
+      0x68, ...dw(RING3_AT), // push l'indirizzo
+      0xcf, // iret: si scende
+    ],
+    {
+      extra: [descriptor({ code: true, dpl: 3 }), descriptor({ dpl: 3 }), tss],
+      gates: [[0x40, gate(HANDLER_AT, 0x08, 0xee)], [0x41, gate(HANDLER_AT + 0x100, 0x08, 0xee)]],
+      handler: [
+        0x89, 0xe2, // mov edx, esp: dove si è entrati
+        0x8c, 0xd3, // mov ebx, ss: con che stack
+        0xcf, // iret
+      ],
+    },
+  );
+  bus.memory.set(Uint8Array.from(dw(0x6000)), TSS_AT + 4); // ESP0
+  bus.memory.set(Uint8Array.from(dh(0x10)), TSS_AT + 8); // SS0
+  bus.memory[HANDLER_AT + 0x100] = HLT;
+  bus.memory.set(Uint8Array.from([
+    0x8c, 0xde, // mov esi, ds: il segmento dell'anello 0, che deve essere sparito
+    0x9c, // pushfd
+    0x5d, // pop ebp
+    0xcd, 0x40, // int 40h
+    0xbf, ...dw(0x77), // mov edi, 77h: si torna qui
+    0xcd, 0x41, // int 41h: e questo gestore si ferma
+  ]), RING3_AT);
+  run(cpu);
+  check('il gestore entra sullo stack del TSS, con sopra lo stack di prima',
+    cpu.get32(EDX) === 0x6000 - 20 && cpu.get32(EBX) === 0x10, `${hex(cpu.get32(EDX))} ${hex(cpu.get32(EBX), 4)}`);
+  check('e sotto, dal primo all\'ultimo: EIP, CS, EFLAGS, ESP e SS dell\'anello 3',
+    read32(bus, 0x5fec + 4) === 0x1b && read32(bus, 0x5fec + 12) === 0x5000 && read32(bus, 0x5fec + 16) === 0x23);
+  check('IRET torna all\'anello 3 e il programma va avanti', cpu.get32(EDI) === 0x77);
+  check('scendendo, il segmento di dati dell\'anello 0 si è svuotato', cpu.get32(ESI) === 0, hex(cpu.get32(ESI), 4));
+  check('e l\'IOPL che il sistema ha dato al programma c\'è', (cpu.get32(EBP) & 0x3000) === 0x3000, hex(cpu.get32(EBP)));
+  check('LTR ha segnato il TSS occupato', (bus.memory[GDT_AT + 0x28 + 5] & 0x0f) === 0x0b);
+  check('e alla fine si è di nuovo all\'anello 0', cpu.cpl === 0 && cpu.halted);
+}
+
+{
+  // La porta di chiamata: un programma all'anello 3 chiama il sistema con un
+  // CALL lontano, e il selettore non è un segmento ma una porta. La porta dice
+  // dove andare e quanti parametri portarsi dietro; lo stack cambia, come per
+  // un'interruzione, e il parametro viene ricopiato sullo stack nuovo, perché il
+  // sistema non deve fidarsi di quello del programma. RETF 4 torna indietro e
+  // lo toglie da tutti e due. È così che Windows 3.1 chiama il suo extender.
+  const TSS_AT = 0x12000;
+  const RING3_AT = 0x11800;
+  const tss = [0xff, 0x00, ...dh(TSS_AT & 0xffff), TSS_AT >>> 16, 0x89, 0x00, 0x00];
+  const callGate = [...dh(HANDLER_AT & 0xffff), ...dh(0x08), 1, 0xec, ...dh(HANDLER_AT >>> 16)];
+  const { cpu, bus } = crossOver(
+    [
+      0x66, 0xb8, ...dh(0x28), // mov ax, 28h
+      0x0f, 0x00, 0xd8, // ltr ax
+      0x6a, 0x23, // push 23h
+      0x68, ...dw(0x5000), // push 5000h
+      0x68, ...dw(0x0002), // push 2
+      0x6a, 0x1b, // push 1Bh
+      0x68, ...dw(RING3_AT),
+      0xcf, // iret: all'anello 3
+    ],
+    {
+      extra: [descriptor({ code: true, dpl: 3 }), descriptor({ dpl: 3 }), tss, callGate],
+      gates: [[0x41, gate(HANDLER_AT + 0x100, 0x08, 0xee)]],
+      handler: [
+        0x8b, 0x44, 0x24, 0x08, // mov eax, [esp+8]: il parametro
+        0x8b, 0x4c, 0x24, 0x0c, // mov ecx, [esp+12]: l'ESP dell'anello 3
+        0x8b, 0x6c, 0x24, 0x10, // mov ebp, [esp+16]: e il suo SS
+        0x89, 0xe2, // mov edx, esp
+        0x8c, 0xd3, // mov ebx, ss
+        0xca, ...dh(4), // retf 4
+      ],
+    },
+  );
+  bus.memory.set(Uint8Array.from(dw(0x6000)), TSS_AT + 4);
+  bus.memory.set(Uint8Array.from(dh(0x10)), TSS_AT + 8);
+  bus.memory[HANDLER_AT + 0x100] = HLT;
+  bus.memory.set(Uint8Array.from([
+    0x89, 0xe6, // mov esi, esp: lo stack prima
+    0x68, ...dw(0xabcd1234), // push il parametro
+    0x9a, ...dw(0), ...dh(0x33), // call far 33h:0 — la porta, con RPL 3
+    0x89, 0xe7, // mov edi, esp: lo stack dopo
+    0xcd, 0x41, // int 41h: fine
+  ]), RING3_AT);
+  run(cpu);
+  check('la porta porta all\'anello 0 con il parametro ricopiato', cpu.get32(EAX) === 0xabcd1234, hex(cpu.get32(EAX)));
+  check('sullo stack del TSS, sotto lo stack di prima e il parametro',
+    cpu.get32(EDX) === 0x6000 - 20 && cpu.get32(EBX) === 0x10 &&
+      cpu.get32(ECX) === cpu.get32(ESI) - 4 && cpu.get32(EBP) === 0x23,
+    `${hex(cpu.get32(EDX))} ${hex(cpu.get32(EBX), 4)} ${hex(cpu.get32(ECX))} ${hex(cpu.get32(EBP), 4)}`);
+  check('e RETF 4 torna all\'anello 3 con lo stack com\'era prima del parametro',
+    cpu.get32(EDI) === cpu.get32(ESI), `${hex(cpu.get32(EDI))} contro ${hex(cpu.get32(ESI))}`);
+}
+
+{
   // REP MOVSD: la copia di memoria che ogni sistema operativo fa un milione di
   // volte. A trentadue bit sposta quattro byte per giro, e si deve poter
   // interrompere a metà — il processore che non torna sull'istruzione tiene fuori
@@ -725,7 +874,12 @@ import { VGA } from '../src/systems/pentium/vga.js';
 import { BIOS_SPEC, VIDEO_SPEC, isSystemBIOS, isOptionROM } from '../src/systems/pentium/roms.js';
 import { IDE, IDEChannel, PRIMARY, SECONDARY } from '../src/systems/pentium/ide.js';
 import { HardDisk } from '../src/systems/pc/ata.js';
-import { bootPentium, Session, have, ROMS } from './pentiumsession.mjs';
+import { bootPentium, installedDisk, Session, have, ROMS } from './pentiumsession.mjs';
+import { setLayout } from '../src/systems/pc/layouts.js';
+import { existsSync as fileExists } from 'node:fs';
+import { build386 } from '../src/systems/pc386/index.js';
+import { BIOS_SPEC as PC386_BIOS, VIDEO_SPEC as PC386_VIDEO } from '../src/systems/pc386/roms.js';
+import { SCANCODES, scanBytes } from '../src/systems/pc/scancodes.js';
 
 const romPath = (spec) => join(ROMS, spec.file);
 
@@ -1177,8 +1331,22 @@ section('Il lettore di dischetti, e il byte che lo descrive');
     pc.insertFloppy(new Uint8Array(737280)) && pc.cmos.bytes[0x10] === 0x30);
   check('e il byte dell\'equipaggiamento conta un lettore e uno schermo VGA',
     (pc.cmos.bytes[0x14] & 0x01) !== 0 && (pc.cmos.bytes[0x14] & 0x30) === 0x00);
-  check('e la porta divisa in due adesso dice che c\'è qualcosa',
+  // Il bit 7 è un filo che si alza quando lo sportello si apre e si abbassa
+  // solo quando la testina fa un passo con un dischetto dentro: dice «qualcuno
+  // ha messo le mani nel lettore», non «c'è qualcosa». Il caso che conta è
+  // l'ultimo, un dischetto cambiato con un altro senza passare dal vuoto: è
+  // quello che fa chi installa da sei dischetti, e se il filo restasse basso il
+  // DOS continuerebbe a leggere la FAT del primo e a chiedere il secondo.
+  check('appena inserito il filo del cambio disco è alzato',
+    (pc.inb(0x3f7) & 0x80) !== 0);
+  pc.outb(0x3f2, 0x1c); // motore di A, DMA, e il chip fuori dal reset
+  pc.outb(0x3f5, 0x07); // recalibrate
+  pc.outb(0x3f5, 0x00); // del lettore 0
+  check('e una ricalibrazione, che muove la testina, lo abbassa',
     (pc.inb(0x3f7) & 0x80) === 0);
+  pc.insertFloppy(new Uint8Array(737280).fill(1));
+  check('cambiare dischetto senza passare dal vuoto lo rialza',
+    (pc.inb(0x3f7) & 0x80) !== 0);
 }
 
 if (!have.bios) {
@@ -1299,6 +1467,60 @@ DOS sul Pentium è stata saltata. \`npm run fetch-roms\` prende le prime due.`);
   check('il file è ancora dov\'era', /^ok$/m.test(dos.screen()), dos.lastLine());
 }
 
+if (!have.bios || !have.video || !have.disk) {
+  console.log(`
+Manca qualcosa fra il BIOS, la sua ROM video e il disco: la prova della tastiera
+italiana sul Pentium è stata saltata.`);
+} else {
+  section('Avvio vero: la tastiera italiana, sullo stesso disco');
+
+  // La tastiera si sceglie sul disco, e il disco è lo stesso del 286: la stessa
+  // riga nell'AUTOEXEC, lo stesso KEYB. Qui però il BIOS è un BIOS AT, e ha già
+  // tutto quello che a KEYB serve — KB16 lo chiede, se ne accorge, e se ne va.
+  const disk = installedDisk();
+  setLayout(disk.data, 'it');
+  const pc = bootPentium({ disk });
+  const dos = new Session(pc, (text) => console.log(text));
+  check('KEYB parte dall\'AUTOEXEC con la tastiera italiana',
+    dos.waitFor(/KEYBOARD\.SYS:IT \[437\]/, 600), dos.lastLine());
+  check('e la macchina arriva al prompt', dos.waitFor(/C:\\>/, 400), dos.lastLine());
+  dos.run(30);
+
+  const segment16 = pc.ram[0x5a] | (pc.ram[0x5b] << 8);
+  check('KB16 non si è installato: SeaBIOS la funzione 5 ce l\'ha', segment16 === 0xf000, hex(segment16, 4));
+
+  // I tasti per posizione, con i byte che la tastiera manda al controllore:
+  // AltGr è l'Alt con il prefisso E0, e qui a leggerlo è il BIOS.
+  const send = (code, released) => {
+    for (const byte of scanBytes(code, released)) pc.kbc.fromKeyboard(byte);
+    dos.run(2);
+  };
+  for (const key of [
+    'BracketLeft', 'Semicolon', 'Quote', 'Backslash', 'ShiftLeft+BracketLeft',
+    'Backquote', 'Minus', 'IntlBackslash',
+    'AltRight+BracketLeft', 'AltRight+Semicolon', 'AltRight+Quote',
+  ]) {
+    const [modifier, name] = key.includes('+') ? key.split('+') : [null, key];
+    if (modifier) send(SCANCODES[modifier], false);
+    send(SCANCODES[name], false);
+    send(SCANCODES[name], true);
+    if (modifier) send(SCANCODES[modifier], true);
+  }
+  dos.run(10);
+
+  const video = pc.video;
+  const row = dos.screen().split('\n').length - 1;
+  const cells = [];
+  for (let column = 0; column < 80; column++) {
+    cells.push(video.memory[(video.startAddress + row * video.rowUnits + column) & 0xffff]);
+  }
+  const typed = cells.slice(cells.indexOf(0x3e) + 2);
+  const shown = (from, to) => typed.slice(from, to).map((byte) => hex(byte, 2)).join(' ');
+  check('le lettere accentate escono dove sono disegnate', shown(0, 5) === '$8a $95 $85 $97 $82', shown(0, 5));
+  check('e così la barra rovescia, l\'apostrofo e il minore', shown(5, 8) === '$5c $27 $3c', shown(5, 8));
+  check('e con AltGr le quadre, la chiocciola e il cancelletto', shown(8, 11) === '$5b $40 $23', shown(8, 11));
+}
+
 if (!have.bios || !have.video || !have.floppy) {
   console.log(`
 Nessun dischetto in roms/pc: la prova di avvio dal lettore è stata saltata.`);
@@ -1334,6 +1556,35 @@ Nessun dischetto in roms/pc: la prova di avvio dal lettore è stata saltata.`);
   // due minuti di macchina emulata a caricarsi per chiedere se vogliamo davvero
   // installare. Non aggiunge niente a quello che si è già visto: gli stessi
   // settori, dallo stesso lettore. Le prove si fermano qui.
+}
+
+const PC386_ROMS = join(ROMS, '..', 'pc386');
+if (!fileExists(join(PC386_ROMS, PC386_BIOS.file)) || !fileExists(join(PC386_ROMS, PC386_VIDEO.file)) || !have.disk) {
+  console.log(`
+Nessun BIOS di Bochs in roms/pc386: la prova del 386 è stata saltata.
+\`npm run fetch-roms\` lo prende dal repository di Bochs.`);
+} else {
+  section('Il 386, con il BIOS di Bochs');
+
+  // La stessa scheda, un processore di sei anni prima e un altro firmware:
+  // SeaBIOS su un 386 non parte, perché usa BSWAP senza chiedere. Il BIOS di
+  // Bochs sì, ed è la prova che la variante 386 del processore regge un BIOS
+  // intero e un sistema operativo — senza un solo opcode che il 386 non avesse.
+  const pc = build386(new Uint8Array(readFileSync(join(PC386_ROMS, PC386_BIOS.file))), {
+    video: new Uint8Array(readFileSync(join(PC386_ROMS, PC386_VIDEO.file))),
+    disk: installedDisk(),
+  });
+  let invalid = 0;
+  const deliver = pc.cpu.interrupt.bind(pc.cpu);
+  pc.cpu.interrupt = (vector, options) => {
+    if (vector === 6) invalid++;
+    return deliver(vector, options);
+  };
+  const dos = new Session(pc, (text) => console.log(text));
+  check('il BIOS di Bochs si presenta e trova il disco IDE', dos.waitFor(/ata0 master: .*20 MBytes/, 300), dos.lastLine());
+  check('e FreeDOS arriva al prompt', dos.waitFor(/C:\\>/, 600), dos.lastLine());
+  check('senza una sola istruzione che il 386 non avesse', invalid === 0, `${invalid} opcode non validi`);
+  check('su un processore che dice di essere un 386', pc.cpu.model === 386 && pc.clock === 33000000);
 }
 
 section('Quanto va');

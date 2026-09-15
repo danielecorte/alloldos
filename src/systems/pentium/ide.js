@@ -182,9 +182,16 @@ export class IDEChannel {
     value &= 0xff;
     if (port === this.ports.control || port === this.ports.control + 1) {
       // Il bit 2 è il reset di tutto il canale, e lo si tira su e giù a mano.
+      // Finché il bit resta su i dischi sono in reset, e lo dicono con BSY: un
+      // driver che segue la norma tira su il bit, aspetta di vedere BSY, e solo
+      // allora lo rimette giù. E il registro va ricordato col bit acceso, o il
+      // fronte di discesa — che è quando i dischi si ripresentano — non si vede.
       const wasReset = (this.control & 0x04) !== 0;
+      if (!wasReset && value & 0x04) {
+        this.reset();
+        this.status = ST_BUSY;
+      }
       this.control = value;
-      if (!wasReset && value & 0x04) this.reset();
       if (wasReset && !(value & 0x04)) this.signature();
       return;
     }
@@ -427,6 +434,12 @@ export class IDEChannel {
     const g = drive.disk.geometry ?? GEOMETRY;
     const megabytes = Math.round((drive.sectorCount * SECTOR) / 1024 / 1024);
     words[0] = 0x0040; // disco fisso, non rimovibile
+    // Le due parole che la norma ha poi dichiarato superate e che i dischi
+    // dell'epoca riempivano comunque: i byte di una traccia e quelli di un
+    // settore, prima della formattazione. Il BIOS di Bochs ci prende la misura
+    // del blocco da leggere, e con uno zero lì legge zero parole.
+    words[4] = (SECTOR * (g.sectors ?? 17)) & 0xffff;
+    words[5] = SECTOR;
     words[1] = Math.min(g.cylinders, 16383);
     words[3] = g.heads;
     words[6] = g.sectors;

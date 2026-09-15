@@ -61,8 +61,41 @@ export const CARD_SPEC = {
   source: XTIDE_SOURCE_URL,
 };
 
-/** Dove la scheda si affaccia: la prima finestra libera dopo le schede video. */
+/**
+ * Dove la scheda si affaccia: la prima finestra libera dopo le schede video,
+ * cioè subito dopo i 32 KB che una VGA occupa a C000.
+ */
 export const CARD_ROM_BASE = 0xc8000;
+
+// ---------------------------------------------------- la ROM della scheda video
+//
+// Una VGA si porta dietro il suo BIOS, come la scheda del disco: il BIOS di
+// sistema di un XT conosce la CGA e la MDA, e per tutto quello che è venuto
+// dopo lascia fare alla scheda. Con gli interruttori del video a 00 GLaBIOS
+// cerca una ROM fra C000 e C800, la esegue, e da lì in poi l'INT 10h è suo.
+//
+// La ROM libera è il VGABIOS LGPL, nato insieme al BIOS di Bochs. Quella che il
+// progetto pubblica già compilata però è per il 386 — la stessa che accende lo
+// schermo del 386 qui accanto — e su un 286 si ferma al primo salto: questa
+// macchina ha la sua, compilata dallo stesso sorgente per il 286. È l'unico
+// firmware che viaggia col repository, perché non c'è un altro posto da cui
+// prenderla; `npm run build-vgabios` la rifà identica.
+
+const VIDEO_STORAGE_KEY = 'alloldos.rom.pc.vgabios';
+
+export const VGABIOS_URL = 'https://www.nongnu.org/vgabios/';
+
+/** Il sorgente da cui si compila, sempre lo stesso. */
+export const VGABIOS_RELEASE = '0.8a';
+export const VGABIOS_SOURCE_URL = `https://download.savannah.gnu.org/releases/vgabios/vgabios-${VGABIOS_RELEASE}.tgz`;
+
+export const VIDEO_SPEC = {
+  file: 'vgabios.bin',
+  label: 'VGABIOS LGPL',
+};
+
+/** Dove la scheda video si affaccia: dove ogni BIOS la va a cercare. */
+export const VIDEO_ROM_BASE = 0xc0000;
 
 export class MissingBIOSError extends Error {
   constructor() {
@@ -132,21 +165,67 @@ function readStoredROM(key = STORAGE_KEY) {
   }
 }
 
+/** Un pezzo di testo dentro un'immagine, per riconoscerla da come si firma. */
+function contains(bytes, text) {
+  const wanted = Array.from(text, (char) => char.charCodeAt(0));
+  outer: for (let i = 0; i + wanted.length <= bytes.length; i++) {
+    for (let j = 0; j < wanted.length; j++) if (bytes[i + j] !== wanted[j]) continue outer;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Le ROM di scheda sono due, e si presentano allo stesso modo: 55h AAh e la
+ * misura. Si distinguono da come si firmano — ogni BIOS video scrive da qualche
+ * parte che è una VGA, perché è la prima cosa che mostra all'accensione.
+ */
+export function isVideoROM(bytes) {
+  return isOptionROM(bytes) && contains(bytes, 'VGA');
+}
+
+/**
+ * Il VGABIOS LGPL come lo pubblica il progetto, compilato per il 386: si
+ * presenta come una ROM video qualsiasi, ma sul 286 non arriva al primo
+ * carattere. Quello compilato qui si firma con "-286" dopo la versione.
+ */
+export function isVideoROMFor386(bytes) {
+  return isVideoROM(bytes) && contains(bytes, 'Bochs VGABios') && !contains(bytes, '-286');
+}
+
 /**
  * Riconosce un file lasciato cadere sulla finestra. Una ROM di BIOS si
  * riconosce da dove salta all'accensione: gli ultimi sedici byte sono il primo
  * codice che il processore esegue, e cominciano sempre con un salto lontano.
+ *
+ * @returns {false|'bios'|'card'|'video'|'video386'} — l'ultimo non si salva:
+ *   è una ROM video che questo processore non sa eseguire
  */
 export function acceptROMFile(bytes) {
-  const card = isOptionROM(bytes);
-  if (!card) {
-    if (bytes.length !== BIOS_SPEC.size) return false;
-    if (bytes[bytes.length - 16] !== 0xea) return false;
-  }
+  let kind;
+  if (isVideoROMFor386(bytes)) return 'video386';
+  if (isVideoROM(bytes)) kind = 'video';
+  else if (isOptionROM(bytes)) kind = 'card';
+  else if (bytes.length === BIOS_SPEC.size && bytes[bytes.length - 16] === 0xea) kind = 'bios';
+  else return false;
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  localStorage.setItem(card ? CARD_STORAGE_KEY : STORAGE_KEY, btoa(binary));
-  return card ? 'card' : 'bios';
+  const key = { bios: STORAGE_KEY, card: CARD_STORAGE_KEY, video: VIDEO_STORAGE_KEY }[kind];
+  localStorage.setItem(key, btoa(binary));
+  return kind;
+}
+
+/**
+ * La ROM della scheda video, se c'è. Senza, la macchina monta la CGA e se la
+ * cava con il BIOS di sistema, com'era un XT prima del 1987.
+ *
+ * @returns {Promise<?Uint8Array>}
+ */
+export async function loadVideoROM() {
+  const fetched = await fetchROM(VIDEO_SPEC.file);
+  const usable = (bytes) => bytes && isVideoROM(bytes) && !isVideoROMFor386(bytes);
+  const bytes = (usable(fetched) ? fetched : null) ?? readStoredROM(VIDEO_STORAGE_KEY);
+  return usable(bytes) ? bytes : null;
 }
 
 /**

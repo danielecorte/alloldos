@@ -25,6 +25,13 @@ import {
   BIOS_SPEC as SEABIOS_SPEC,
   VIDEO_SPEC as SEAVGABIOS_SPEC,
 } from '../systems/pentium/roms.js';
+import {
+  BOCHS_URL,
+  VGABIOS_URL,
+  BOCHS_RELEASE_URL,
+  BIOS_SPEC as BOCHS_SPEC,
+  VIDEO_SPEC as VGABIOS_SPEC,
+} from '../systems/pc386/roms.js';
 
 const SOURCE_URL = 'https://github.com/danielecorte/alloldos';
 
@@ -58,6 +65,7 @@ class AboutPage {
       ${this.commodore64()}
       ${this.amiga500()}
       ${this.pc286()}
+      ${this.pc386()}
       ${this.pentium()}
       ${this.spectrum()}
 
@@ -101,7 +109,7 @@ class AboutPage {
       <p class="about__note">Le ROM delle macchine emulate non sono incluse in
       questo progetto e non sono coperte da questa licenza: quelle del C64 e
       dell'Amiga restano di Commodore/Cloanto, che ne è la proprietaria, e
-      quelle del PC sono software libero di chi le ha scritte.</p>
+      quelle dei PC sono software libero di chi le ha scritte.</p>
 
       <h3 class="about__heading">Sorgenti</h3>
       <p>Il codice è pubblico:<br>
@@ -304,6 +312,18 @@ class AboutPage {
       infilare un altro: un'immagine di disco si trascina sulla finestra come
       un dischetto, di qualunque misura sia, e quello che la macchina ci scrive
       sopra si riporta via col bottone <i>Salva il disco fisso</i>.</p>
+      <p>Nelle fessure ci sono una <b>VGA</b> e una <b>Sound Blaster 2.0</b>,
+      che nel 1988 si infilavano in un XT come in qualunque altra cosa: erano
+      schede ISA a otto bit. La VGA è la stessa del Pentium, con il suo BIOS; la
+      Sound Blaster porta il chip FM della AdLib e il DSP che suona i campioni
+      dal DMA, a 220h, IRQ 7, DMA 1 — come dice la riga <code>SET BLASTER</code>
+      dell'<code>AUTOEXEC.BAT</code>.</p>
+      <p>La <b>tastiera</b> si sceglie dalla barra, e la scelta finisce dove
+      finiva allora: una riga di <code>KEYB</code>, quello di FreeDOS,
+      nell'<code>AUTOEXEC.BAT</code>. Accanto a KEYB c'è <code>KB16</code>, un
+      programmino residente di duecento byte che dà al BIOS XT i due servizi da
+      AT che KEYB si aspetta: senza, le lettere accentate sparirebbero e AltGr
+      non darebbe niente.</p>
 
       <h3 class="about__heading">Dove trovare le ROM</h3>
       <p>Qui, per una volta, si scarica tutto — e sono tre pezzi distinti,
@@ -316,6 +336,12 @@ class AboutPage {
         <a class="about__link" href="${XTIDE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>
         (GPLv2): un BIOS XT non sa cosa sia un disco fisso, e chi lo sa è la
         scheda, che se lo porta dietro in dodici KB a C800;</li>
+        <li>il <b>BIOS della VGA</b>, il
+        <a class="about__link" href="${VGABIOS_URL}" target="_blank" rel="noopener noreferrer">VGABIOS LGPL</a>:
+        quello pubblicato è compilato per il 386 e sul 286 si ferma al primo
+        salto, quindi questo è compilato qui dallo stesso sorgente per il 286,
+        e viaggia col repository — <code>npm run build-vgabios</code> lo rifà
+        identico. Senza, la macchina monta una CGA;</li>
         <li>un <b>dischetto avviabile</b>, se lo si vuole: quello di
         <a class="about__link" href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS 1.3</a>
         da 720 KB, che è l'unica misura che un controllore XT sappia leggere. Il
@@ -370,6 +396,16 @@ class AboutPage {
         dispari in due metà separate di memoria.</li>
         <li>L'<b>altoparlante</b>: un bit e un contatore, che è tutto il suono
         che il PC ha avuto per dieci anni.</li>
+        <li>La <b>VGA</b>, con gli interruttori del video a 00 perché GLaBIOS
+        lasci fare al BIOS della scheda — il testo in 720 per 400 con i
+        caratteri da nove punti, e il modo 13h dei giochi.</li>
+        <li>L'<b>OPL2</b>, lo Yamaha YM3812: nove voci da due operatori in
+        modulazione di frequenza, le quattro forme d'onda, gli inviluppi, la
+        batteria, e i due contatori con cui ogni gioco scopriva la AdLib. Le
+        ampiezze in logaritmo, con le tabelle del chip.</li>
+        <li>Il <b>DSP</b> della Sound Blaster: il reset con AAh, la versione
+        2.01, i blocchi portati dal canale 1 del DMA, uno per volta o in fila,
+        con la IRQ 7 alla fine di ognuno.</li>
       </ul>
 
       <h3 class="about__heading">La cosa che solo un BIOS vero ha trovato</h3>
@@ -389,12 +425,91 @@ class AboutPage {
 
       <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li>La <b>VGA</b> con il suo BIOS di scheda: per ora la scheda video è
-        una CGA, che è quello che il BIOS si aspetta dagli interruttori.</li>
+        <li>L'<b>ADPCM</b> della Sound Blaster, che per ora si consuma alla
+        velocità giusta ma suona silenzio, e la MIDI.</li>
+        <li>Sulla VGA, i <b>modi grafici della CGA</b>, con le loro righe
+        alternate.</li>
         <li>Il suono <b>campionato</b> dall'altoparlante — quello che pilota il
         bit a mano invece di lasciar fare al contatore.</li>
         <li>Il <b>modo protetto</b>, che il DOS non usa: Windows 3 e i DOS
         extender sono un altro progetto.</li>
+      </ul>
+    `;
+  }
+
+  // ------------------------------------------------------------------ 386
+
+  pc386() {
+    return `
+      <h2 class="about__section">PC 386</h2>
+      <p>La macchina del 1990: un <b>386DX a 33 MHz</b> con otto mega, una VGA
+      e un mouse PS/2 — il processore su cui è nato Windows 3.1, e il primo di
+      questa collezione con il modo protetto in mano al software. Si accende sul
+      <b>BIOS di Bochs</b>, libero, e sopra ci gira lo stesso disco con
+      <b>FreeDOS</b> del 286.</p>
+      <p>La scheda è quella del Pentium qui sotto, con un altro processore e un
+      altro BIOS: un anacronismo dichiarato, e innocuo, perché i chip che il DOS
+      tocca hanno gli stessi indirizzi dal 1984. Il processore è lo stesso
+      motore, con spento quello che un 386 non aveva: CPUID è un opcode non
+      valido, le istruzioni del 486 e del Pentium non ci sono, e il bit AC di
+      EFLAGS ricade — che è il modo in cui tutti distinguevano un 386 da un
+      486.</p>
+
+      <h3 class="about__heading">Dove trovare le ROM</h3>
+      <p>Due file, entrambi LGPL, e per una volta già compilati:</p>
+      <ul class="about__list">
+        <li>il <b>BIOS di sistema</b>, quello di
+        <a class="about__link" href="${BOCHS_URL}" target="_blank" rel="noopener noreferrer">Bochs</a>
+        nella versione «legacy», tutta a sedici bit. SeaBIOS, quello del
+        Pentium, su un 386 non parte: usa BSWAP, un'istruzione del 486, senza
+        chiedere;</li>
+        <li>il
+        <a class="about__link" href="${VGABIOS_URL}" target="_blank" rel="noopener noreferrer">VGABIOS LGPL</a>,
+        la ROM della scheda video, che la macchina affaccia a C0000.</li>
+      </ul>
+      <p class="about__note">Stanno nel
+      <a class="about__link" href="${BOCHS_RELEASE_URL}" target="_blank" rel="noopener noreferrer">repository di Bochs</a>
+      alla versione 2.7, e <code>npm run fetch-roms</code> li mette in
+      <code>roms/pc386/</code>: <code>${BOCHS_SPEC.file}</code> e
+      <code>${VGABIOS_SPEC.file}</code>. Si possono anche trascinare sulla
+      finestra.</p>
+
+      <h3 class="about__heading">Cosa è stato fatto</h3>
+      <ul class="about__list">
+        <li>Il <b>386</b> come variante del motore del Pentium, provato con un
+        BIOS intero e un sistema operativo senza una sola istruzione che il 386
+        non avesse.</li>
+        <li>Il <b>cambio di anello</b>: un programma all'anello 3 che chiama il
+        sistema, con un'interruzione o attraverso una <b>porta di chiamata</b>,
+        passa sullo stack che dice il TSS, con i parametri ricopiati — il giro
+        che fa Windows 3.1 in modo standard.</li>
+        <li>Il <b>mouse PS/2</b>: un clic sullo schermo cattura il puntatore, ed
+        ogni movimento diventa un pacchetto di tre byte dall'8042.</li>
+        <li>Il <b>filo del cambio disco</b>, che si alza quando lo sportello si
+        apre e si abbassa quando la testina fa un passo: senza, il DOS si teneva
+        la FAT del dischetto di prima.</li>
+      </ul>
+
+      <h3 class="about__heading">Le cose che solo un BIOS diverso ha trovato</h3>
+      <ul class="about__list">
+        <li>Il BIOS di Bochs <b>non manda mai un SEEK</b>: si aspetta che il
+        controllore dei dischetti porti la testina da sé, come l'82077 degli
+        anni Novanta e non come il 765 del 1981.</li>
+        <li>Prende la misura dei blocchi da leggere dalle <b>parole 4 e 5 di
+        IDENTIFY DEVICE</b>, superate dalla norma e riempite lo stesso da ogni
+        disco dell'epoca.</li>
+        <li>Fa il <b>reset del canale IDE</b> come dice la norma, aspettando di
+        vedere il disco occupato prima di rilasciarlo.</li>
+      </ul>
+
+      <h3 class="about__heading">Cosa manca</h3>
+      <ul class="about__list">
+        <li>Il <b>387</b>, la virgola mobile, che sul 386 era un chip a
+        parte.</li>
+        <li>Il <b>cambio di task</b> e il <b>modo virtuale 8086</b>, che
+        servono a Windows 3.1 in modo 386 avanzato.</li>
+        <li>Il <b>suono</b>: l'altoparlante c'è sulla scheda, ma nessuno lo
+        ascolta.</li>
       </ul>
     `;
   }
@@ -473,21 +588,25 @@ class AboutPage {
         <li>Il <b>canale di configurazione</b> di QEMU, da cui il firmware chiede
         alla macchina com'è fatta e riceve la ROM della scheda video: su una
         macchina come questa quella ROM non sta dentro una scheda.</li>
+        <li>I <b>dischi</b>: i due canali IDE del ponte sud, con i dati a sedici
+        bit e l'indirizzamento lineare, e il lettore di dischetti — lo stesso
+        NEC 765 del 286. Sopra ci si avvia <b>FreeDOS</b> fino al prompt, dal
+        disco fisso o dal dischetto, e il disco è lo stesso file del 286.</li>
+        <li>Il <b>cambio di anello</b>: lo stack dell'anello interno preso dal
+        TSS, e le porte di chiamata che ricopiano i parametri da uno stack
+        all'altro.</li>
       </ul>
 
       <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li>I <b>dischi</b>: l'IDE del ponte sud e il lettore di dischetti. È il
-        pezzo dopo, ed è quello che manca perché sopra ci si accenda un sistema
-        operativo — per adesso il firmware arriva in fondo al POST e dice che non
-        c'è niente da cui partire.</li>
+        <li>La <b>sessione nel browser</b>: il Pentium si accende solo dalle
+        prove. La sua scheda madre però nel browser c'è già — è quella del 386.</li>
         <li>La <b>virgola mobile</b>, che sul Pentium è dentro il processore per
         la prima volta. Finché non c'è, CPUID dice che non c'è: un processore che
         dichiara un coprocessore che non ha è peggio di uno che dichiara di non
         averlo.</li>
-        <li>Il <b>cambio di anello</b> con il TSS e il <b>modo virtuale
-        8086</b>: servono a far girare più programmi insieme, e il DOS non li
-        usa.</li>
+        <li>Il <b>cambio di task</b> e il <b>modo virtuale 8086</b>: servono a
+        far girare più programmi DOS insieme, e il DOS da solo non li usa.</li>
       </ul>
     `;
   }

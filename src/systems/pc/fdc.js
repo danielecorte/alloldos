@@ -75,6 +75,17 @@ export class FloppyDrive {
     this.motor = false;
     /** Quante volte il disco è stato scritto, per chi vuole riaverselo. */
     this.writes = 0;
+    /**
+     * Il filo del cambio disco. Si alza quando lo sportello si apre — cioè
+     * quando il dischetto esce o entra — e resta alzato finché la testina non
+     * fa un passo con un dischetto dentro. Non vuol dire «qui non c'è niente»:
+     * vuol dire «da quando mi hai guardato l'ultima volta, qualcuno ha messo le
+     * mani nel lettore». È così che il DOS sa di dover buttare la FAT che
+     * teneva in memoria; se il filo restasse basso, dopo un cambio di dischetto
+     * continuerebbe a cercare i file del dischetto di prima. Da acceso il filo
+     * è alzato: nessuno ha ancora guardato.
+     */
+    this.changed = true;
   }
 
   insert(bytes, { writeProtected = false } = {}) {
@@ -84,12 +95,19 @@ export class FloppyDrive {
     this.format = format;
     this.writeProtected = writeProtected;
     this.writes = 0;
+    this.changed = true;
     return true;
   }
 
   eject() {
     this.medium = null;
     this.format = null;
+    this.changed = true;
+  }
+
+  /** La testina ha fatto un passo: se c'è un dischetto, il filo si abbassa. */
+  stepped() {
+    if (this.medium) this.changed = false;
   }
 
   get ready() {
@@ -119,10 +137,13 @@ export class FDC765 {
    * @param {object} hooks
    * @param {object} hooks.dma il controllore di DMA, di cui si usa il canale 2
    * @param {(irq:number)=>void} hooks.onInterrupt il filo della IRQ 6
+   * @param {boolean} [hooks.impliedSeek] se una lettura su un altro cilindro ci
+   *   porta da sé la testina, come i controllori 82077 degli anni Novanta
    */
   constructor(hooks = {}) {
     this.dma = hooks.dma ?? null;
     this.onInterrupt = hooks.onInterrupt ?? (() => {});
+    this.impliedSeek = hooks.impliedSeek ?? false;
     this.drives = [new FloppyDrive(), new FloppyDrive()];
     this.reset();
   }
@@ -327,6 +348,7 @@ export class FDC765 {
     this.head = 0;
     const drive = this.drives[this.drive];
     drive.cylinder = 0;
+    drive.stepped();
     // Una ricalibrazione finita conta più di quello che il chip aveva da dire
     // sull'accensione: ora la posizione della testina la sa per averla vista.
     this.resetSense = 0;
@@ -346,6 +368,10 @@ export class FDC765 {
     this.head = (this.command[1] >> 2) & 1;
     const drive = this.drives[this.drive];
     drive.cylinder = this.command[2] & 0xff;
+    // Anche un seek sulla traccia dove la testina già sta conta come un passo:
+    // il chip vero non lo farebbe, ma i BIOS che abbassano il filo lo fanno
+    // con due seek su tracce diverse, e a quelli basta lo stesso.
+    drive.stepped();
     this.resetSense = 0;
     this.seekEnd = true;
     this.st0 = this.makeST0(0, 0x20); // anche qui: la testina si muove lo stesso
@@ -395,9 +421,15 @@ export class FDC765 {
     if (!drive.ready) return this.abort(0x00, 0x00, cylinder, head, sector, n);
     if (writing && drive.writeProtected) return this.abort(0x02, 0x00, cylinder, head, sector, n);
     if (cylinder !== drive.cylinder) {
-      // La testina è su un'altra traccia: il chip legge gli indirizzi che
-      // trova scritti sul disco, non li trova, e dice che il settore non c'è.
-      return this.abort(0x04, 0x00, cylinder, head, sector, n);
+      // Il 765 del 1981 non si muove da solo: la testina è su un'altra
+      // traccia, il chip legge gli indirizzi che trova scritti sul disco, non
+      // li trova, e dice che il settore non c'è. I suoi eredi degli anni
+      // Novanta — l'82077 dentro i chipset dei 386 e dei Pentium — sanno fare il
+      // seek da sé prima di leggere, e c'è un BIOS che ci conta: quello di
+      // Bochs, che non manda mai un SEEK.
+      if (!this.impliedSeek) return this.abort(0x04, 0x00, cylinder, head, sector, n);
+      drive.cylinder = cylinder;
+      drive.stepped();
     }
 
     for (;;) {

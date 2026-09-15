@@ -17,6 +17,8 @@
 // A lo decide il BIOS, e lo decide guardando se nel frattempo è stato premuto
 // anche il 42.
 
+import { scanBytes } from './scancodes.js';
+
 /** La risposta della tastiera al reset: "sto bene". */
 export const KB_SELF_TEST_OK = 0xaa;
 
@@ -104,17 +106,23 @@ export class XTKeyboard {
     return this.latch;
   }
 
-  /** Un tasto premuto: il suo numero nella matrice. */
+  /**
+   * Un tasto premuto: il suo numero nella matrice, e davanti il prefisso E0h
+   * se è uno dei tasti arrivati con la tastiera estesa — l'AltGr, per dire.
+   * Nel 1981 non c'erano, ma le tastiere estese vendute per gli XT li
+   * mandavano così, e un BIOS che non conosce il prefisso vede il tasto di cui
+   * sono il doppione.
+   */
   press(code) {
-    this.down.add(code & 0x7f);
-    this.queue.push(code & 0x7f);
+    this.down.add(code);
+    this.queue.push(...scanBytes(code, false));
     this.deliver();
   }
 
   /** Lo stesso tasto lasciato andare: lo stesso numero con il bit 7 acceso. */
   release(code) {
-    this.down.delete(code & 0x7f);
-    this.queue.push((code & 0x7f) | 0x80);
+    this.down.delete(code);
+    this.queue.push(...scanBytes(code, true));
     this.deliver();
   }
 
@@ -128,7 +136,7 @@ export class XTKeyboard {
    * clock a terra, e a macchina accesa nessuno lo rialzerebbe più.
    */
   releaseAll() {
-    for (const code of this.down) this.queue.push(code | 0x80);
+    for (const code of this.down) this.queue.push(...scanBytes(code, true));
     this.down.clear();
     this.deliver();
   }

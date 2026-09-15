@@ -18,7 +18,14 @@ import { fileURLToPath } from 'node:url';
 
 import { PC } from '../src/systems/pc/machine.js';
 import { HardDisk } from '../src/systems/pc/ata.js';
-import { padOptionROM, BIOS_SPEC, CARD_SPEC, CARD_ROM_BASE } from '../src/systems/pc/roms.js';
+import {
+  padOptionROM,
+  BIOS_SPEC,
+  CARD_SPEC,
+  CARD_ROM_BASE,
+  VIDEO_SPEC,
+  VIDEO_ROM_BASE,
+} from '../src/systems/pc/roms.js';
 import { FREEDOS_SPEC, HDD_SPEC, hardDiskFrom } from '../src/systems/pc/media.js';
 import { keyFor, SHIFT } from '../src/systems/pc/scancodes.js';
 
@@ -32,6 +39,9 @@ export const have = {
   },
   get card() {
     return existsSync(path(CARD_SPEC));
+  },
+  get vga() {
+    return existsSync(path(VIDEO_SPEC));
   },
   get floppy() {
     return existsSync(path(FREEDOS_SPEC));
@@ -50,13 +60,15 @@ const read = (spec) => new Uint8Array(readFileSync(path(spec)));
  * @param {boolean} [options.card] montare la scheda del disco fisso
  * @param {boolean} [options.floppy] mettere il dischetto di FreeDOS in A:
  * @param {'blank'|'installed'|HardDisk|null} [options.disk] cosa c'è sul disco fisso
+ * @param {boolean} [options.vga] la VGA con il suo BIOS invece della CGA
  */
 export function bootPC(options = {}) {
-  const { card = true, floppy = true, disk = 'blank' } = options;
+  const { card = true, floppy = true, disk = 'blank', vga = false } = options;
   const cards = [];
   if (card && have.card) {
     cards.push({ base: CARD_ROM_BASE, bytes: padOptionROM(read(CARD_SPEC)) });
   }
+  if (vga) cards.push({ base: VIDEO_ROM_BASE, bytes: read(VIDEO_SPEC) });
   let hard = null;
   if (disk instanceof HardDisk) {
     hard = disk; // un disco preparato da chi chiama, di qualunque misura sia
@@ -65,7 +77,7 @@ export function bootPC(options = {}) {
   } else if (disk) {
     hard = new HardDisk();
   }
-  const pc = new PC(read(BIOS_SPEC), { disk: hard, cards });
+  const pc = new PC(read(BIOS_SPEC), { disk: hard, cards, vga });
   if (floppy && have.floppy) pc.fdc.drives[0].insert(read(FREEDOS_SPEC));
   return pc;
 }
@@ -88,7 +100,7 @@ export class Session {
 
   /** Lo schermo come testo, senza gli spazi in fondo alle righe. */
   screen() {
-    return this.pc.cga
+    return this.pc.video
       .text()
       .join('\n')
       .replace(/[ \t]+$/gm, '')

@@ -4,17 +4,22 @@
 import { PC, FPS } from './machine.js';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from './cga.js';
 import { Speaker } from './speaker.js';
+import { AudioOutput } from '../zx/audio.js';
 import { SCANCODES } from './scancodes.js';
 import {
   loadBIOS,
   loadCardROM,
+  loadVideoROM,
   acceptROMFile,
   MissingBIOSError,
   BIOS_SPEC,
   CARD_SPEC,
   CARD_ROM_BASE,
+  VIDEO_SPEC,
+  VIDEO_ROM_BASE,
   GLABIOS_URL,
   GLABIOS_SOURCE_URL,
+  VGABIOS_URL,
   XTIDE_URL,
   XTIDE_SOURCE_URL,
 } from './roms.js';
@@ -27,6 +32,15 @@ import {
   FREEDOS_URL,
 } from './media.js';
 import { formatOf } from './fdc.js';
+import {
+  LAYOUTS,
+  DEFAULT_LAYOUT,
+  layoutNamed,
+  layoutOf,
+  setLayout,
+  preferredLayout,
+  storePreferredLayout,
+} from './layouts.js';
 import {
   loadIntoDisk,
   NoFilesystemError,
@@ -55,6 +69,8 @@ class PCSession {
     this.onExit = options.onExit;
     this.machine = null;
     this.audio = null;
+    /** Il suono della Sound Blaster, che a differenza dell'altoparlante sono campioni. */
+    this.sound = null;
     this.running = false;
     this.paused = false;
     this.rafHandle = 0;
@@ -82,8 +98,7 @@ class PCSession {
     this.canvas.width = SCREEN_WIDTH;
     this.canvas.height = SCREEN_HEIGHT;
     this.context = this.canvas.getContext('2d', { alpha: false });
-    this.image = this.context.createImageData(SCREEN_WIDTH, SCREEN_HEIGHT);
-    this.imageWords = new Uint32Array(this.image.data.buffer);
+    this.resizeImage(SCREEN_WIDTH, SCREEN_HEIGHT);
     stage.append(this.canvas);
 
     this.overlay = element('div', 'pc__overlay');
@@ -97,6 +112,7 @@ class PCSession {
       (this.pauseButton = this.button('Pausa', () => this.togglePause())),
       (this.muteButton = this.button('Audio on', () => this.toggleMute())),
       (this.fullscreenButton = this.button('Schermo intero', () => this.toggleFullscreen())),
+      this.layoutPicker(),
       this.button('Salva il dischetto', () => this.saveFloppy()),
       this.button('Salva il disco fisso', () => this.saveHardDisk()),
       this.button('Menu di boot', () => this.onExit()),
@@ -129,6 +145,18 @@ class PCSession {
     this.bindEvents();
   }
 
+  /**
+   * La canvas prende la misura del quadro: 640 per 200 con la CGA, 720 per
+   * 400 con la VGA in modo testo, 320 per 200 nel modo dei giochi. Lo
+   * schermo è sempre un 4:3, e a stirare i punti ci pensa il foglio di stile.
+   */
+  resizeImage(width, height) {
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.image = this.context.createImageData(width, height);
+    this.imageWords = new Uint32Array(this.image.data.buffer);
+  }
+
   driveRow(name, label) {
     const row = element('div', 'pc__drive');
     const light = element('span', 'pc__light');
@@ -138,6 +166,28 @@ class PCSession {
     text.textContent = label;
     row.append(light, title, text);
     return { row, light, text };
+  }
+
+  /**
+   * La tastiera che si ha sotto le dita. La scelta non traduce niente qui
+   * dentro: finisce nell'AUTOEXEC.BAT, dove la legge KEYB all'accensione.
+   */
+  layoutPicker() {
+    this.layoutSelect = element('select', 'pc__select');
+    this.layoutSelect.tabIndex = -1;
+    this.layoutSelect.title = 'La tastiera che hai: la carica KEYB, all\'accensione';
+    for (const { id, label, name } of LAYOUTS) {
+      const option = element('option');
+      option.value = id;
+      option.textContent = `Tastiera ${label} (${name})`;
+      this.layoutSelect.append(option);
+    }
+    this.layoutSelect.value = preferredLayout();
+    this.layoutSelect.addEventListener('change', () => {
+      this.chooseLayout(this.layoutSelect.value);
+      this.root.focus(); // la tastiera torna alla macchina
+    });
+    return this.layoutSelect;
   }
 
   button(label, action) {
@@ -162,7 +212,7 @@ class PCSession {
       [this.root, 'dragover', (event) => this.onDragOver(event)],
       [this.root, 'dragleave', () => this.root.classList.remove('pc--dropping')],
       [this.root, 'drop', (event) => this.onDrop(event)],
-      [this.root, 'pointerdown', () => this.audio?.start()],
+      [this.root, 'pointerdown', () => this.startAudio()],
       [this.canvas, 'dblclick', () => this.toggleFullscreen()],
       [this.root, 'mousemove', (event) => this.onPointerHover(event)],
       [document, 'fullscreenchange', () => this.onFullscreenChange()],
@@ -189,21 +239,32 @@ class PCSession {
     }
 
     this.bios = bios; // se la scheda del disco arriva dopo, la macchina si rifà
-    const [card, floppy, disk] = await Promise.all([loadCardROM(), loadFloppy(), loadHardDisk()]);
+    const [card, videoROM, floppy, disk] = await Promise.all([
+      loadCardROM(),
+      loadVideoROM(),
+      loadFloppy(),
+      loadHardDisk(),
+    ]);
     this.card = card;
-    this.machine = new PC(bios, {
-      disk,
-      cards: card ? [{ base: CARD_ROM_BASE, bytes: card }] : [],
-    });
-    if (floppy) this.insertFloppy(floppy, 'FreeDOS');
-    this.savedDiskWrites = 0;
-    await this.mountPending();
+    this.videoROM = videoROM;
+    // La tastiera scelta l'ultima volta va nell'AUTOEXEC prima di accendere,
+    // così la macchina parte già con quella. Non conta come una scrittura da
+    // salvare: è la scelta di chi usa la pagina, e si riscrive a ogni visita.
+    setLayout(disk.data, preferredLayout());
 
     try {
       this.audio = new Speaker();
+      this.sound = new AudioOutput();
     } catch {
-      this.audio = null; // un browser senza audio: la macchina va lo stesso
+      // un browser senza audio: la macchina va lo stesso
+      this.audio = null;
+      this.sound = null;
     }
+
+    this.machine = this.buildMachine(disk);
+    if (floppy) this.insertFloppy(floppy, 'FreeDOS');
+    this.savedDiskWrites = 0;
+    await this.mountPending();
 
     this.overlay.replaceChildren();
     this.root.focus();
@@ -214,6 +275,22 @@ class PCSession {
     this.running = true;
     this.lastTime = performance.now();
     this.rafHandle = requestAnimationFrame((time) => this.tick(time));
+  }
+
+  /**
+   * La macchina con le schede che ci sono: la VGA se c'è il suo BIOS, se no la
+   * CGA, e la scheda del disco se c'è la sua ROM. La Sound Blaster non ha ROM, e
+   * c'è sempre; le si dice solo a che velocità vuole i campioni chi ascolta.
+   *
+   * @param {?object} disk
+   */
+  buildMachine(disk) {
+    const cards = [];
+    if (this.card) cards.push({ base: CARD_ROM_BASE, bytes: this.card });
+    if (this.videoROM) cards.push({ base: VIDEO_ROM_BASE, bytes: this.videoROM });
+    const machine = new PC(this.bios, { disk, cards, vga: Boolean(this.videoROM) });
+    if (this.sound) machine.sound.setSampleRate(this.sound.sampleRate);
+    return machine;
   }
 
   /**
@@ -239,6 +316,9 @@ class PCSession {
         — la <a href="${XTIDE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>,
         cioè la ROM della scheda del disco fisso: senza non c'è nessun C:, e il
         DOS sta lì sopra — quindi serve anche questa</li>
+        <li><a href="${VGABIOS_URL}" target="_blank" rel="noopener noreferrer">${VIDEO_SPEC.file}</a>
+        — il ${VIDEO_SPEC.label}, la ROM della scheda <b>VGA</b>: senza, la
+        macchina monta una CGA, che il BIOS di sistema sa accendere da solo</li>
         <li>un dischetto avviabile, se ti va: quello di
         <a href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS</a>
         da 720 KB si trascina qui come gli altri — ma non serve per accendere,
@@ -343,13 +423,32 @@ class PCSession {
     for (let i = 0; i < frames; i++) this.machine.runFrame();
 
     this.audio?.update(this.machine);
+    this.playSound();
     this.present();
     this.updateDrives();
     this.offerModifiedFloppy();
   }
 
+  /**
+   * I campioni che la Sound Blaster ha fatto in questi quadri, verso il
+   * worklet. Si prendono sempre, anche quando non si mandano: se il browser è
+   * già avanti di un decimo di secondo quelli in più si buttano, perché un
+   * suono in ritardo è peggio di un suono con un buco.
+   */
+  playSound() {
+    const samples = this.machine.sound.takeSamples();
+    if (!this.sound?.node) return;
+    if (this.sound.available > this.sound.sampleRate * 0.1) return;
+    this.sound.push(samples);
+  }
+
   present() {
-    this.imageWords.set(this.machine.cga.render());
+    const video = this.machine.video;
+    const pixels = video.render();
+    const width = video.renderWidth ?? SCREEN_WIDTH;
+    const height = video.renderHeight ?? SCREEN_HEIGHT;
+    if (width !== this.canvas.width || height !== this.canvas.height) this.resizeImage(width, height);
+    if (pixels.length === this.imageWords.length) this.imageWords.set(pixels);
     this.context.putImageData(this.image, 0, 0);
   }
 
@@ -428,6 +527,10 @@ class PCSession {
     this.diskName = name.replace(/\.(img|ima|hdd|dsk|raw)$/i, '');
     this.savedDiskWrites = 0;
     this.lastDiskWrites = 0;
+    // Un disco che arriva da fuori ha la sua tastiera, e non gliela si cambia
+    // senza che nessuno l'abbia chiesto: la tendina dice quella che ha lui.
+    const layout = layoutOf(disk.data);
+    if (layoutNamed(layout)) this.layoutSelect.value = layout;
     // Il POST da capo, che è l'unico momento in cui la ROM della scheda va a
     // chiedere al disco chi è: senza, C: resterebbe quello di prima.
     this.machine.reset();
@@ -523,6 +626,43 @@ class PCSession {
     this.setStatus('Reset');
   }
 
+  /**
+   * Un'altra tastiera: la riga di KEYB nell'AUTOEXEC.BAT cambia, e la macchina
+   * si riaccende, perché l'AUTOEXEC il DOS lo legge una volta sola. È quello
+   * che si faceva allora, con EDIT e poi Ctrl-Alt-Canc.
+   *
+   * @param {string} id
+   */
+  chooseLayout(id) {
+    const layout = layoutNamed(id);
+    if (!layout) return;
+    storePreferredLayout(id);
+    const disk = this.machine?.hdc.disk;
+    if (!disk) {
+      this.setStatus(`Tastiera ${layout.name}: la carica KEYB, che sta sul disco fisso — e qui non c'è`);
+      return;
+    }
+    const result = setLayout(disk.data, id);
+    if (result.missing === 'filesystem') {
+      this.setStatus('Su C: non c\'è nessun filesystem: KEYB, che sceglie la tastiera, non ha dove stare');
+      return;
+    }
+    if (result.missing === 'keyb') {
+      this.setStatus('Su questo disco non c\'è KEYB: resta la tastiera americana, quella del BIOS');
+      return;
+    }
+    if (!result.changed) {
+      this.setStatus(`Tastiera ${layout.name}: è già quella`);
+      return;
+    }
+    this.machine.reset();
+    this.setStatus(
+      id === DEFAULT_LAYOUT
+        ? 'Tastiera americana: KEYB tolto dall\'AUTOEXEC.BAT — riaccensione'
+        : `Tastiera ${layout.name}: KEYB ${id.toUpperCase()} nell'AUTOEXEC.BAT — riaccensione`,
+    );
+  }
+
   togglePause() {
     this.paused = !this.paused;
     this.pauseButton.textContent = this.paused ? 'Riprendi' : 'Pausa';
@@ -536,6 +676,7 @@ class PCSession {
     }
     const muted = !this.audio.muted;
     this.audio.setMuted(muted);
+    this.sound?.setMuted(muted);
     this.muteButton.textContent = muted ? 'Audio off' : 'Audio on';
   }
 
@@ -573,6 +714,7 @@ class PCSession {
   async acceptFiles(files) {
     let bios = false;
     let card = false;
+    let video = false;
     for (const file of files) {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const image = classifyImage(bytes);
@@ -589,6 +731,16 @@ class PCSession {
         card = true;
         continue;
       }
+      if (kind === 'video') {
+        video = true;
+        continue;
+      }
+      if (kind === 'video386') {
+        // Il VGABIOS come lo pubblica il progetto: si presenta come una ROM
+        // video, ma è codice da 386 e il 286 si fermerebbe al primo salto.
+        this.setStatus(`«${file.name}» è il VGABIOS compilato per il 386: su questo processore non parte — serve ${VIDEO_SPEC.file}, compilato per il 286`);
+        continue;
+      }
       // Non è una ROM e non è un disco: allora è roba da mettere dentro la
       // macchina, e la macchina ha un posto dove metterla.
       this.pending.push({ bytes, name: file.name, kind: 'file' });
@@ -600,34 +752,38 @@ class PCSession {
       await this.start();
       return;
     }
-    if (card && this.machine) await this.mountCardROM();
+    if ((card || video) && this.machine) await this.mountCardROM();
     await this.mountPending();
   }
 
   /**
-   * La ROM della scheda del disco arrivata a macchina accesa. Su una macchina
-   * vera si spegne, si infila la scheda nello zoccolo e si riaccende: una ROM
-   * di espansione la si aggancia solo al POST, e a metà strada non serve a
-   * niente. Qui è la stessa cosa, e costa quanto un'accensione — il disco
-   * resta quello di prima, con sopra quello che ci fosse, e il dischetto resta
-   * nel lettore.
+   * La ROM di una scheda arrivata a macchina accesa — quella del disco o
+   * quella della VGA. Su una macchina vera si spegne, si infila la scheda
+   * nello zoccolo e si riaccende: una ROM di espansione la si aggancia solo al
+   * POST, e a metà strada non serve a niente. Qui è la stessa cosa, e costa
+   * quanto un'accensione — il disco resta quello di prima, con sopra quello
+   * che ci fosse, e il dischetto resta nel lettore.
    *
    * @returns {Promise<boolean>}
    */
   async mountCardROM() {
-    const card = await loadCardROM();
-    if (!card) return false;
+    const [card, videoROM] = await Promise.all([loadCardROM(), loadVideoROM()]);
+    const newCard = card && !this.card;
+    const newVideo = videoROM && !this.videoROM;
+    if (!newCard && !newVideo) return false;
     this.card = card;
+    this.videoROM = videoROM;
     const floppy = this.machine.fdc.drives[0].medium;
-    this.machine = new PC(this.bios, {
-      disk: this.machine.hdc.disk,
-      cards: [{ base: CARD_ROM_BASE, bytes: card }],
-    });
+    this.machine = this.buildMachine(this.machine.hdc.disk);
     if (floppy) this.machine.fdc.drives[0].insert(floppy);
     this.overlay.replaceChildren();
     this.root.focus();
     this.updateDrives();
-    this.setStatus('Scheda del disco fisso montata — la macchina riparte, e adesso C: c\'è');
+    this.setStatus(
+      newCard
+        ? 'Scheda del disco fisso montata — la macchina riparte, e adesso C: c\'è'
+        : 'Scheda VGA montata al posto della CGA — la macchina riparte',
+    );
     return true;
   }
 
@@ -772,7 +928,19 @@ class PCSession {
     const code = SCANCODES[event.code];
     if (code === undefined) return;
     event.preventDefault();
-    this.audio?.start();
+    this.startAudio();
+    // Windows, quando si preme AltGr, manda prima un Ctrl di sinistra che
+    // nessuno ha premuto, nello stesso istante. Arrivato fin qui diventerebbe
+    // un Ctrl-AltGr, che per KEYB non è la stessa cosa: lo si lascia andare.
+    if (
+      event.code === 'AltRight' &&
+      this.controlAt &&
+      event.timeStamp - this.controlAt < 50 &&
+      event.getModifierState?.('AltGraph')
+    ) {
+      this.machine.keyboard.release(SCANCODES.ControlLeft);
+    }
+    this.controlAt = event.code === 'ControlLeft' ? event.timeStamp : 0;
     this.machine.keyboard.press(code);
   }
 
@@ -782,6 +950,12 @@ class PCSession {
     if (code === undefined) return;
     event.preventDefault();
     this.machine.keyboard.release(code);
+  }
+
+  /** L'audio si accende al primo gesto, che è quello che vogliono i browser. */
+  startAudio() {
+    this.audio?.start();
+    Promise.resolve(this.sound?.start()).catch(() => {});
   }
 
   // ------------------------------------------------------------------ chiusura
@@ -794,6 +968,7 @@ class PCSession {
       target.removeEventListener(type, handler);
     }
     this.audio?.close();
+    this.sound?.close();
     this.root.remove();
   }
 }

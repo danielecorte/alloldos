@@ -6,7 +6,7 @@ Un raccoglitore di vecchi sistemi operativi emulati, che gira interamente dentro
 il browser. Si parte da una schermata di boot in stile GRUB: scegli la macchina
 con le frecce, premi Invio, e quella macchina si accende.
 
-Ce ne sono quattro che partono davvero:
+Ce ne sono cinque che partono davvero:
 
 - il **Commodore 64**, emulato dal silicio in su — 6510, VIC-II, due CIA e il
   SID — e avviato sul KERNAL e sul BASIC V2 originali;
@@ -14,20 +14,25 @@ Ce ne sono quattro che partono davvero:
   drive DF0: e DF1:, avviato sulla Kickstart e capace di leggere e scrivere un
   `.adf`. Ci gira sopra un sistema operativo vero: **AROS m68k** arriva alla sua
   schermata di avvio;
-- il **PC 286** con scheda XT, il lettore di dischetti da 720 KB e un disco
-  fisso da 20 MB. È l'unica macchina qui libera fino in fondo: il BIOS
-  **GLaBIOS**, la ROM della scheda del disco **XTIDE**, e sopra **FreeDOS**,
+- il **PC 286** con scheda XT, il lettore di dischetti da 720 KB, un disco
+  fisso da 20 MB, una **VGA** e una **Sound Blaster**. È l'unica macchina qui
+  libera fino in fondo: il BIOS **GLaBIOS**, la ROM della scheda del disco
+  **XTIDE**, il **VGABIOS** LGPL compilato qui per il 286, e sopra **FreeDOS**,
   che si accende dal dischetto o dal disco e arriva al suo prompt;
+- il **PC 386** a 33 MHz con otto mega, VGA e mouse PS/2, acceso dal **BIOS di
+  Bochs** — libero anche lui — sullo stesso disco con FreeDOS del 286. È la
+  scheda del Pentium qui sotto con un processore di cinque anni prima, e il
+  primo PC di questa collezione con il modo protetto in mano al software;
 - lo **ZX Spectrum 48K**: uno Z80, una ULA e nient'altro. Si accende sul suo
   BASIC, carica le cassette rifacendo il suono che c'era sul nastro, e la
   macchina si batte da sola il `LOAD ""`.
 
-E ce n'è una quinta a metà strada: un **PC Pentium** del 1995 — modo protetto,
+E ce n'è una sesta a metà strada: un **PC Pentium** del 1995 — modo protetto,
 paginazione, bus PCI, VGA — con sopra **SeaBIOS**, che arriva in fondo al POST e
 avvia **FreeDOS** dal disco IDE fino al prompt, o dal dischetto. È lo stesso file
 di disco che si accende sul 286 di sopra, letto a sedici bit da un controllore
-diverso su porte diverse. Nel menu è ancora una voce che non si avvia: quello che
-le manca adesso non è più la macchina, è la sessione nel browser.
+diverso su porte diverse. Nel menu è ancora una voce che non si avvia, ma la sua
+scheda madre si accende già nel browser: è quella del 386.
 
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
 eseguono il loro firmware. Il firmware però non è incluso — è di chi lo ha
@@ -46,8 +51,10 @@ npm start            # http://localhost:8080
 ```
 
 Il disco fisso del PC è già in cartella — `roms/pc/hdd.img`, venti mega con
-FreeDOS installato sopra, l'unica immagine che viaggia con alloldos — e
-`npm run make-hdd` serve solo a rifarlo da capo.
+FreeDOS installato sopra, l'unica immagine di disco che viaggia con alloldos — e
+`npm run make-hdd` serve solo a rifarlo da capo. Accanto c'è
+`roms/pc/vgabios.bin`, il BIOS della VGA del 286, che già compilato per quel
+processore non si trova da nessuna parte: `npm run build-vgabios` lo rifà.
 
 Nessuna dipendenza, nessun passo di build: sono moduli ES serviti così come
 sono. `npm test` esegue otto prove a schermo spento: la prima accende il C64,
@@ -55,8 +62,8 @@ verifica che arrivi al prompt `READY.` e ci fa girare un programma; la seconda
 preme i tasti attraverso lo stesso codice che usa il browser e rilegge dallo
 schermo i caratteri arrivati davvero al BASIC; la terza registra un nastro e lo
 fa ricaricare al KERNAL; la quarta prende l'Amiga a pezzi (vedi sotto); la
-quinta monta un DOM finto e fa girare l'intera sessione del browser di tutte e
-tre le macchine, canvas e audio compresi; la sesta accende il PC, gli fa fare il
+quinta monta un DOM finto e fa girare l'intera sessione del browser di tutte le
+macchine, canvas e audio compresi; la sesta accende il PC, gli fa fare il
 POST con il BIOS vero e ci avvia FreeDOS dal dischetto, dal disco fisso e da un
 disco di un'altra misura montato da fuori; la
 settima accende lo Spectrum, ci fa fare un conto in virgola mobile alla sua ROM
@@ -65,7 +72,9 @@ tre mondi, i chip della scheda madre uno per uno, il disco IDE registro per
 registro — e poi ci accende sopra SeaBIOS, che arriva in fondo al POST e avvia
 FreeDOS dal disco fisso: si batte `dir` sulla tastiera, ci si scrive sopra un
 file e lo si ritrova dopo aver spento e riacceso. E dal dischetto, dove la prova
-si ferma appena il kernel si è caricato per intero.
+si ferma appena il kernel si è caricato per intero. Alla fine, sulla stessa
+scheda, ci monta un 386 con il BIOS di Bochs e lo porta fino al prompt, contando
+le istruzioni che un 386 non avrebbe saputo eseguire: devono essere zero.
 
 Se in cartella c'è un `.tap`, l'ultima prova ci carica dentro anche quello e poi
 **ci gioca**: tiene premuta una direzione e guarda dove finisce il personaggio.
@@ -124,11 +133,19 @@ l'A600, l'A1200 e il CDTV tengono la loro.
   del disco fisso: un BIOS XT non sa cosa sia un disco fisso;
 - `fdboot.img`, il dischetto di avvio di **FreeDOS 1.3** da 720 KB, che il
   progetto pubblica solo dentro l'archivio dell'edizione a dischetti — lo script
-  scarica quello e tira fuori l'immagine che serve.
+  scarica quello e tira fuori l'immagine che serve;
+- `keyb.zip` e `keyb_lay.zip`, i due pacchetti di FreeDOS con **KEYB** e le sue
+  tastiere, che servono solo a `npm run make-hdd`: il disco che viaggia col
+  repository li ha già sopra.
 
-Sono tutti file liberi, e nessuno dei tre è nel repository. Il **disco fisso**
-invece sì: `roms/pc/hdd.img` c'è già, con FreeDOS installato sopra, e
-`npm run make-hdd` serve solo a rifarlo.
+Sono tutti file liberi, e nessuno è nel repository. Due cose invece sì. Il
+**disco fisso**: `roms/pc/hdd.img` c'è già, con FreeDOS installato sopra, e
+`npm run make-hdd` serve solo a rifarlo. E il **BIOS della VGA**,
+`roms/pc/vgabios.bin`: il VGABIOS LGPL che il progetto pubblica è compilato per
+il 386 e su un 286 si pianta al primo salto, quindi questo è compilato qui dallo
+stesso sorgente, per il 286 (vedi sotto). `npm run build-vgabios` lo rifà
+identico byte per byte; servono gcc e i due pezzi di dev86 che il sorgente
+vuole, `apt install bcc bin86`.
 
 **Il Pentium** è il caso fortunato anche lui, con una differenza: il suo firmware
 è libero ma viaggia dentro QEMU invece che su una pagina di download. SeaBIOS
@@ -137,6 +154,12 @@ QEMU; `apt install seabios` li mette in `/usr/share/seabios`, e
 `npm run fetch-roms` va a guardare lì — e in `/usr/share/qemu`, e negli altri
 posti dove li mettono i pacchetti — e li copia in `roms/pentium/`. È l'unico
 firmware di alloldos che si cerca sul computer invece che su Internet.
+
+**Il 386** ha il firmware più comodo di tutti: il **BIOS di Bochs** e il
+**VGABIOS LGPL**, entrambi LGPL, stanno già compilati nel repository di Bochs.
+`npm run fetch-roms` prende quelli della versione 2.7 — sempre la stessa, così i
+byte sono quelli provati — e li mette in `roms/pc386/` come `bochs-legacy.bin` e
+`vgabios-lgpl.bin`. Il disco fisso è quello del 286.
 
 **Lo ZX Spectrum** sta in mezzo fra i due casi. La sua ROM è di Amstrad, che
 comprò Sinclair nel 1986 e che da allora ne permette la ridistribuzione insieme
@@ -537,9 +560,11 @@ avviare.
 
 È l'unica macchina di alloldos che è **libera fino in fondo**: BIOS libero
 (GLaBIOS, GPLv3), ROM della scheda del disco libera (XTIDE Universal BIOS,
-GPLv2), sistema operativo libero (FreeDOS). Il firmware non è nel repository —
-non lo è per nessuna macchina — ma **il disco fisso sì**, ed è l'unica immagine
-che viaggia con alloldos: si può, perché quello che c'è sopra è libero.
+GPLv2), BIOS della VGA libero (il VGABIOS, LGPL), sistema operativo libero
+(FreeDOS). Il firmware non è nel repository — non lo è per nessuna macchina,
+con l'eccezione del BIOS della VGA, che si racconta sotto — ma **il disco fisso
+sì**, ed è l'unica immagine che viaggia con alloldos: si può, perché quello che
+c'è sopra è libero.
 
 Ci si accende sopra **FreeDOS**, dal dischetto o dal disco fisso:
 
@@ -548,7 +573,7 @@ GLaBIOS [.] Reboot the Past
 (C) 2022-26 640KB Released under GPLv3
 
 Boot   [ COLD ]
-RAM    [ 640 KB OK ]            Video  [ CGA ]
+RAM    [ 640 KB OK ]            Video  [ VGA ]
 CPU    [ 8088 ]                 FPU    [ None ]
 LPT    [ None ]                 COM    [ None ]
 ROM    [ C800 ]                 Size   [ 12 KB ]
@@ -612,7 +637,12 @@ che ci si batteva allora, uno per uno: `FDISK /AUTO` per la partizione,
 `FDISK /MBR` per il codice che ci sta davanti, un riavvio perché il DOS se ne
 accorga, `FORMAT C:`, `SYS C:`, e poi la copia dei programmi. La tabella delle
 partizioni e la FAT le scrivono FDISK e FORMAT veri, girando sul 286: è l'unico
-modo di essere sicuri che siano giuste. L'immagine che sta nel repository è
+modo di essere sicuri che siano giuste. Le sole eccezioni sono i tre file della
+tastiera — KEYB, KEYBOARD.SYS e KB16 — che non stanno su nessun dischetto e
+batterli un byte per volta vorrebbe dire un'ora: lo script li scrive da sé con
+`fat.js`, a DOS fermo, e poi riaccende la macchina, così la FAT il DOS se la
+rilegge da capo. Ognuno porta la data che ha nel suo pacchetto, e il disco
+rifatto resta identico byte per byte. L'immagine che sta nel repository è
 uscita da lì, ed è verificabile: rifalla e viene **identica byte per byte** —
 una macchina emulata non ha niente di casuale dentro, e un XT non ha nemmeno
 un orologio da cui prendere l'ora.
@@ -664,6 +694,52 @@ ricca: la scheda dice «alloldos XT-CF 40 MB», la geometria letta dalla tabella
 ancora 4 testine e 17 settori su 1204 cilindri, FreeDOS arriva a `C:\>` e vede
 la sua partizione da venti mega con venti mega di spazio libero dietro.
 
+### La tastiera
+
+Una tastiera italiana e una americana sono lo stesso pezzo di ferro con dei
+disegni diversi sopra: il tasto accanto alla P manda lo stesso numero, e
+sull'una c'è stampata una «è», sull'altra una parentesi quadra. La macchina
+riceve le **posizioni** dei tasti — il browser le dà a parte dai caratteri — e a
+decidere che lettera sono è il DOS, che da solo parla americano.
+
+La tendina **Tastiera** nella barra fa quello che si faceva allora: scrive
+`keyb it` (o `gr`, `fr`, `uk`…) nell'`AUTOEXEC.BAT` del disco fisso, e
+riaccende. KEYB è quello di FreeDOS, con le sue tastiere, e sta sul disco
+insieme agli altri comandi. Le tastiere sono quattordici — americana, italiana,
+inglese, tedesca, francese, spagnola, le due svizzere, belga, olandese, svedese,
+finlandese, latinoamericana, brasiliana — cioè quelle che vanno d'accordo con la
+codepage 437, le lettere che la CGA ha nella ROM. La scelta resta nel browser e
+vale anche alla prossima visita; un disco trascinato da fuori tiene invece la
+tastiera che ha, e la tendina dice quale. Il tasto in più delle tastiere
+europee, quello con `<` e `>` accanto allo shift, arriva anche lui, e l'Alt di
+destra arriva come **AltGr** — su Windows, senza il Ctrl finto che il sistema
+gli manda davanti.
+
+Sul 286 KEYB da solo non basta, e il perché sta nel BIOS. KEYB conta su due cose
+che i BIOS AT del 1986 hanno e i BIOS XT no:
+
+- l'**INT 16h con AH=05h**, «scrivi nel buffer della tastiera», con cui consegna
+  ogni lettera che traduce. Senza, le lettere tradotte spariscono e le altre
+  passano — un guasto che non dà nessun errore;
+- l'**Alt di destra distinto da quello di sinistra**. L'AltGr arriva con il
+  prefisso E0h, e un BIOS AT se ne accorge; GLaBIOS no, e per lui ogni Alt è
+  quello di sinistra — KEYB guarda, vede un Alt normale, e la chiocciola non
+  esce.
+
+Allora si faceva così: un programmino residente che aggiunge quello che manca.
+È `KB16.COM`, 212 byte scritti a mano in `scripts/kb16.mjs`, istruzione per
+istruzione e solo con quelle dell'8086. Va nell'`AUTOEXEC.BAT` subito dopo
+KEYB, perché deve vedere i tasti prima di lui; e se il BIOS la funzione 5 ce
+l'ha già — il Pentium, che avvia lo stesso disco con SeaBIOS — se ne accorge e
+se ne va senza restare in memoria. Aggiornare GLaBIOS non sarebbe bastato: la
+0.8, ancora in prova, ha il supporto esteso, ma per farlo stare negli otto KB
+della ROM toglie la ricerca delle ROM delle schede, cioè il disco fisso.
+
+La prova, in `pctest.mjs` e in `pentiumtest.mjs`, sceglie l'italiana, accende,
+e preme i tasti per posizione come li manda il browser: escono è ò à ù é, la
+barra rovescia, l'apostrofo e il minore, e con AltGr le quadre, la chiocciola e
+il cancelletto — sulle due macchine, dallo stesso disco.
+
 ### Portare dentro un file
 
 Fra il computer di oggi e quello del 1988 non c'è nessun cavo. La macchina
@@ -695,9 +771,10 @@ pagina lo chiede prima di lasciar chiudere.
 
 #### La regola che qui si rompe
 
-Il disco fisso di alloldos è fatto senza scrivere un byte di filesystem: la
-tabella delle partizioni e la FAT le hanno scritte FDISK e FORMAT veri, girando
-sul 286. Qui quella regola si rompe, perché non c'è alternativa: far fare il
+Il disco fisso di alloldos è fatto quasi senza scrivere un byte di filesystem:
+la tabella delle partizioni e la FAT le hanno scritte FDISK e FORMAT veri,
+girando sul 286, e i soli file messi da noi sono i tre della tastiera. Qui
+quella regola si rompe del tutto, perché non c'è alternativa: far fare il
 lavoro al DOS vorrebbe dire battergli il file sulla tastiera un byte per volta
 con DEBUG, che per un dischetto di roba vuol dire una giornata. La FAT la
 scriviamo noi, in `fat.js`.
@@ -708,6 +785,85 @@ girare un programma uscito da uno zip, a scriverci accanto un file suo, e alla
 fine a cancellare tutto quanto con `DELTREE`. Se il disco torna libero degli
 stessi byte che aveva prima, ogni catena e ogni voce di cartella era al suo
 posto — e a dirlo è lui, non noi.
+
+### La VGA
+
+Una VGA su una scheda XT non è un controsenso: nel 1988 le schede erano tutte
+ISA a otto bit, e una VGA si infilava in un XT come in qualunque altra cosa. È
+la stessa scheda del Pentium (`pentium/vga.js`), sul bus a otto bit invece che
+a sedici. Con la VGA gli interruttori del video vanno a 00 — «c'è una scheda con
+il suo BIOS, chiedi a lei» — e GLaBIOS cerca una ROM fra C000 e C800, la esegue
+e le lascia l'INT 10h; poi le chiede chi è, con l'INT 10h/1Ah, e sullo schermo
+del POST scrive quello che la scheda risponde.
+
+Il BIOS della scheda è il **VGABIOS LGPL**, lo stesso del 386 — ma non lo stesso
+file. Quello che il progetto pubblica, e quello che sta dentro Bochs dal 2008 in
+poi, è compilato per il 386. Il sorgente è scritto per l'8086, e il Makefile lo
+dice dappertutto; ma il compilatore, bcc, mette in testa al codice `use16 386`,
+e da lì l'assemblatore si sente libero di usare i **salti condizionati lunghi**,
+che sono arrivati col 386. Sono una sessantina, e il 286 si ferma al primo, a
+`C000:70AA`, con un'interruzione 6 dopo l'altra: schermo nero. Tutte le versioni
+pubblicate, dalla 0.6b alla 0.8a, si fermano sullo stesso salto.
+
+`npm run build-vgabios` lo ricompila dallo stesso sorgente dicendo
+all'assemblatore la verità — il processore è un 286 — e ogni salto lungo diventa
+un salto corto rovesciato che ne scavalca uno lungo, com'erano fatti prima del
+386. Le istruzioni a trentadue bit scritte a mano sono poche e stanno in due
+posti: il salvataggio dello stato video, dove due `mov eax`/`stosd` diventano
+parole da sedici bit, e il codice che parla col bus PCI e con le estensioni VBE,
+che su una scheda ISA non c'entra e resta fuori. Quello che esce sono
+trentadue KB, da C000 a C7FF — la ROM della scheda del disco resta a C800 —
+identici a ogni compilazione, e viaggiano col repository perché non c'è nessun
+altro posto da cui prenderli. La prova li accende contando le interruzioni 6:
+zero.
+
+Senza `vgabios.bin` la macchina monta la CGA, com'era un XT prima del 1987. Il
+BIOS della VGA si trascina sulla finestra come le altre ROM; quello per il 386
+si riconosce dalla firma e viene rifiutato, invece di lasciare la macchina ferma.
+
+La prova, in `pctest.mjs`, accende la macchina con la VGA fino a `C:\>` e poi fa
+girare un programma DOS che chiede al BIOS della scheda il **modo 13h** — 320
+per 200 a 256 colori, quello dei giochi — ci accende il primo punto bianco e
+l'ultimo della riga rosso, aspetta un tasto e torna al testo. Per il modo 13h
+la VGA del Pentium diceva 640 per 400: i punti a otto bit sono due battiti del
+pennello, e ogni riga si disegna due volte. Adesso lo sa, e lo sa anche per il
+Pentium e il 386.
+
+### La Sound Blaster
+
+Una **Sound Blaster 2.0** a 220h, IRQ 7, DMA 1: i ponticelli con cui usciva
+dalla scatola, e quelli che dice la riga `SET BLASTER=A220 I7 D1 T3` che
+`make-hdd` scrive nell'`AUTOEXEC.BAT`, come faceva il programma di
+installazione della scheda. Non ha una ROM, e quindi c'è sempre: il BIOS non la
+vede, e i programmi la vanno a cercare da soli.
+
+Dentro sono due schede in una:
+
+- l'**OPL2** (`opl2.js`), cioè lo Yamaha YM3812 della AdLib, alle porte della
+  AdLib (388h) e alle sue (228h). Nove voci da due operatori, la **modulazione
+  di frequenza**, le quattro forme d'onda, gli inviluppi, il tremolo e il
+  vibrato, la batteria con il suo rumore, e i due contatori con cui ogni gioco
+  scopriva se la scheda c'era. Le ampiezze stanno in logaritmo come nel chip,
+  con le sue due tabelle — un quarto di sinusoide e un esponenziale — e il chip
+  calcola 49 716 campioni al secondo, qui come allora;
+- il **DSP** (`soundblaster.js`), il microcontrollore che la AdLib non aveva: il
+  reset che risponde AAh, la versione 2.01, il convertitore pilotato a mano, e
+  soprattutto i blocchi portati dal **canale 1 del DMA** — uno per volta o uno
+  dietro l'altro — con la IRQ 7 alla fine di ognuno. Ci sono anche l'alta
+  velocità, la registrazione, che registra silenzio perché un microfono non c'è,
+  e i blocchi di silenzio.
+
+Il suono esce in campioni, alla velocità che vuole il browser, dallo stesso
+worklet dello Spectrum. L'altoparlante del PC resta quello che era: un
+oscillatore che segue il contatore.
+
+La prova, in `pctest.mjs`, guida la scheda dalle porte — il reset, la AdLib
+trovata, un La a 440 Hz che si spegne quando si lascia il tasto, un blocco col
+DMA che finisce con la sua interruzione, i blocchi in fila fermati da DAh — e
+poi fa girare sotto DOS un programma di 493 byte che fa quello che fa ogni
+gioco: mette il suo gestore sulla IRQ 7 e la apre sul PIC, riavvia il DSP,
+programma il DMA sul suo buffer, fa suonare 256 byte e aspetta l'interruzione.
+Scrive `SB OK`.
 
 ### Cosa c'è dentro
 
@@ -721,17 +877,22 @@ posto — e a dirlo è lui, non noi.
 - il **765** e il suo lettore, la scheda **XT-CF** con il disco ATA;
 - la **tastiera XT** con il filo di clock, dove tenerlo a terra un attimo vuol
   dire «ho preso il byte» e tenerlo venti millesimi vuol dire «riavviati»;
-- la **CGA**: testo a ottanta colonne con il disegno delle lettere preso dalla
-  ROM del BIOS, cursore che lampeggia, e le due grafiche — 320×200 a quattro
-  colori e 640×200 in bianco e nero;
+- la **VGA** con il suo BIOS, e la **CGA** quando il BIOS della VGA non c'è:
+  testo a ottanta colonne con il disegno delle lettere preso dalla ROM del
+  BIOS, cursore che lampeggia, e le due grafiche — 320×200 a quattro colori e
+  640×200 in bianco e nero;
+- la **Sound Blaster 2.0**: l'OPL2 e il DSP con il suo DMA e la sua IRQ;
 - l'**altoparlante**: un bit e un contatore, che è tutto il suono che il PC ha
   avuto per dieci anni;
 - una **FAT16** che sa scrivere (`fat.js`) e un lettore di **zip** (`zip.js`),
   che è il solo modo che un file di oggi ha di entrare in un disco del 1988.
 
-Manca la **VGA** con il suo BIOS di scheda, il suono campionato — quello che
-pilota il bit dell'altoparlante a mano invece di lasciar fare al contatore — e
-il modo protetto, che il DOS non usa.
+Manca il suono **ADPCM** della Sound Blaster — i blocchi compressi si consumano
+alla velocità giusta e finiscono con la loro interruzione, ma quello che si
+sente è silenzio — e con lei la MIDI; sulla VGA, i modi grafici della CGA, che
+la VGA fa con un indirizzamento a righe alternate che qui non è disegnato. Poi
+il suono campionato dall'altoparlante — quello che pilota il bit a mano invece
+di lasciar fare al contatore — e il modo protetto, che il DOS non usa.
 
 ### Le tre cose che solo un BIOS vero ha trovato
 
@@ -755,7 +916,10 @@ contano — il POST di GLaBIOS, FreeDOS che parte dal dischetto e ci scrive sopr
 un file, FreeDOS che parte dal disco fisso, ci scrive, e ritrova quello che ha
 scritto dopo un riavvio, e FreeDOS che si ritrova sul disco una cartella scritta
 da noi e ci fa dentro tutto quello che ci farebbe con una sua. I comandi vengono
-battuti sulla tastiera attraverso lo stesso codice che usa il browser.
+battuti sulla tastiera attraverso lo stesso codice che usa il browser. In fondo,
+la macchina si riaccende con la VGA e fa girare due programmi DOS messi sul
+disco: uno chiede il modo 13h al BIOS della scheda, l'altro fa suonare un blocco
+alla Sound Blaster e aspetta la sua interruzione.
 
 ## ZX Spectrum 48K
 
@@ -1053,10 +1217,106 @@ più di macchina.
 Poi la **virgola mobile**, che sul Pentium è dentro il processore per la prima
 volta: finché non c'è, CPUID dice che non c'è, perché un processore che dichiara
 un coprocessore che non ha è peggio di uno che dichiara di non averlo. Il
-**cambio di anello** con il TSS e il **modo virtuale 8086**. E la velocità: la
+**cambio di task** e il **modo virtuale 8086** — il cambio di anello invece c'è,
+ed è raccontato nel 386 qui sotto, che è la macchina per cui è servito. E la velocità: la
 macchina gira, ma gira a una frazione dei sessantasei megahertz che dichiara, e
 per farci sopra qualcosa di più di un prompt del DOS quella frazione andrà
 alzata.
+
+## PC 386
+
+La macchina del 1990, e la prima di questa collezione con il modo protetto in
+mano al software che ci gira sopra: è il processore su cui è nato Windows 3.1, e
+su cui i DOS extender hanno cominciato a usare la memoria sopra il primo mega.
+Un **386DX a 33 MHz**, **otto mega** di memoria, una **VGA**, un **mouse PS/2**,
+un lettore da 1,44 e un disco IDE — che è lo stesso file con FreeDOS del 286.
+
+La scheda è quella del Pentium di sopra, e non è un modo di dire: è lo stesso
+codice, con un altro processore e un altro BIOS. Un anacronismo, dichiarato — un
+386 non ha mai visto un i440FX — ma innocuo, perché i chip che il DOS tocca sono
+gli stessi dal 1984, con gli stessi indirizzi.
+
+### Un 386 è un Pentium a cui manca qualcosa
+
+Il processore è lo stesso motore del Pentium, che sa fare anche i due di prima
+spegnendo quello che non avevano. Un 386 non è un Pentium lento: è un Pentium
+che **non risponde a CPUID** — sul 386 è un opcode non valido, e parte
+l'eccezione 6 — e che non ha le istruzioni arrivate dopo: BSWAP, CMPXCHG e XADD
+del 486, RDTSC e CMPXCHG8B del Pentium. In EFLAGS il bit AC ricade quando lo si
+accende, che è il test con cui tutti, Windows compreso, distinguevano un 386 da
+un 486; e in CR0 all'accensione non ci sono i bit della cache, che il 386 non
+aveva.
+
+Per il 386 il motore ha imparato anche quello che mancava al Pentium: il
+**cambio di anello**. Un programma all'anello 3 che chiama il sistema — con
+un'interruzione o con un CALL lontano attraverso una **porta di chiamata** — non
+può usare il suo stack: il processore prende quello scritto nel **TSS**, ci
+impila sopra lo stack di prima e ricopia i parametri che la porta dice, perché
+il sistema non deve fidarsi della memoria del programma. Al ritorno, i registri
+di segmento che puntavano alla memoria del sistema si svuotano. È il giro che
+fa Windows 3.1 in modo standard ogni volta che un programma chiede qualcosa.
+
+### Il BIOS di Bochs
+
+SeaBIOS su un 386 non parte: usa BSWAP, un'istruzione del 486, senza chiedere
+prima che processore c'è. Il BIOS libero per un 386 è quello di
+**[Bochs](https://bochs.sourceforge.io/)**, scritto nel 2002 per l'emulatore
+omonimo e nella sua versione «legacy» tutto a sedici bit: sessantaquattro KB,
+senza la parte a trentadue bit che fa domande a CPUID. Accanto c'è il
+**[VGABIOS LGPL](https://www.nongnu.org/vgabios/)**, nato insieme a lui, che la
+macchina affaccia a C0000 — dove il BIOS cerca la ROM della scheda video, come
+su una scheda madre vera.
+
+È un BIOS diverso da SeaBIOS, e ha trovato nella scheda tre cose che SeaBIOS
+non aveva mai chiesto:
+
+- **non manda mai un SEEK al lettore di dischetti.** Chiede di leggere il
+  cilindro che vuole e si aspetta che la testina ci vada da sola, cosa che il
+  765 del 1981 non sapeva fare e l'82077 dei chipset degli anni Novanta sì. Il
+  controllore di questa scheda adesso lo fa, quello del 286 no;
+- **si fida delle parole 4 e 5 di IDENTIFY DEVICE**, i byte di una traccia e di
+  un settore, che la norma ha poi dichiarato superate e che i dischi dell'epoca
+  riempivano comunque. Con uno zero lì leggeva blocchi da zero parole;
+- **fa il reset del canale IDE come dice la norma**: tira su il bit, aspetta di
+  vedere il disco occupato, e solo allora lo rimette giù. Un disco che non si
+  dichiarava occupato durante il reset lo lasciava ad aspettare.
+
+E una la macchina l'ha dovuta imparare per conto suo: il **lettore di dischetti
+c'è sempre**. Sulla scheda del Pentium il setup lo dichiara solo se c'è un
+dischetto, per risparmiare al firmware cinque secondi; ma il DOS conta i lettori
+una volta sola, all'accensione, e su un 386 del 1990 il lettore era avvitato nel
+case. Senza, un dischetto infilato dopo non avrebbe avuto nessun A: in cui
+comparire.
+
+### Il filo del cambio disco
+
+Una cosa che vale per tutte e due le schede, e che è venuta fuori qui perché qui
+per la prima volta i dischetti si cambiano a macchina accesa. La porta 3F7h ha un
+bit che dice se il dischetto è stato cambiato, e non vuol dire «c'è o non c'è»:
+è un filo che si alza quando lo sportello si apre e si abbassa solo quando la
+testina fa un passo con un dischetto dentro. È così che il DOS sa di dover
+buttare la FAT che teneva in memoria. Se il filo seguisse solo la presenza, un
+dischetto cambiato con un altro senza passare dal vuoto — che è quello che fa
+chi installa da sei dischetti — resterebbe per il DOS il dischetto di prima.
+
+### Nel browser
+
+La pagina è quella del 286, con due cose in più. Il **mouse**: un clic sullo
+schermo cattura il puntatore — Esc lo libera — e da lì ogni movimento diventa un
+pacchetto di tre byte dall'8042, com'era un mouse PS/2, che sa dire solo di
+quanto si è spostato. E lo **schermo che cambia misura**: la canvas segue la VGA,
+720×400 in modo testo e quello che serve nei modi grafici. Il resto è uguale: i
+dischetti e i dischi fissi si trascinano sulla finestra, i file sciolti e gli zip
+finiscono su C:, e la tastiera si sceglie dalla barra con la stessa riga di KEYB
+nell'AUTOEXEC.BAT.
+
+### Cosa manca
+
+Quello che manca al Pentium, cioè la **virgola mobile** — sul 386 era un chip a
+parte, il 387, e anche lui manca — il **cambio di task** e il **modo virtuale
+8086**. Sono le tre cose che servono a Windows 3.1 in modo 386 avanzato; in modo
+standard gli bastano gli anelli, che ci sono. E il **suono**: per ora il 386 ha
+l'altoparlante sulla scheda ma nessuno che lo ascolti.
 
 ## Schermo intero
 
@@ -1122,6 +1382,8 @@ src/systems/pc/       il PC 286
   fdc.js              il NEC 765 e il lettore di dischetti
   ata.js              la scheda XT-CF, il disco, e la geometria letta da dentro
   cga.js              la scheda video: testo e le due grafiche
+  soundblaster.js     la Sound Blaster 2.0: il DSP, il suo DMA e la sua IRQ
+  opl2.js             lo Yamaha YM3812: nove voci in modulazione di frequenza
   keyboard.js         la tastiera XT, con il suo filo di clock
   scancodes.js        da tasto del browser a numero di tasto sulla matrice
   speaker.js          l'altoparlante: un bit e un contatore
@@ -1149,6 +1411,9 @@ src/systems/pentium/  il PC del 1995
   fwcfg.js            il canale da cui il firmware chiede com'è la macchina
   ide.js              i due canali IDE: i registri, l'LBA, e i settori a parole
   roms.js             dove trovare SeaBIOS e la sua ROM video
+src/systems/pc386/    il PC 386, sulla scheda del Pentium
+  roms.js             dove trovare il BIOS di Bochs e il VGABIOS LGPL
+  index.js            la sessione: canvas, dischi, tastiera, mouse, comandi
 ```
 
 Le macchine sono costruite allo stesso modo: la CPU esegue i cicli di una
@@ -1195,12 +1460,27 @@ dell'Amiga sono proprietà Commodore/Cloanto: non sono incluse in questo progett
 e non sono coperte da questa licenza.
 
 Un'eccezione c'è, ed è il disco fisso del PC. `roms/pc/hdd.img` contiene
-**FreeDOS 1.3** — kernel, `COMMAND.COM` e i programmi in `C:\FDOS\BIN` — che è
-software libero sotto **GNU GPL versione 2**, ridistribuito qui in forma binaria
-insieme al resto. I sorgenti stanno dove sta il resto di FreeDOS, nel
+**FreeDOS 1.3** — kernel, `COMMAND.COM` e i programmi in `C:\FDOS\BIN`, KEYB e
+le sue tastiere compresi — che è software libero sotto **GNU GPL versione 2**,
+ridistribuito qui in forma binaria insieme al resto. I sorgenti stanno dove sta
+il resto di FreeDOS, nel
 [repository dei pacchetti](https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/1.3/base/):
-ogni pacchetto si porta dietro il proprio, dentro `SOURCE/`. Il disco lo si
-rifà dal dischetto ufficiale con `npm run make-hdd`.
+ogni pacchetto si porta dietro il proprio, dentro `SOURCE/` — KEYB in `keyb`,
+le tastiere in `keyb_lay`. Accanto a loro c'è `KB16.COM`, che invece è di
+alloldos, sotto la stessa GPLv3 del resto: il suo sorgente è
+`scripts/kb16.mjs`. Il disco lo si rifà dal dischetto ufficiale e da quei due
+pacchetti con `npm run make-hdd`.
+
+L'altra eccezione è il BIOS della VGA del 286. `roms/pc/vgabios.bin` è il
+**VGABIOS** di Bochs e dei suoi autori, software libero sotto **GNU LGPL**,
+compilato dal sorgente della versione 0.8a
+([download.savannah.gnu.org/releases/vgabios](https://download.savannah.gnu.org/releases/vgabios/vgabios-0.8a.tgz))
+per il 286 invece che per il 386. Le modifiche sono tre, e stanno tutte in
+`scripts/build-vgabios.mjs`, che scarica quel sorgente, le applica e lo
+compila: i vettori delle due tabelle dei caratteri copiati a sedici bit invece
+che a trentadue, la lettura dei registri PCI messa sotto la stessa condizione
+del codice VBE che la usa, e l'assemblatore a cui si dice che il processore è
+un 286.
 
 Scritto da Daniele Corte e Claude Code. Il codice sta su
 [github.com/danielecorte/alloldos](https://github.com/danielecorte/alloldos).

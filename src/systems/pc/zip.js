@@ -83,7 +83,7 @@ async function inflate(stored) {
  * dentro, e su un disco DOS non serve a nessuno.
  *
  * @param {Uint8Array} bytes
- * @returns {Promise<{path:string, bytes:Uint8Array}[]>}
+ * @returns {Promise<{path:string, bytes:Uint8Array, stamp:{time:number, date:number}}[]>}
  */
 export async function readZip(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -105,6 +105,10 @@ export async function readZip(bytes) {
     const extraLength = u16(view, at + 30);
     const commentLength = u16(view, at + 32);
     const local = u32(view, at + 42);
+    // L'ora del file sta nel catalogo nello stesso formato della FAT — due
+    // parole da sedici bit, secondi divisi per due — perché PKZIP è nato sul
+    // DOS e si è preso il formato che aveva sotto mano.
+    const stamp = { time: u16(view, at + 12), date: u16(view, at + 14) };
     const path = decoder.decode(bytes.subarray(at + 46, at + 46 + nameLength));
     at += 46 + nameLength + extraLength + commentLength;
 
@@ -132,7 +136,7 @@ export async function readZip(bytes) {
     if (checksum && crc32(content) !== checksum) {
       throw new UnreadableZipError(`«${path}» non torna: l'archivio è rovinato`);
     }
-    files.push({ path, bytes: content });
+    files.push({ path, bytes: content, stamp });
   }
 
   if (!files.length) throw new UnreadableZipError('lo zip è vuoto');

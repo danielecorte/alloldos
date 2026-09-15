@@ -152,9 +152,19 @@ export class Pentium {
    * @param {number} [options.ram]
    * @param {{base:number,bytes:Uint8Array}[]} [options.cards] le ROM delle schede
    * @param {()=>Date} [options.now]
+   * @param {number} [options.clock] quanti cicli al secondo dichiara il processore
+   * @param {386|486|586} [options.model] che processore c'è sulla scheda
    */
   constructor(bios, options = {}) {
     this.biosImage = bios;
+    /**
+     * La frequenza, da cui la macchina ricava tutti i suoi tempi. È la stessa
+     * scheda per il Pentium e per il 386 che ci si monta sopra, e la differenza
+     * che si vede di più è questa: trentatré milioni di cicli al secondo invece
+     * di sessantasei, cioè metà del lavoro per ogni fotogramma.
+     */
+    this.clock = options.clock ?? CPU_CLOCK;
+    this.frameCycles = Math.round(this.clock / FPS);
     this.ramSize = options.ram ?? RAM_SIZE;
     this.ram = new Uint8Array(this.ramSize);
     this.cardROM = new Uint8Array(CARD_ROM_SIZE).fill(0xff);
@@ -204,14 +214,17 @@ export class Pentium {
     this.dma16 = new DMA8237(bus);
 
     /** La scheda video, che è l'unica di cui questa macchina non può fare a meno. */
-    this.video = new VGA(CPU_CLOCK);
+    this.video = new VGA(this.clock);
 
     /**
      * I dischi. Il lettore di dischetti è lo stesso NEC 765 del 286 di qui
      * accanto — è lo stesso chip, e nel 1995 è ancora quello, dentro il ponte sud
      * invece che su una scheda — e i dischi fissi sono IDE sulle porte di sempre.
      */
-    this.floppy = new FDC765({ dma: this.dma, onInterrupt: () => this.pics.pulse(6) });
+    // Il controllore di questa generazione sa spostare la testina da sé prima
+    // di leggere: il BIOS di Bochs, che gira sulla stessa scheda per il 386,
+    // non manda mai un SEEK e se lo aspetta.
+    this.floppy = new FDC765({ dma: this.dma, onInterrupt: () => this.pics.pulse(6), impliedSeek: true });
     this.disks = new IDE((irq, active) => this.pics.setLine(irq, active));
     if (options.disk) this.disks.channels[0].attach(0, options.disk);
     if (options.disk2) this.disks.channels[0].attach(1, options.disk2);
@@ -239,7 +252,7 @@ export class Pentium {
      */
     this.log = '';
 
-    this.cpu = new CPU586(this);
+    this.cpu = new CPU586(this, { model: options.model ?? 586 });
     this.reset();
   }
 
@@ -417,9 +430,11 @@ export class Pentium {
       // La porta che i due si dividono: il bit 7 è del lettore di dischetti — dice
       // che il dischetto è stato cambiato — e gli altri sette del disco fisso. Due
       // schede diverse sullo stesso byte, che è il genere di cosa che succede
-      // quando gli indirizzi finiscono.
-      const inserted = this.floppy.drives[0]?.medium;
-      return (inserted ? 0x00 : 0x80) | (this.disks.read(0x3f7) & 0x7f);
+      // quando gli indirizzi finiscono. Il bit è il filo del lettore, non «c'è o
+      // non c'è»: un dischetto cambiato con un altro, senza passare dal vuoto,
+      // lo deve alzare lo stesso, o il DOS si tiene la FAT del primo.
+      const changed = this.floppy.drives[0]?.changed ?? true;
+      return (changed ? 0x80 : 0x00) | (this.disks.read(0x3f7) & 0x7f);
     }
     if (port >= 0x3b0 && port < 0x3e0) return this.video?.readPort(port) ?? 0xff;
     if (port >= PCI_ADDRESS && port < PCI_ADDRESS + 8) return this.pci.read(port);
@@ -544,7 +559,7 @@ export class Pentium {
    * dei driver del DOS.
    */
   get portBValue() {
-    const refresh = Math.floor((this.cycles * PIT_CLOCK) / CPU_CLOCK / 15) & 1;
+    const refresh = Math.floor((this.cycles * PIT_CLOCK) / this.clock / 15) & 1;
     return (this.portB & 0x0f) | (refresh << 4) | (this.pit.speakerOutput ? 0x20 : 0);
   }
 
@@ -567,8 +582,8 @@ export class Pentium {
     if (delta <= 0) return;
     this.synced = this.cycles;
     this.pitRemainder += delta * PIT_CLOCK;
-    const ticks = Math.floor(this.pitRemainder / CPU_CLOCK);
-    this.pitRemainder -= ticks * CPU_CLOCK;
+    const ticks = Math.floor(this.pitRemainder / this.clock);
+    this.pitRemainder -= ticks * this.clock;
     if (ticks) this.pit.advance(ticks);
     this.video?.advance(delta);
   }
@@ -643,7 +658,7 @@ export class Pentium {
   }
 
   runFrame() {
-    this.runCycles(FRAME_CYCLES);
+    this.runCycles(this.frameCycles);
   }
 
   /**
@@ -662,7 +677,7 @@ export class Pentium {
     if (!channel.running || !channel.gate) return this.nextSync;
     // Quanti cicli di processore stanno nei colpi di quarzo che restano.
     const ticks = Math.max(1, channel.count);
-    const cycles = Math.ceil((ticks * CPU_CLOCK) / PIT_CLOCK);
+    const cycles = Math.ceil((ticks * this.clock) / PIT_CLOCK);
     return Math.max(this.nextSync, this.cycles + cycles);
   }
 

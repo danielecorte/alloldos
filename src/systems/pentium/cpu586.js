@@ -95,6 +95,19 @@ export class Fault {
 /** Quello che l'emulatore non sa ancora fare, detto forte invece che sbagliato. */
 export class Unsupported extends Error {}
 
+/**
+ * Da che processore in poi c'è ciascuna delle istruzioni che cominciano con
+ * 0F. Quelle che non sono qui c'erano già nel 386: il modo protetto, i salti
+ * lunghi, i bit, gli scorrimenti doppi, le estensioni di segno.
+ */
+const NEWER_0F = new Uint16Array(256);
+for (const opcode of [0x08, 0x09, 0xb0, 0xb1, 0xc0, 0xc1, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf]) {
+  NEWER_0F[opcode] = 486; // INVD e WBINVD, CMPXCHG, XADD, BSWAP
+}
+for (const opcode of [0x30, 0x31, 0x32, 0xa2, 0xc7]) {
+  NEWER_0F[opcode] = 586; // WRMSR, RDTSC, RDMSR, CPUID, CMPXCHG8B
+}
+
 /** La parità di un byte, che è l'unico flag che si conta e non si calcola. */
 const PARITY = new Uint8Array(256);
 for (let i = 0; i < 256; i++) {
@@ -128,8 +141,15 @@ export class CPU586 {
    * @param {(port:number)=>number} bus.inb
    * @param {(port:number,value:number)=>void} bus.outb
    */
-  constructor(bus) {
+  constructor(bus, { model = 586 } = {}) {
     this.bus = bus;
+    /**
+     * Che processore fa: 386, 486 o 586. Lo stesso motore fa anche i due di
+     * prima, spegnendo quello che non avevano — le istruzioni arrivate dopo, CR4,
+     * e i due bit di EFLAGS con cui il software li distingueva. Un 386 non è un
+     * Pentium lento: è un Pentium a cui manca la risposta a CPUID.
+     */
+    this.model = model;
     /** Gli otto registri, a trentadue bit: EAX è r[0], e AX e AL ci stanno dentro. */
     this.r = new Uint32Array(8);
     /** I selettori dei sei segmenti, che in modo protetto non sono indirizzi. */
@@ -181,7 +201,9 @@ export class CPU586 {
     this.ac = 0;
     this.id = 0;
 
-    this.cr0 = 0x60000010; // ET acceso, come si sveglia un Pentium
+    // ET acceso, come si sveglia un Pentium; CD e NW, le due cache, sono del 486
+    // e il 386 non li ha.
+    this.cr0 = this.model < 486 ? 0x00000010 : 0x60000010;
     this.cr2 = 0;
     this.cr3 = 0;
     this.cr4 = 0;
@@ -337,8 +359,11 @@ export class CPU586 {
     this.iopl = (value >> 12) & 3;
     this.nt = (value >> 14) & 1;
     this.rf = (value >> 16) & 1;
-    this.ac = (value >> 18) & 1;
-    this.id = (value >> 21) & 1;
+    // I due bit con cui il software riconosce il processore: AC c'è dal 486, ID
+    // dal Pentium. Si prova ad accenderli e si guarda se restano accesi — su un
+    // 386 AC ricade, e il programma sa di avere davanti un 386.
+    this.ac = this.model >= 486 ? (value >> 18) & 1 : 0;
+    this.id = this.model >= 586 ? (value >> 21) & 1 : 0;
   }
 
   /** I flag che un'operazione logica lascia: il segno, lo zero, la parità. */
@@ -701,6 +726,7 @@ export class CPU586 {
     cache.writable = !code && (d.type & 0x02) !== 0;
     cache.readable = !code || (d.type & 0x02) !== 0;
     cache.expandDown = !code && (d.type & 0x04) !== 0;
+    cache.conforming = code && (d.type & 0x04) !== 0;
     if (index === CS) this.cpl = code && (d.type & 0x04) !== 0 ? this.cpl : d.dpl;
   }
 
@@ -710,9 +736,111 @@ export class CPU586 {
    */
   farJump(selector, offset) {
     const wasBig = this.seg[CS].big;
+    if (this.protectedMode && (selector & 0xfffc) !== 0) {
+      const d = this.descriptorAt(selector);
+      if (d.system) {
+        // Un salto attraverso una porta: la porta dice dove, e un JMP — a
+        // differenza di una CALL — non cambia anello, perché non ha nessun
+        // ritorno su cui ricordarsi da dove veniva.
+        const { target, targetSelector, targetOffset } = this.openCallGate(selector, d);
+        const conforming = (target.type & 0x04) !== 0;
+        if (!conforming && target.dpl !== this.cpl) throw new Fault(GENERAL_PROTECTION, targetSelector & 0xfffc);
+        this.loadSegment(CS, (targetSelector & 0xfffc) | this.cpl);
+        this.eip = this.seg[CS].big ? targetOffset >>> 0 : targetOffset & 0xffff;
+        return wasBig;
+      }
+    }
     this.loadSegment(CS, selector);
     this.eip = this.seg[CS].big ? offset >>> 0 : offset & 0xffff;
     return wasBig;
+  }
+
+  /**
+   * Una chiamata lontana. Di solito è un salto con un ritorno impilato davanti;
+   * ma se il selettore è una **porta di chiamata** è il modo in cui un programma
+   * entra nel sistema operativo, e il sistema operativo sta in un anello più
+   * interno.
+   *
+   * @param {number} selector
+   * @param {number} offset
+   * @param {number} size la misura degli operandi dell'istruzione
+   */
+  farCall(selector, offset, size) {
+    if (this.protectedMode && (selector & 0xfffc) !== 0) {
+      const d = this.descriptorAt(selector);
+      if (d.system) return this.callThroughGate(selector, d);
+    }
+    this.push(this.s[CS], size);
+    this.push(this.eip, size);
+    this.farJump(selector, offset);
+    return undefined;
+  }
+
+  /**
+   * Le verifiche di una porta di chiamata, che sono due volte quelle di un
+   * segmento: prima la porta — chi ha il diritto di passarci — poi il segmento
+   * di codice dall'altra parte, che deve stare in un anello non più esterno di
+   * quello di chi chiama. Una porta di task invece vorrebbe dire cambiare
+   * programma, e quello qui non c'è ancora.
+   */
+  openCallGate(selector, gate) {
+    if (gate.type === 5 || gate.type === 1 || gate.type === 9) {
+      throw new Unsupported('il cambio di task non c\'è ancora');
+    }
+    if (gate.type !== 4 && gate.type !== 12) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
+    if (gate.dpl < Math.max(this.cpl, selector & 3)) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
+    if (!gate.present) throw new Fault(SEGMENT_NOT_PRESENT, selector & 0xfffc);
+    const wide = gate.type === 12;
+    const targetSelector = (gate.low >>> 16) & 0xffff;
+    const targetOffset = wide ? ((gate.high & 0xffff0000) | (gate.low & 0xffff)) >>> 0 : gate.low & 0xffff;
+    if ((targetSelector & 0xfffc) === 0) throw new Fault(GENERAL_PROTECTION, 0);
+    const target = this.descriptorAt(targetSelector);
+    if (target.system || (target.type & 0x08) === 0 || target.dpl > this.cpl) {
+      throw new Fault(GENERAL_PROTECTION, targetSelector & 0xfffc);
+    }
+    if (!target.present) throw new Fault(SEGMENT_NOT_PRESENT, targetSelector & 0xfffc);
+    return { wide, target, targetSelector, targetOffset, params: gate.high & 0x1f };
+  }
+
+  /**
+   * La chiamata attraverso una porta. Se il codice dall'altra parte sta in un
+   * anello più interno, come per un'interruzione lo stack cambia — lo prende il
+   * TSS — e sullo stack nuovo, prima dell'indirizzo di ritorno, vanno lo stack di
+   * prima e i **parametri**: la porta dice quanti, e il processore li ricopia da
+   * uno stack all'altro, perché il chiamato non può leggere quello del chiamante
+   * senza fidarsi di lui. È il meccanismo con cui Windows 3.1, in modo standard,
+   * chiama il suo extender DOS.
+   */
+  callThroughGate(selector, gate) {
+    const { wide, target, targetSelector, targetOffset, params } = this.openCallGate(selector, gate);
+    const size = wide ? 4 : 2;
+    const conforming = (target.type & 0x04) !== 0;
+    const ring = conforming ? this.cpl : target.dpl;
+    const from = { cs: this.s[CS], eip: this.eip, ss: this.s[SS], esp: this.get32(ESP) };
+    const saved = this.snapshot();
+    try {
+      if (ring < this.cpl) {
+        const width = this.stacksize;
+        const args = [];
+        for (let i = 0; i < params; i++) args.push(this.read(size, SS, trim(width, from.esp + i * size)));
+        const stack = this.innerStack(ring);
+        this.cpl = ring;
+        this.loadSegment(SS, stack.ss);
+        this.set(this.stacksize, ESP, stack.esp);
+        this.push(from.ss, size);
+        this.push(size === 4 ? from.esp : from.esp & 0xffff, size);
+        // Nello stesso ordine in cui stavano: il primo impilato dal chiamante è
+        // quello più in alto, e va ricopiato per primo.
+        for (let i = params - 1; i >= 0; i--) this.push(args[i], size);
+      }
+      this.push(from.cs, size);
+      this.push(size === 4 ? from.eip : from.eip & 0xffff, size);
+      this.loadSegment(CS, (targetSelector & 0xfffc) | ring);
+      this.eip = size === 4 ? targetOffset >>> 0 : targetOffset & 0xffff;
+    } catch (error) {
+      this.restore(saved);
+      throw error;
+    }
   }
 
   // -------------------------------------------------------------- lo stack
@@ -1110,10 +1238,15 @@ export class CPU586 {
     const wide = type === 14 || type === 15;
     const selector = (low >>> 16) & 0xffff;
     const offset = wide ? ((high & 0xffff0000) | (low & 0xffff)) >>> 0 : low & 0xffff;
+    if ((selector & 0xfffc) === 0) throw new Fault(GENERAL_PROTECTION, 0);
     const target = this.descriptorAt(selector);
-    if (target.dpl < this.cpl) {
-      throw new Unsupported('il cambio di anello vuole un TSS, che non c\'è ancora');
-    }
+    if (target.system || (target.type & 0x08) === 0) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
+    // Un gestore non può stare in un anello più esterno di chi è stato
+    // interrotto: il sistema operativo non si fa servire dai programmi.
+    if (target.dpl > this.cpl) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
+    if (!target.present) throw new Fault(SEGMENT_NOT_PRESENT, selector & 0xfffc);
+    const conforming = (target.type & 0x04) !== 0;
+    const ring = conforming ? this.cpl : target.dpl;
 
     // Quello che si impila è lo stato dell'istruzione *interrotta*, e va letto
     // prima di toccare qualunque cosa: da qui in poi CS e EIP sono già quelli
@@ -1121,19 +1254,110 @@ export class CPU586 {
     // stack.
     const size = wide ? 4 : 2;
     const flags = this.eflags;
-    const from = { cs: this.s[CS], eip: this.eip };
-    this.tf = 0;
-    // Una porta di interruzione chiude le interruzioni entrando; una porta di
-    // trappola le lascia aperte. È tutta la differenza fra le due, e si sceglie
-    // per ogni singolo vettore: il gestore della tastiera non vuole essere
-    // interrotto, quello del debugger sì.
-    if (type === 6 || type === 14) this.if_ = 0;
-    this.loadSegment(CS, selector);
-    this.eip = offset;
-    this.push(flags, size);
-    this.push(from.cs, size);
-    this.push(size === 4 ? from.eip : from.eip & 0xffff, size);
-    if (code !== null) this.push(code, size);
+    const from = { cs: this.s[CS], eip: this.eip, ss: this.s[SS], esp: this.get32(ESP) };
+    const saved = this.snapshot();
+    try {
+      if (ring < this.cpl) {
+        // **Il cambio di anello.** Un programma all'anello 3 viene interrotto e
+        // il gestore sta all'anello 0: il gestore non può usare lo stack del
+        // programma — che il programma potrebbe aver lasciato in qualunque stato,
+        // anche apposta — e quindi il processore gliene dà un altro. Dove sia lo
+        // dice il **TSS**, il segmento di stato del task: per ogni anello interno
+        // una coppia SS:ESP, scritta lì dal sistema operativo. Sullo stack nuovo,
+        // prima di tutto il resto, va lo stack di prima, così che IRET sappia
+        // dove tornare.
+        const stack = this.innerStack(ring);
+        this.cpl = ring;
+        this.loadSegment(SS, stack.ss);
+        this.set(this.stacksize, ESP, stack.esp);
+        this.push(from.ss, size);
+        this.push(size === 4 ? from.esp : from.esp & 0xffff, size);
+      }
+      this.tf = 0;
+      this.nt = 0;
+      this.rf = 0;
+      // Una porta di interruzione chiude le interruzioni entrando; una porta di
+      // trappola le lascia aperte. È tutta la differenza fra le due, e si sceglie
+      // per ogni singolo vettore: il gestore della tastiera non vuole essere
+      // interrotto, quello del debugger sì.
+      if (type === 6 || type === 14) this.if_ = 0;
+      // Il livello richiesto del selettore nella porta non conta: CS prende
+      // l'anello in cui si entra.
+      this.loadSegment(CS, (selector & 0xfffc) | ring);
+      this.eip = offset;
+      this.push(flags, size);
+      this.push(from.cs, size);
+      this.push(size === 4 ? from.eip : from.eip & 0xffff, size);
+      if (code !== null) this.push(code, size);
+    } catch (error) {
+      this.restore(saved);
+      throw error;
+    }
+  }
+
+  /**
+   * Lo stack di un anello interno, come lo dice il TSS. Un TSS a trentadue bit
+   * tiene ESP0 a +4 e SS0 a +8, poi le coppie degli anelli 1 e 2; quello a
+   * sedici bit del 286 tiene SP0 a +2 e SS0 a +4, e tutto a metà misura.
+   *
+   * @param {number} ring l'anello in cui si entra, da 0 a 2
+   * @returns {{ss:number, esp:number}}
+   */
+  innerStack(ring) {
+    if ((this.tr.selector & 0xfffc) === 0) throw new Fault(INVALID_TSS, 0);
+    const wide = this.tr.wide !== false;
+    const at = wide ? 4 + ring * 8 : 2 + ring * 4;
+    const last = at + (wide ? 5 : 3);
+    if (last > this.tr.limit) throw new Fault(INVALID_TSS, this.tr.selector & 0xfffc);
+    const esp = this.readLinear(wide ? 4 : 2, this.tr.base + at);
+    const ss = this.readLinear(2, this.tr.base + at + (wide ? 4 : 2));
+    // Uno stack interno sbagliato è colpa del sistema operativo che ha scritto
+    // il TSS, e il processore lo dice con l'eccezione del TSS e non con un #GP.
+    if ((ss & 0xfffc) === 0 || (ss & 3) !== ring) throw new Fault(INVALID_TSS, ss & 0xfffc);
+    return { ss, esp };
+  }
+
+  /**
+   * Tornando a un anello esterno, i registri di dati che puntano a segmenti
+   * più privilegiati si svuotano: se restassero caricati, il programma potrebbe
+   * leggere la memoria del sistema operativo con i diritti che il gestore aveva
+   * lasciato in giro.
+   */
+  dropPrivilegedSegments() {
+    for (const index of [ES, DS, FS, GS]) {
+      const cache = this.seg[index];
+      if (!cache.present) continue;
+      if (cache.code && cache.conforming) continue;
+      if (cache.dpl < this.cpl) {
+        this.s[index] = 0;
+        cache.present = false;
+      }
+    }
+  }
+
+  /** Quello che un'interruzione a metà strada deve poter rimettere com'era. */
+  snapshot() {
+    return {
+      cpl: this.cpl,
+      eip: this.eip,
+      eflags: this.eflags,
+      esp: this.get32(ESP),
+      cs: this.s[CS],
+      ss: this.s[SS],
+      csCache: { ...this.seg[CS] },
+      ssCache: { ...this.seg[SS] },
+    };
+  }
+
+  restore(saved) {
+    this.cpl = saved.cpl;
+    this.eip = saved.eip;
+    this.eflags = saved.eflags;
+    this.set32(ESP, saved.esp);
+    this.s[CS] = saved.cs;
+    this.s[SS] = saved.ss;
+    Object.assign(this.seg[CS], saved.csCache);
+    Object.assign(this.seg[SS], saved.ssCache);
   }
 
   /**
@@ -1163,17 +1387,24 @@ export class CPU586 {
       sp = this.pop(size);
       ss = this.pop(size);
     }
+    // Chi può cambiare cosa lo decide l'anello da cui si parte, non quello in
+    // cui si arriva: è il sistema operativo, all'anello 0, che con un IRET dà a
+    // un programma all'anello 3 il diritto di usare le porte — ed è quello che fa
+    // ogni extender DOS.
+    const from = this.cpl;
+    const before = this.eflags;
     this.loadSegment(CS, cs);
     this.eip = size === 4 ? eip >>> 0 : eip & 0xffff;
     // I flag che un programma meno privilegiato non ha il diritto di cambiare
     // restano quelli di prima: è così che IRET non diventa il modo di prendersi
     // i privilegi che non si hanno.
-    const before = this.eflags;
     this.eflags = size === 4 ? flags : (before & 0xffff0000) | flags;
-    if (this.cpl > 0) this.iopl = (before >>> 12) & 3;
+    if (from > 0) this.iopl = (before >>> 12) & 3;
+    if (from > ((before >>> 12) & 3)) this.if_ = (before >>> 9) & 1;
     if (outer) {
       this.loadSegment(SS, ss);
-      this.set32(ESP, size === 4 ? sp >>> 0 : sp & 0xffff);
+      this.set(this.stacksize, ESP, size === 4 ? sp >>> 0 : sp & 0xffff);
+      this.dropPrivilegedSegments();
     }
   }
 
@@ -1760,9 +1991,7 @@ export class CPU586 {
       case 0x9a: {
         const offset = this.fetch(size);
         const selector = this.fetch16();
-        this.push(this.s[CS], size);
-        this.push(this.eip, size);
-        this.farJump(selector, offset);
+        this.farCall(selector, offset, size);
         return 6;
       }
       case 0x9b:
@@ -1953,8 +2182,11 @@ export class CPU586 {
         }
         this.farJump(selector, target);
         if (outer) {
+          // I parametri stavano su tutti e due gli stack — la porta li aveva
+          // ricopiati — e RET n li salta su tutti e due.
           this.loadSegment(SS, ss);
-          this.set(this.stacksize, ESP, sp);
+          this.set(this.stacksize, ESP, trim(this.stacksize, sp + extra));
+          this.dropPrivilegedSegments();
         } else {
           this.set(this.stacksize, ESP, this.get(this.stacksize, ESP) + extra);
         }
@@ -2202,9 +2434,7 @@ export class CPU586 {
         if (!this.memory) throw new Fault(INVALID_OPCODE);
         const offset = this.read(size, this.opSegment, this.opOffset);
         const selector = this.read(2, this.opSegment, this.opOffset + size);
-        this.push(this.s[CS], size);
-        this.push(this.eip, size);
-        this.farJump(selector, offset);
+        this.farCall(selector, offset, size);
         return 6;
       }
       case 4: {
@@ -2239,6 +2469,9 @@ export class CPU586 {
    * porta — il modo protetto, i bit, CPUID, MMX, SSE, e tutto il resto.
    */
   execute0F(opcode, size) {
+    // Quello che è arrivato dopo, su un processore di prima, non esiste: è un
+    // opcode non valido, ed è così che un programma prudente se ne accorge.
+    if (this.model < NEWER_0F[opcode]) throw new Fault(INVALID_OPCODE);
     switch (opcode) {
       case 0x00:
         return this.group6();
@@ -2556,6 +2789,7 @@ export class CPU586 {
   }
 
   readControl(which) {
+    if (which === 4 && this.model < 586) throw new Fault(INVALID_OPCODE); // CR4 è del Pentium
     if (which === 0) return this.cr0 >>> 0;
     if (which === 2) return this.cr2 >>> 0;
     if (which === 3) return this.cr3 >>> 0;
@@ -2570,6 +2804,10 @@ export class CPU586 {
    * gira in un mondo diverso da quella prima.
    */
   writeControl(which, value) {
+    if (which === 4 && this.model < 586) throw new Fault(INVALID_OPCODE);
+    // Il 386 ha in CR0 i bit del modo protetto, del coprocessore e della
+    // paginazione, e basta: la protezione in scrittura e le cache sono del 486.
+    if (which === 0 && this.model < 486) value &= 0x8000001f;
     if (which === 0) {
       const before = this.cr0;
       this.cr0 = value >>> 0;
@@ -2663,7 +2901,13 @@ export class CPU586 {
           throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
         }
         if (!d.present) throw new Fault(SEGMENT_NOT_PRESENT, selector & 0xfffc);
-        this.tr = { selector, base: d.base, limit: d.limit, busy: true };
+        // Il TSS caricato si segna occupato nella sua voce della GDT — il bit 1
+        // del tipo — perché nessuno ci entri una seconda volta. E ci si ricorda
+        // se è quello del 386 o quello del 286: le coppie SS:ESP stanno in posti
+        // diversi.
+        const entry = (this.gdt.base + (selector & 0xfff8) + 4) >>> 0;
+        this.writePhys32(this.translate(entry, true), (d.high | 0x200) >>> 0);
+        this.tr = { selector, base: d.base, limit: d.limit, busy: true, wide: d.type === 9 };
         return 3;
       }
       case 4:
@@ -2730,6 +2974,7 @@ export class CPU586 {
         return 3;
       }
       case 7:
+        if (this.model < 486) throw new Fault(INVALID_OPCODE); // INVLPG è del 486
         if (this.protectedMode && this.cpl !== 0) throw new Fault(GENERAL_PROTECTION, 0);
         this.flushTLB(this.memory ? this.linear(this.opSegment, this.opOffset) >>> 12 : -1);
         return 3;

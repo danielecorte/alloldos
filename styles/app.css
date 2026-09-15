@@ -891,6 +891,20 @@ body[data-screen='amiga'] {
   color: #fff;
 }
 
+.pc__select {
+  font: inherit;
+  color: #c8c8c8;
+  background: #0a0a0a;
+  border: 1px solid #333;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+}
+
+.pc__select:hover {
+  background: #1e1e1e;
+  color: #fff;
+}
+
 .pc__status {
   margin-left: auto;
   color: #8a8a8a;

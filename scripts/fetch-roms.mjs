@@ -16,8 +16,26 @@ import { fileURLToPath } from 'node:url';
 // two must not be able to drift apart.
 import { ROM_SPECS, ROM_SOURCE_URL } from '../src/systems/c64/roms.js';
 import { AMIGA_FOREVER_URL, AROS_URL } from '../src/systems/amiga/roms.js';
-import { BIOS_SPEC, CARD_SPEC, GLABIOS_URL, XTIDE_URL } from '../src/systems/pc/roms.js';
+import {
+  BIOS_SPEC,
+  CARD_SPEC,
+  GLABIOS_URL,
+  XTIDE_URL,
+  VIDEO_SPEC as PC_VIDEO_SPEC,
+  VGABIOS_URL as PC_VGABIOS_URL,
+  isVideoROM as isPCVideoROM,
+  isVideoROMFor386 as isPCVideoROMFor386,
+} from '../src/systems/pc/roms.js';
 import { FREEDOS_SPEC, FREEDOS_URL } from '../src/systems/pc/media.js';
+import { KEYB_PACKAGES } from '../src/systems/pc/layouts.js';
+import {
+  BIOS_SPEC as PC386_BIOS,
+  VIDEO_SPEC as PC386_VIDEO,
+  BOCHS_URL,
+  VGABIOS_URL,
+  isSystemBIOS as isBochsBIOS,
+  isOptionROM as isPC386OptionROM,
+} from '../src/systems/pc386/roms.js';
 import { ROM_SPEC as ZX_SPEC, FUSE_URL, OPENSE_URL, isSpectrumROM } from '../src/systems/zx/roms.js';
 import {
   BIOS_SPEC as PENTIUM_BIOS,
@@ -218,6 +236,28 @@ if (haveBIOS) console.log(`  ${GLABIOS_URL} \u2014 GPLv3, and it boots real hard
 const haveCard = await fetchInto(CARD_SPEC, (bytes) => bytes[0] === 0x55 && bytes[1] === 0xaa);
 if (haveCard) console.log(`  ${XTIDE_URL} \u2014 GPLv2, the BIOS of the hard disk card`);
 
+// La ROM della VGA non si scarica: quella che il progetto pubblica \u00e8 compilata
+// per il 386, e sul 286 si ferma. Quella compilata per il 286 viaggia col
+// repository, e `npm run build-vgabios` la rif\u00e0 dal sorgente; senza, la
+// macchina monta la CGA.
+{
+  const target = join(PC_DEST, PC_VIDEO_SPEC.file);
+  let present = false;
+  try {
+    const bytes = new Uint8Array(await readFile(target));
+    present = isPCVideoROM(bytes) && !isPCVideoROMFor386(bytes);
+  } catch {
+    /* non c'\u00e8 */
+  }
+  if (present) {
+    console.log(`\n\u00b7 ${PC_VIDEO_SPEC.file} is in the repository (the ${PC_VIDEO_SPEC.label}, built for the 286)`);
+  } else {
+    console.log(`\n\u00b7 ${PC_VIDEO_SPEC.file} is missing, and the published build is for the 386:`);
+    console.log('  `npm run build-vgabios` compiles it for the 286 (needs gcc, bcc and as86).');
+  }
+  console.log(`  ${PC_VGABIOS_URL} \u2014 LGPL, the BIOS of the VGA card`);
+}
+
 // FreeDOS non si scarica da solo: sta dentro l'archivio dell'edizione a
 // dischetti, che è la sola forma in cui il progetto lo pubblica. Si prende
 // quello e si tira fuori il dischetto da 720 KB, che è l'unico che questa
@@ -258,8 +298,16 @@ if (!haveFloppy) {
 
 if (haveFloppy) {
   console.log(`  ${FREEDOS_URL} \u2014 GPL, and it is the machine's operating system`);
-  console.log('\nIl disco fisso con FreeDOS sopra \u00e8 gi\u00e0 in roms/pc: `npm run make-hdd` lo rif\u00e0.');
 }
+
+// KEYB e le sue tastiere: sul dischetto di avvio non ci sono, stanno in due
+// pacchetti del repository di FreeDOS 1.3. Servono solo a `npm run make-hdd`,
+// che li mette sul disco fisso \u2014 il disco che viaggia col repository li ha gi\u00e0.
+for (const spec of KEYB_PACKAGES) {
+  await fetchInto(spec, (bytes) => bytes[0] === 0x50 && bytes[1] === 0x4b);
+}
+
+console.log('\nIl disco fisso con FreeDOS sopra \u00e8 gi\u00e0 in roms/pc: `npm run make-hdd` lo rif\u00e0.');
 
 /**
  * Tira fuori un file da uno zip senza aprire tutto l'archivio: si cerca
@@ -385,6 +433,48 @@ package that already built it:
 
 Two files go in ${PENTIUM_DEST}: ${PENTIUM_BIOS.file} (the system BIOS, 64/128/256 KB)
 and ${PENTIUM_VIDEO.file} (the ISA VGA BIOS). Dragging them onto the page works too.`);
+}
+
+// -------------------------------------------------------------------- il 386
+
+// Il firmware del 386: il BIOS di Bochs nella versione legacy, tutta a sedici
+// bit e compilata per il 386, e il VGABIOS LGPL. Stanno già compilati nel
+// repository di Bochs, alla versione 2.7, e da lì si prendono.
+
+{
+  const dest = join(ROOT, 'roms', 'pc386');
+  await mkdir(dest, { recursive: true });
+  const checks = [
+    [PC386_BIOS, (bytes) => isBochsBIOS(bytes)],
+    [PC386_VIDEO, (bytes) => isPC386OptionROM(bytes)],
+  ];
+  for (const [spec, accept] of checks) {
+    const target = join(dest, spec.file);
+    if (!process.argv.includes('--force')) {
+      try {
+        await access(target);
+        console.log(`\n· ${spec.file} already present, skipping (use --force to refetch)`);
+        continue;
+      } catch {
+        /* not there yet, download it */
+      }
+    }
+    process.stdout.write(`\n↓ ${spec.file} … `);
+    try {
+      const res = await fetch(spec.source, { redirect: 'follow' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!accept(bytes)) throw new Error(`unexpected contents (${bytes.length} bytes)`);
+      await writeFile(target, bytes);
+      console.log(`ok (${bytes.length} bytes)`);
+    } catch (error) {
+      console.log(`FAILED (${error.message})`);
+      console.error(`  could not fetch ${spec.source}`);
+      process.exitCode = 1;
+    }
+  }
+  console.log(`  ${BOCHS_URL} — LGPL, the BIOS of the 386`);
+  console.log(`  ${VGABIOS_URL} — LGPL, the BIOS of its VGA card`);
 }
 
 // ------------------------------------------------------------- lo ZX Spectrum

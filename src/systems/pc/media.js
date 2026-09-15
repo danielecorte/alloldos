@@ -45,7 +45,16 @@ export const FREEDOS_SPEC = {
  * repository perché FreeDOS è libero. `npm run make-hdd` la rifà da capo,
  * facendo installare il DOS alla macchina.
  */
-export const HDD_SPEC = { file: 'hdd.img', size: DISK_SIZE, label: 'disco fisso' };
+export const HDD_SPEC = {
+  file: 'hdd.img',
+  size: DISK_SIZE,
+  label: 'disco fisso',
+  // Il disco si scarica una volta e poi si prende dalla cache del browser,
+  // perché sono venti mega. Quando cambia quello che c'è sopra — l'ultima
+  // volta KEYB e le tastiere — questo numero cambia con lui, e chi torna sulla
+  // pagina si prende quello nuovo invece di tenersi il vecchio per sempre.
+  revision: 2,
+};
 
 const FLOPPY_KEY = 'alloldos.pc.floppy';
 
@@ -87,7 +96,7 @@ export async function loadFloppy() {
  * @returns {Promise<HardDisk>}
  */
 export async function loadHardDisk() {
-  const image = await fetchImage(HDD_SPEC.file);
+  const image = await fetchImage(`${HDD_SPEC.file}?r=${HDD_SPEC.revision}`);
   if (image && image.length >= 2 * 512) return hardDiskFrom(image);
   const blank = new Uint8Array(DISK_SIZE);
   if (image) blank.set(image);

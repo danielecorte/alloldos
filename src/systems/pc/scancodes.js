@@ -13,7 +13,18 @@
 // Il browser dà due cose per ogni tasto: `code`, che è la posizione fisica —
 // esattamente il concetto che vuole l'XT — e `key`, che è il carattere che ne
 // esce secondo la disposizione di chi scrive. Si usa `code`, perché è
-// l'unico dei due che parla la stessa lingua della macchina.
+// l'unico dei due che parla la stessa lingua della macchina. Chi ha una
+// tastiera italiana, quindi, sceglie la tastiera italiana anche per il DOS —
+// è KEYB, vedi `layouts.js` — e i disegni sui tasti tornano a dire il vero.
+//
+// Due tasti arrivano dopo il 1981, con la tastiera estesa del 1986, e sono
+// proprio quelli che servono a chi non scrive in americano: quello in più
+// accanto allo shift sinistro, che su una tastiera italiana ha sopra < e >, e
+// l'Alt di destra, che fuori dagli Stati Uniti si chiama AltGr e dà le lettere
+// del terzo livello — la chiocciola, il cancelletto, le quadre. L'Alt di destra
+// è un tasto con un prefisso: la tastiera manda E0h e poi il codice dell'Alt
+// di sinistra, e un BIOS che non conosce il prefisso vede un Alt e basta. Qui
+// un codice con il prefisso si scrive con il prefisso nel byte alto.
 
 /** Da posizione del tasto (KeyboardEvent.code) a codice di scansione XT. */
 export const SCANCODES = {
@@ -33,7 +44,8 @@ export const SCANCODES = {
   KeyZ: 0x2c, KeyX: 0x2d, KeyC: 0x2e, KeyV: 0x2f, KeyB: 0x30, KeyN: 0x31,
   KeyM: 0x32, Comma: 0x33, Period: 0x34, Slash: 0x35,
   ShiftRight: 0x36, NumpadMultiply: 0x37,
-  AltLeft: 0x38, AltRight: 0x38, Space: 0x39, CapsLock: 0x3a,
+  AltLeft: 0x38, AltRight: 0xe038, Space: 0x39, CapsLock: 0x3a,
+  IntlBackslash: 0x56,
   F1: 0x3b, F2: 0x3c, F3: 0x3d, F4: 0x3e, F5: 0x3f,
   F6: 0x40, F7: 0x41, F8: 0x42, F9: 0x43, F10: 0x44,
   NumLock: 0x45, ScrollLock: 0x46,
@@ -51,6 +63,19 @@ export const SCANCODES = {
 
 /** I due shift, che il BIOS guarda per sapere che lettera è. */
 export const SHIFT = 0x2a;
+
+/**
+ * I byte che passano sul filo per un tasto premuto o lasciato: il prefisso, se
+ * il tasto ne ha uno, e poi il suo numero — con il bit 7 acceso al rilascio.
+ *
+ * @param {number} code un valore di SCANCODES
+ * @param {boolean} released
+ * @returns {number[]}
+ */
+export function scanBytes(code, released) {
+  const key = (code & 0x7f) | (released ? 0x80 : 0);
+  return code > 0xff ? [code >> 8, key] : [key];
+}
 
 /**
  * Da carattere a tasto (e se ci vuole lo shift). Serve a chi deve *scrivere*

@@ -256,6 +256,37 @@ export class KBC8042 {
   }
 
   /**
+   * Il mouse si è mosso, o è cambiato un tasto: tre byte, come li manda un
+   * mouse PS/2. Il primo dice i tasti e i segni, gli altri due di quanto — in
+   * orizzontale verso destra e in verticale **verso l'alto**, al contrario di
+   * come conta lo schermo. Il mouse parla solo se gli è stato chiesto (F4h) e
+   * se la sua porta è aperta; altrimenti il movimento si perde, come su una
+   * macchina vera con il driver non caricato.
+   *
+   * @param {number} dx
+   * @param {number} dy positivo verso l'alto
+   * @param {number} buttons bit 0 sinistro, bit 1 destro, bit 2 centrale
+   * @returns {boolean} se il pacchetto è partito
+   */
+  mouseMoved(dx, dy, buttons) {
+    if (!this.mouse.reporting || !this.mouseEnabled) return false;
+    const clamp = (value) => Math.max(-255, Math.min(255, Math.round(value)));
+    const x = clamp(dx);
+    const y = clamp(dy);
+    // Il bit 3 è sempre acceso: è quello da cui un driver capisce dove comincia
+    // un pacchetto, se ha perso il conto.
+    this.push(0x08 | (buttons & 7) | (x < 0 ? 0x10 : 0) | (y < 0 ? 0x20 : 0), true);
+    this.push(x & 0xff, true);
+    this.push(y & 0xff, true);
+    return true;
+  }
+
+  /** Quanti byte del mouse aspettano ancora di essere letti. */
+  get mouseBacklog() {
+    return this.output.filter((entry) => entry.mouse).length;
+  }
+
+  /**
    * Un comando per il mouse. Il mouse PS/2 è tre byte per movimento e non sa
    * niente di dove sia il puntatore: dice solo di quanto si è spostato da quando
    * gliel'hanno chiesto l'ultima volta.

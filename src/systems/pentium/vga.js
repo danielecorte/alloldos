@@ -477,16 +477,22 @@ export class VGA {
   get width() {
     if (this.graphicsMode) {
       const dots = this.columns * 8;
-      return this.shiftMode === 1 ? dots >> 1 : dots;
+      // Con i colori a otto bit un punto sono due battiti del pennello: il
+      // quadro è largo 640 battiti, e i punti del modo 13h sono 320.
+      return this.shiftMode === 1 || this.attribute[0x10] & 0x40 ? dots >> 1 : dots;
     }
     return this.columns * this.charWidth;
   }
 
   get height() {
     const lines = this.visibleLines + 1;
-    // Il bit di raddoppio dei righi: 200 righi disegnati due volte fanno 400, ed
-    // è così che il modo 13h riempie uno schermo da 480.
-    return this.crtc[9] & 0x80 ? lines >> 1 : lines;
+    // Il bit di raddoppio dei righi: 200 righi disegnati due volte fanno 400.
+    const drawn = this.crtc[9] & 0x80 ? lines >> 1 : lines;
+    // In grafica i "righi per carattere" del registro 9 ripetono ogni riga di
+    // punti: il modo 13h ci scrive 1, e i suoi 200 righi ne occupano 400 —
+    // l'altro modo di arrivare allo stesso quadro.
+    if (this.graphicsMode) return Math.max(1, Math.floor(drawn / ((this.crtc[9] & 0x1f) + 1)));
+    return drawn;
   }
 
   get shiftMode() {

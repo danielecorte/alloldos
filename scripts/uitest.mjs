@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FAT16 } from '../src/systems/pc/fat.js';
+import { LAYOUTS, layoutOf } from '../src/systems/pc/layouts.js';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 
@@ -623,11 +624,14 @@ if (pc.machine === null) {
   check('and says where to get it, because this one is free', romText.includes('glabios'));
 } else {
   check('the PC booted', pc.machine !== null);
-  check('the canvas is 640 by 200, which is what a CGA draws', pc.canvas.width === 640 && pc.canvas.height === 200);
+  // La scheda video è la VGA se il suo BIOS è in roms/pc, se no la CGA.
+  const withVGA = existsSync(join(ROOT, 'roms', 'pc', 'vgabios.bin'));
+  check(withVGA ? 'with a VGA, because its BIOS is there' : 'with a CGA, because there is no VGA BIOS',
+    Boolean(pc.machine.vga) === withVGA);
 
   // Il POST, e poi il sistema operativo. Ci vogliono un po' di quadri: la
   // macchina conta 640 KB e prova il lettore prima di guardare il disco.
-  const pcScreen = () => pc.machine.cga.text().join('\n');
+  const pcScreen = () => pc.machine.video.text().join('\n');
   // Il POST scorre via da solo appena il sistema operativo parte, quindi si
   // tiene l'ultima schermata in cui il BIOS stava ancora parlando.
   let post = '';
@@ -643,6 +647,14 @@ if (pc.machine === null) {
   check('with all 640 KB counted', /RAM\s+\[ 640 KB OK \]/.test(post));
   check('and finds the hard disk card', post.includes('C800') && post.includes('XTIDE'));
   check('and boots an operating system', reached !== '', reached || 'nessun prompt');
+  if (withVGA) {
+    check('the POST says VGA, because the card said so', /Video\s+\[ VGA \]/.test(post));
+    check('and the canvas follows its text mode, 720 by 400', pc.canvas.width === 720 && pc.canvas.height === 400,
+      `${pc.canvas.width}x${pc.canvas.height}`);
+  } else {
+    check('the canvas is 640 by 200, which is what a CGA draws', pc.canvas.width === 640 && pc.canvas.height === 200);
+  }
+  check('and the Sound Blaster is on the board, turning out samples', pc.machine.sound.sampleRate > 0);
   // E lo prende dal disco fisso, che viaggia con la pagina: chi apre alloldos
   // trova il DOS installato, non un disco da partizionare.
   if (existsSync(join(ROOT, 'roms', 'pc', 'hdd.img'))) {
@@ -673,6 +685,38 @@ if (pc.machine === null) {
   const afterBlur = pc.machine.keyboard.queue.concat(pc.machine.keyboard.latch);
   check('so the next key still gets through', afterBlur.includes(0x30), afterBlur.join(' '));
   sendKey('keyup', 'KeyB', 'b');
+
+  // AltGr arriva come l'Alt con il prefisso E0. Windows gli manda davanti un
+  // Ctrl di sinistra che nessuno ha premuto, nello stesso istante: quello va
+  // lasciato andare, o per KEYB diventa Ctrl-AltGr.
+  pc.machine.keyboard.queue.length = 0;
+  sendKey('keydown', 'ControlLeft', 'Control', { timeStamp: 5000 });
+  sendKey('keydown', 'AltRight', 'AltGraph', { timeStamp: 5000, getModifierState: (key) => key === 'AltGraph' });
+  const altGr = [pc.machine.keyboard.latch, ...pc.machine.keyboard.queue].join(' ');
+  check('AltGr reaches the machine as Alt with the E0 prefix', altGr.includes('224 56'), altGr);
+  check('without the Control Windows sends in front of it', !pc.machine.keyboard.down.has(0x1d), altGr);
+  sendKey('keyup', 'AltRight', 'AltGraph');
+  sendKey('keyup', 'ControlLeft', 'Control');
+
+  // La tastiera: la tendina scrive KEYB nell'AUTOEXEC.BAT, e la macchina si
+  // riaccende con quella — che è come la si cambiava allora.
+  check('the bar offers every keyboard KEYB can load here', pc.layoutSelect.children.length === LAYOUTS.length);
+  check('starting from the American one, the BIOS\'s own', pc.layoutSelect.value === 'us');
+  pc.layoutSelect.value = 'it';
+  pc.layoutSelect.dispatch('change');
+  check('choosing Italian puts KEYB IT into AUTOEXEC.BAT', layoutOf(pc.machine.hdc.disk.data) === 'it');
+  check('and the bar says so', pc.status.textContent.includes('KEYB IT'), pc.status.textContent);
+  check('and it is remembered for next time', localStorage.getItem('alloldos.dos.keyboard') === 'it');
+  let keyb = false;
+  for (let i = 0; i < 900 && !keyb; i++) {
+    pump(4);
+    keyb = /KEYBOARD\.SYS:IT/.test(pcScreen());
+  }
+  check('and the machine comes back up with KEYB loaded', keyb, pcScreen().split('\n').filter(Boolean).pop());
+  pc.layoutSelect.value = 'us';
+  pc.layoutSelect.dispatch('change');
+  check('going back to American takes KEYB out again', layoutOf(pc.machine.hdc.disk.data) === 'us');
+  localStorage.removeItem('alloldos.dos.keyboard');
 
   // Lo schermo intero e la barra che si nasconde, come sulle altre due.
   pc.toggleFullscreen();
@@ -764,7 +808,7 @@ if (pc.machine === null) {
     let again = false;
     for (let i = 0; i < 900 && !again; i++) {
       pump(4);
-      again = /C:\\>/.test(pc.machine.cga.text().join('\n'));
+      again = /C:\\>/.test(pc.machine.video.text().join('\n'));
     }
     check('and boots the disk that just went in', again);
     check('reading the DOS off the image that went in', FAT16.of(disk.data)?.read('COMMAND.COM') !== null);
@@ -819,7 +863,7 @@ if (pc.machine === null) {
       const before = again.machine;
       await again.acceptFiles([asFile('xtide.bin', new Uint8Array(readFileSync(cardPath)))]);
       check('the disk card dropped later remounts the machine', again.machine !== before);
-      const cardScreen = () => again.machine.cga.text().join('\n');
+      const cardScreen = () => again.machine.video.text().join('\n');
       for (let i = 0; i < 400 && !/C800/.test(cardScreen()); i++) {
         again.machine.runFrame();
       }
@@ -839,6 +883,33 @@ if (pc.machine === null) {
 
 pc.dispose();
 check('the PC shuts down cleanly', pc.running === false);
+
+// ------------------------------------------------------------------ il 386
+
+// La scheda del Pentium con sopra un 386 e il BIOS di Bochs. Se il BIOS è in
+// roms/pc386 si accende davvero, fino al DOS; se no, chiede i due file.
+const pc386Entry = (await import('../src/boot/systems.js')).SYSTEMS.find((s) => s.id === 'pc386');
+check('the boot menu offers the 386', pc386Entry?.available === true);
+const pc386 = await (await pc386Entry.load()).boot(new StubElement('main'), { onExit: () => {} });
+if (pc386.machine === null) {
+  check('the 386 asks for the Bochs BIOS when there is none', pc386.overlay.children.length > 0);
+} else {
+  check('the 386 booted, with a 386 in it', pc386.machine.cpu.model === 386);
+  let prompt = false;
+  for (let i = 0; i < 900 && !prompt; i++) {
+    pump(4);
+    prompt = /C:\\>/.test(pc386.machine.video.text().join('\n'));
+  }
+  check('and reaches the DOS prompt', prompt, pc386.machine.video.text().filter(Boolean).pop());
+  check('the canvas follows the VGA text mode', pc386.canvas.width === 720 && pc386.canvas.height === 400,
+    `${pc386.canvas.width}x${pc386.canvas.height}`);
+  sendKey('keydown', 'KeyA', 'a');
+  check('a key press reaches the 8042', pc386.machine.kbc.output.some((entry) => entry.byte === 0x1e));
+  sendKey('keyup', 'KeyA', 'a');
+  check('the bar offers the keyboards too', pc386.layoutSelect.children.length === LAYOUTS.length);
+}
+pc386.dispose();
+check('the 386 shuts down cleanly', pc386.running === false);
 
 
 // ------------------------------------------------------- lo ZX Spectrum
@@ -921,13 +992,14 @@ check('it says which licence it is under', aboutText.includes('GNU General Publi
 check('it points at the public repository', aboutText.includes('github.com/danielecorte/alloldos'));
 check(
   'and it is laid out as credits and then one machine at a time',
-  ['Crediti', 'Commodore 64', 'Amiga 500', 'PC 286', 'ZX Spectrum 48K'].every((title) =>
+  ['Crediti', 'Commodore 64', 'Amiga 500', 'PC 286', 'PC 386', 'PC Pentium', 'ZX Spectrum 48K'].every((title) =>
     aboutText.includes(`about__section">${title}`),
   ),
 );
 check('the C64 section links its own ROMs', aboutText.includes('kernal-901227-03.bin'));
 check('and the Amiga section says where its Kickstart comes from', aboutText.includes('amigaforever.com'));
 check('and the PC section links the free firmware it runs on', aboutText.includes('glabios') && aboutText.includes('freedos.org'));
+check('and the 386 section links Bochs and its VGA BIOS', aboutText.includes('bochs.sourceforge.io') && aboutText.includes('nongnu.org/vgabios'));
 
 sendKey('keydown', 'Escape', 'Escape');
 check('Escape goes back to the boot menu', leftAbout);

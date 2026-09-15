@@ -31,13 +31,16 @@ import {
   DISK_SIZE,
   geometryFor,
 } from '../src/systems/pc/ata.js';
-import { keyFor } from '../src/systems/pc/scancodes.js';
+import { keyFor, scanBytes, SCANCODES } from '../src/systems/pc/scancodes.js';
+import { layoutOf, setLayout } from '../src/systems/pc/layouts.js';
+import { KB16 } from './kb16.mjs';
 import { PC, CPU_CLOCK, FPS } from '../src/systems/pc/machine.js';
 import { FAT16, shortName } from '../src/systems/pc/fat.js';
 import { isZip, readZip, UnreadableZipError } from '../src/systems/pc/zip.js';
 import { loadIntoDisk } from '../src/systems/pc/files.js';
 import { hardDiskFrom, HDD_SPEC } from '../src/systems/pc/media.js';
 import { bootPC, Session, have, ROMS } from './pcsession.mjs';
+import { VIDEO_SPEC } from '../src/systems/pc/roms.js';
 
 let failures = 0;
 
@@ -692,6 +695,151 @@ section('Il lettore di dischetti (765)');
   check('e la lettura è quella che si accorge che non c\'è niente', (fdc.read(0x3f5) & 0xc8) === 0x48);
 }
 
+{
+  // Leggere un cilindro dove la testina non è. Il 765 del 1981 non si muove
+  // da solo e dice che il settore non c'è; l'82077 dei chipset degli anni
+  // Novanta ci va da sé — ed è su questo che conta il BIOS di Bochs, che non
+  // manda mai un SEEK.
+  const readAway = (impliedSeek) => {
+    const image = new Uint8Array(737280);
+    image.fill(0x77, (40 * 2 * 9) * 512, (40 * 2 * 9) * 512 + 512); // cilindro 40, testina 0, settore 1
+    const memory = new Uint8Array(0x100000);
+    const dma = new DMA8237({ read8: (a) => memory[a], write8: (a, v) => (memory[a] = v) });
+    const fdc = new FDC765({ dma, onInterrupt: () => {}, impliedSeek });
+    fdc.drives[0].insert(image);
+    fdc.write(0x3f2, 0x0c);
+    dma.write(0x0b, 0x46);
+    dma.write(0x0c, 0);
+    dma.write(0x04, 0x00);
+    dma.write(0x04, 0x00);
+    dma.write(0x05, 0xff);
+    dma.write(0x05, 0x01);
+    dma.writePage(0x81, 0x03);
+    dma.write(0x0a, 0x02);
+    for (const byte of [0x46, 0x00, 40, 0, 1, 2, 9, 0x1b, 0xff]) fdc.write(0x3f5, byte);
+    return { st0: fdc.read(0x3f5), byte: memory[0x30000], cylinder: fdc.drives[0].cylinder };
+  };
+  const strict = readAway(false);
+  check('il 765 con la testina altrove dice che il settore non c\'è', (strict.st0 & 0xc0) === 0x40 && strict.byte === 0);
+  const tolerant = readAway(true);
+  check('l\'82077 ci porta la testina e legge', (tolerant.st0 & 0xc0) === 0 && tolerant.byte === 0x77 && tolerant.cylinder === 40);
+}
+
+section('La Sound Blaster');
+
+{
+  // La scheda guidata dalle sue porte, con il processore fermo: è quello che
+  // fa un programma, tolto il programma. Il BIOS non c'entra — una Sound
+  // Blaster non ha ROM — quindi basta una scheda madre qualsiasi.
+  const pc = new PC(new Uint8Array(8192));
+  pc.cpu.halted = true;
+  pc.cpu.if_ = 0;
+  const seconds = (s) => pc.runCycles(Math.round(s * CPU_CLOCK));
+  const dsp = (...bytes) => bytes.forEach((byte) => pc.outb(0x22c, byte));
+  const opl = (register, value) => {
+    pc.outb(0x388, register);
+    pc.outb(0x389, value);
+  };
+
+  // Il reset: uno e poi zero sulla 226h, e il DSP dice AAh. È così che ogni
+  // programma scopre la scheda.
+  pc.outb(0x226, 1);
+  pc.outb(0x226, 0);
+  check('dopo il reset il DSP ha qualcosa da dire', (pc.inb(0x22e) & 0x80) !== 0);
+  check('e dice AAh', pc.inb(0x22a) === 0xaa);
+  dsp(0xe1);
+  const version = [pc.inb(0x22a), pc.inb(0x22a)];
+  check('è un DSP 2.01, quello della Sound Blaster 2.0', version.join('.') === '2.1', version.join('.'));
+  dsp(0xe0, 0x5a);
+  check('e la prova di identità ridà il byte rovesciato', pc.inb(0x22a) === 0xa5);
+
+  // Il rilevamento della AdLib, uguale in tutti i giochi dal 1988: si
+  // azzerano i contatori, se ne fa partire uno che scade al primo colpo, si
+  // aspettano ottanta microsecondi e si guarda il registro di stato.
+  opl(0x04, 0x60);
+  opl(0x04, 0x80);
+  const before = pc.inb(0x388) & 0xe0;
+  opl(0x02, 0xff);
+  opl(0x04, 0x21);
+  seconds(100e-6);
+  const after = pc.inb(0x388) & 0xe0;
+  opl(0x04, 0x60);
+  opl(0x04, 0x80);
+  check('il chip FM si fa trovare come una AdLib', before === 0 && after === 0xc0, `${hex(before, 2)} poi ${hex(after, 2)}`);
+  check('e anche alle porte della Sound Blaster', (pc.inb(0x228) & 0xe0) === 0);
+
+  // Un La: il primo operatore muto, il secondo una sinusoide che sale di
+  // colpo e tiene. F-number 580 all'ottava 4 fa 440 Hz sul quarzo del chip.
+  for (const [register, value] of [
+    [0x20, 0x21], [0x23, 0x21], [0x40, 0x3f], [0x43, 0x00],
+    [0x60, 0xf0], [0x63, 0xf0], [0x80, 0x0f], [0x83, 0x0f],
+    [0xa0, 0x44], [0xb0, 0x32],
+  ]) opl(register, value);
+  pc.sound.takeSamples();
+  seconds(1.1);
+  const note = pc.sound.takeSamples().slice(pc.sound.sampleRate / 10);
+  let crossings = 0;
+  for (let i = 1; i < note.length; i++) if (note[i - 1] < 0 && note[i] >= 0) crossings++;
+  const frequency = crossings / (note.length / pc.sound.sampleRate);
+  check('una nota FM esce alla frequenza giusta', Math.abs(frequency - 440) < 3, `${frequency.toFixed(1)} Hz`);
+  opl(0xb0, 0x12);
+  seconds(0.5);
+  const tail = pc.sound.takeSamples().slice(-1000);
+  check('e lasciato il tasto si spegne', tail.every((sample) => Math.abs(sample) < 0.001));
+
+  // Un blocco col DMA: 256 byte a 8 kHz dal canale 1, e alla fine la IRQ 7.
+  for (let i = 0; i < 256; i++) pc.ram[0x20000 + i] = i;
+  const program = (mode) => {
+    pc.outb(0x0a, 0x05); // canale 1 fermo
+    pc.outb(0x0c, 0);
+    pc.outb(0x0b, mode);
+    pc.outb(0x02, 0x00);
+    pc.outb(0x02, 0x00);
+    pc.outb(0x83, 0x02); // pagina 2: 20000h
+    pc.outb(0x03, 0xff);
+    pc.outb(0x03, 0x00);
+    pc.outb(0x0a, 0x01); // e via
+  };
+  program(0x49); // un blocco, dalla memoria verso la scheda
+  dsp(0xd1, 0x40, 131, 0x14, 0xff, 0x00);
+  seconds(0.01);
+  check('a metà blocco il DSP sta suonando i byte del buffer', Math.abs(pc.sound.dsp.dac - 80) <= 2 && !(pc.pic.irr & 0x80),
+    `${pc.sound.dsp.dac}`);
+  seconds(0.03);
+  check('a fine blocco alza la IRQ 7', (pc.pic.irr & 0x80) !== 0 && pc.sound.dsp.interrupts === 1);
+  check('dopo aver preso dal DMA tutto il blocco', pc.sound.dsp.dac === 255 && pc.dma.terminal(1));
+  pc.inb(0x22e);
+  check('e leggere 22Eh la chiude', (pc.pic.lines & 0x80) === 0);
+
+  // I blocchi uno dietro l'altro, che è come suona un gioco: ogni blocco
+  // un'interruzione, finché il programma non dice DAh.
+  program(0x59); // auto-inizializzazione anche sul DMA
+  dsp(0x48, 0x7f, 0x00, 0x1c); // blocchi da 128
+  let interrupts = 0;
+  for (let i = 0; i < 40; i++) {
+    seconds(0.002);
+    if (pc.pic.lines & 0x80) {
+      interrupts++;
+      pc.inb(0x22e);
+    }
+  }
+  check('in auto-inizializzazione le interruzioni continuano', interrupts >= 4, `${interrupts} in 80 ms`);
+  dsp(0xda);
+  seconds(0.04);
+  pc.inb(0x22e);
+  const stopped = pc.sound.dsp.interrupts;
+  seconds(0.04);
+  check('e DAh la ferma alla fine del blocco', pc.sound.dsp.interrupts === stopped && pc.sound.dsp.mode === null);
+
+  // L'altoparlante spento: il DSP converte, ma non esce niente.
+  dsp(0xd3, 0x10, 0xff);
+  pc.sound.takeSamples();
+  seconds(0.01);
+  check('con l\'altoparlante spento il DAC non si sente', pc.sound.takeSamples().every((sample) => sample === 0));
+  dsp(0xf2);
+  check('e F2h alza l\'interruzione da sola, per chi cerca quale IRQ ha la scheda', (pc.pic.lines & 0x80) !== 0);
+}
+
 section('Il disco fisso (XT-CF)');
 
 {
@@ -881,6 +1029,17 @@ section('La tastiera');
 
   check('la A sta dove la mise IBM', keyFor('a').code === 0x1e && !keyFor('a').shift);
   check('e i due punti vogliono lo shift', keyFor(':').code === 0x27 && keyFor(':').shift);
+
+  // I due tasti della tastiera estesa che servono fuori dagli Stati Uniti: il
+  // tasto in più accanto allo shift, e l'AltGr, che è l'Alt con un prefisso.
+  check('il tasto accanto allo shift sinistro è il 56h', SCANCODES.IntlBackslash === 0x56);
+  check('l\'AltGr è l\'Alt con E0 davanti', scanBytes(SCANCODES.AltRight, false).join() === '224,56');
+  check('e quello di sinistra no', scanBytes(SCANCODES.AltLeft, false).join() === '56');
+  const extended = new XTKeyboard();
+  extended.press(SCANCODES.AltRight);
+  extended.releaseAll();
+  check('il prefisso passa sul filo anche quando si lascia andare tutto',
+    extended.queue.join() === '224,56,224,184', extended.queue.join());
 }
 
 // ------------------------------------------------------ portare dentro un file
@@ -1135,6 +1294,44 @@ if (!have.hdd) {
   check('e un file più grande del posto che resta viene rifiutato prima',
     (await refusedBy(disk, 'enorme.bin', huge)) === 'FullDiskError');
   check('senza aver scritto niente per strada', FAT16.of(image).freeBytes === after.freeBytes);
+}
+
+if (have.hdd) {
+  section('La tastiera sul disco');
+
+  // La tastiera si sceglie dove la sceglieva il DOS: una riga nell'AUTOEXEC.
+  // Il disco che viaggia col repository ha già tutto quello che serve.
+  const image = freshDisk();
+  const volume = FAT16.of(image);
+  check('sul disco c\'è KEYB', volume.locate('FDOS\\BIN\\KEYB.EXE') >= 0);
+  check('con le sue tastiere', volume.locate('FDOS\\BIN\\KEYBOARD.SYS') >= 0);
+  check('e KB16, uguale a quello che esce da kb16.mjs', volume.read('FDOS\\BIN\\KB16.COM')?.join() === KB16.join());
+  check('e si accende americano, come il BIOS', layoutOf(image) === 'us');
+
+  const autoexec = () => text(FAT16.of(image).read('AUTOEXEC.BAT'));
+  const original = autoexec();
+  check('scegliere l\'italiana cambia l\'AUTOEXEC', setLayout(image, 'it').changed);
+  check('con KEYB IT subito dopo il PATH, e dietro KB16',
+    /path c:\\fdos\\bin \r\nc:\\fdos\\bin\\keyb it\r\nc:\\fdos\\bin\\kb16\r\nprompt/.test(autoexec()),
+    JSON.stringify(autoexec()));
+  check('e il disco lo dice', layoutOf(image) === 'it');
+  check('sceglierla una seconda volta non tocca niente', !setLayout(image, 'it').changed);
+
+  setLayout(image, 'gr');
+  check('cambiarla sostituisce la riga invece di aggiungerne un\'altra',
+    layoutOf(image) === 'gr' && autoexec().match(/keyb/gi).length === 1, JSON.stringify(autoexec()));
+  setLayout(image, 'us');
+  check('e tornare all\'americana riporta l\'AUTOEXEC com\'era', autoexec() === original, JSON.stringify(autoexec()));
+
+  // Le due porte chiuse: un disco senza filesystem, e uno senza KEYB — che qui
+  // si ottiene cancellandolo come lo cancella il DOS, con E5h sul nome.
+  check('su un disco vergine non si sceglie niente',
+    setLayout(new Uint8Array(DISK_SIZE), 'it').missing === 'filesystem');
+  const without = freshDisk();
+  without[FAT16.of(without).locate('FDOS\\BIN\\KEYB.EXE')] = 0xe5;
+  const refused = setLayout(without, 'it');
+  check('e su uno senza KEYB lo si dice, senza scrivere niente',
+    refused.missing === 'keyb' && layoutOf(without) === 'us');
 }
 
 // -------------------------------------------------------- l'avvio vero
@@ -1403,6 +1600,176 @@ Nessun disco fisso in roms/pc: la prova del file portato dentro è stata saltata
     back === emptyAgain,
     `${back} byte contro ${emptyAgain}`,
   );
+}
+
+/**
+ * Preme dei tasti come li manda il browser: per posizione, con un
+ * modificatore davanti se c'è — `'AltRight+BracketLeft'` è AltGr e il tasto
+ * accanto alla P.
+ */
+function strike(dos, keyboard, keys) {
+  for (const key of keys) {
+    const [modifier, name] = key.includes('+') ? key.split('+') : [null, key];
+    if (modifier) {
+      keyboard.press(SCANCODES[modifier]);
+      dos.run(2);
+    }
+    keyboard.press(SCANCODES[name]);
+    dos.run(2);
+    keyboard.release(SCANCODES[name]);
+    dos.run(2);
+    if (modifier) {
+      keyboard.release(SCANCODES[modifier]);
+      dos.run(2);
+    }
+  }
+  dos.run(10);
+}
+
+/** Quello che si è battuto dopo il prompt, in byte: sopra 127 text() mette dei punti. */
+function typedAfterPrompt(dos, cga) {
+  const row = dos.screen().split('\n').length - 1;
+  const cells = [];
+  for (let column = 0; column < 80; column++) {
+    cells.push(cga.ram[((cga.startAddress + row * 80 + column) * 2) & 0x3fff]);
+  }
+  return cells.slice(cells.indexOf(0x3e) + 2);
+}
+
+if (!have.bios || !have.card || !have.hdd) {
+  console.log(`
+Nessun disco fisso in roms/pc: la prova della tastiera italiana è stata saltata.`);
+} else {
+  section('Avvio vero: la tastiera italiana');
+
+  // Chi ha davanti una tastiera italiana sceglie l'italiana, accende, e preme
+  // i tasti dove sono disegnate le lettere accentate. La macchina riceve le
+  // posizioni — i codici di SCANCODES, gli stessi che manda il browser — e a
+  // decidere che lettera sono è KEYB, caricato dall'AUTOEXEC. Sul 286 senza
+  // KB16 le lettere tradotte sparirebbero, e con AltGr non uscirebbe niente.
+  const image = freshDisk();
+  setLayout(image, 'it');
+  const pc = bootPC({ disk: hardDiskFrom(image), floppy: false });
+  const dos = new Session(pc, (screen) => console.log(screen));
+  check('KEYB parte dall\'AUTOEXEC con la tastiera italiana',
+    dos.waitFor(/KEYBOARD\.SYS:IT \[437\]/, 3000), dos.lastLine());
+  check('e la macchina arriva al prompt', dos.waitFor(/C:\\>/, 600), dos.lastLine());
+  dos.run(30);
+
+  const segment16 = pc.ram[0x5a] | (pc.ram[0x5b] << 8);
+  check('KB16 si è messo davanti all\'INT 16h, perché a GLaBIOS la funzione 5 manca',
+    segment16 < 0xa000, hex(segment16));
+
+  strike(dos, pc.keyboard, [
+    'BracketLeft', 'Semicolon', 'Quote', 'Backslash', 'ShiftLeft+BracketLeft',
+    'Backquote', 'Minus', 'IntlBackslash',
+    'AltRight+BracketLeft', 'AltRight+Semicolon', 'AltRight+Quote',
+  ]);
+  const typed = typedAfterPrompt(dos, pc.cga);
+  const shown = (from, to) => typed.slice(from, to).map((byte) => hex(byte, 2)).join(' ');
+  // Codepage 437: è 8Ah, ò 95h, à 85h, ù 97h, é 82h.
+  check('le lettere accentate escono dove sono disegnate', shown(0, 5) === '$8a $95 $85 $97 $82', shown(0, 5));
+  check('e così la barra rovescia, l\'apostrofo e il minore', shown(5, 8) === '$5c $27 $3c', shown(5, 8));
+  check('e con AltGr le quadre, la chiocciola e il cancelletto', shown(8, 11) === '$5b $40 $23', shown(8, 11));
+}
+
+// ------------------------------------------------ la VGA e la Sound Blaster
+
+/**
+ * Due programmi da mettere sul disco, come quelli che arrivavano su un
+ * dischetto con la scheda. Assemblati con GNU as (.code16) e riletti con
+ * objdump prima di finire qui.
+ *
+ * Il primo accende il modo 13h, colora il primo e l'ultimo punto della prima
+ * riga, aspetta un tasto e torna al testo.
+ */
+const VGA13 = Uint8Array.from([
+  0xb8, 0x13, 0x00, 0xcd, 0x10, // mov ax, 13h; int 10h
+  0xb8, 0x00, 0xa0, 0x8e, 0xc0, // mov ax, A000h; mov es, ax
+  0x26, 0xc6, 0x06, 0x00, 0x00, 0x0f, // mov byte [es:0], 15 — bianco
+  0x26, 0xc6, 0x06, 0x3f, 0x01, 0x04, // mov byte [es:319], 4 — rosso
+  0xb4, 0x00, 0xcd, 0x16, // aspetta un tasto
+  0xb8, 0x03, 0x00, 0xcd, 0x10, // torna al modo 3
+  0xcd, 0x20,
+]);
+
+/**
+ * Il secondo fa quello che fa ogni gioco con una Sound Blaster: mette il suo
+ * gestore sulla IRQ 7 e la apre sul PIC, riavvia il DSP e aspetta AAh,
+ * programma il canale 1 del DMA sul suo buffer, e fa suonare 256 byte a 8 kHz.
+ * Poi aspetta che il gestore — che legge 22Eh e manda l'EOI — gli dica che il
+ * blocco è finito, scrive SB OK (o SB NO) e rimette tutto com'era. Dietro al
+ * codice ci sono i 256 byte del buffer, tutti a 80h: silenzio.
+ */
+const SBPLAY = Uint8Array.from([
+  0xb8, 0x0f, 0x35, 0xcd, 0x21, 0x89, 0x1e, 0xdd, 0x01, 0x8c, 0x06, 0xdf, 0x01, 0xb8, 0x0f, 0x25,
+  0xba, 0xbb, 0x01, 0xcd, 0x21, 0xe4, 0x21, 0x24, 0x7f, 0xe6, 0x21, 0xba, 0x26, 0x02, 0xb0, 0x01,
+  0xee, 0xec, 0xec, 0x30, 0xc0, 0xee, 0xba, 0x2e, 0x02, 0xec, 0xa8, 0x80, 0x74, 0xfb, 0xba, 0x2a,
+  0x02, 0xec, 0x3c, 0xaa, 0x75, 0x66, 0x8c, 0xc8, 0x89, 0xc2, 0xc1, 0xe0, 0x04, 0xc1, 0xea, 0x0c,
+  0x05, 0xed, 0x01, 0x83, 0xd2, 0x00, 0x89, 0xc3, 0xb0, 0x05, 0xe6, 0x0a, 0x30, 0xc0, 0xe6, 0x0c,
+  0xb0, 0x49, 0xe6, 0x0b, 0x88, 0xd8, 0xe6, 0x02, 0x88, 0xf8, 0xe6, 0x02, 0x88, 0xd0, 0xe6, 0x83,
+  0xb0, 0xff, 0xe6, 0x03, 0x30, 0xc0, 0xe6, 0x03, 0xb0, 0x01, 0xe6, 0x0a, 0xb0, 0xd1, 0xe8, 0x5d,
+  0x00, 0xb0, 0x40, 0xe8, 0x58, 0x00, 0xb0, 0x83, 0xe8, 0x53, 0x00, 0xb0, 0x14, 0xe8, 0x4e, 0x00,
+  0xb0, 0xff, 0xe8, 0x49, 0x00, 0x30, 0xc0, 0xe8, 0x44, 0x00, 0xfb, 0xbe, 0x08, 0x00, 0x31, 0xc9,
+  0x80, 0x3e, 0xdc, 0x01, 0x00, 0x75, 0x0a, 0xe2, 0xf7, 0x4e, 0x75, 0xf2, 0xba, 0xe7, 0x01, 0xeb,
+  0x03, 0xba, 0xe1, 0x01, 0xb4, 0x09, 0xcd, 0x21, 0xe4, 0x21, 0x0c, 0x80, 0xe6, 0x21, 0x1e, 0xc5,
+  0x16, 0xdd, 0x01, 0xb8, 0x0f, 0x25, 0xcd, 0x21, 0x1f, 0xcd, 0x20, 0x50, 0x52, 0xba, 0x2e, 0x02,
+  0xec, 0x2e, 0xc6, 0x06, 0xdc, 0x01, 0x01, 0xb0, 0x20, 0xe6, 0x20, 0x5a, 0x58, 0xcf, 0x52, 0x50,
+  0xba, 0x2c, 0x02, 0xec, 0xa8, 0x80, 0x75, 0xfb, 0x58, 0xee, 0x5a, 0xc3, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x53, 0x42, 0x20, 0x4f, 0x4b, 0x24, 0x53, 0x42, 0x20, 0x4e, 0x4f, 0x24,
+  ...new Array(256).fill(0x80),
+]);
+
+if (!have.bios || !have.card || !have.hdd || !have.vga) {
+  console.log(`
+Nessun ${VIDEO_SPEC.file} in roms/pc: le prove della VGA e della Sound Blaster
+sotto DOS sono state saltate. \`npm run build-vgabios\` lo compila per il 286.`);
+} else {
+  section('Avvio vero: la VGA');
+
+  // Il BIOS della VGA è il VGABIOS LGPL compilato qui per il 286: la versione
+  // pubblicata è per il 386, e la prova che questa non lo è sta nel contare le
+  // interruzioni 6 — quelle con cui il 286 dice «questa non la conosco».
+  const image = freshDisk();
+  const volume = { data: image, writes: 0 };
+  await loadIntoDisk(volume, 'vga13.com', VGA13);
+  await loadIntoDisk(volume, 'sbplay.com', SBPLAY);
+  const pc = bootPC({ disk: hardDiskFrom(image), floppy: false, vga: true });
+  let invalid = 0;
+  const deliver = pc.cpu.interrupt.bind(pc.cpu);
+  pc.cpu.interrupt = (vector, ...rest) => {
+    if (vector === 6) invalid++;
+    return deliver(vector, ...rest);
+  };
+  const dos = new Session(pc, (screen) => console.log(screen));
+  check('GLaBIOS chiede alla scheda chi è, e la scheda dice VGA', dos.waitFor(/Video\s+\[ VGA \]/, 600), dos.lastLine());
+  check('e FreeDOS arriva al prompt, scritto dal BIOS della VGA', dos.waitFor(/C:\\>/, 3000), dos.lastLine());
+  check('senza una sola istruzione che il 286 non avesse', invalid === 0, `${invalid} opcode non validi`);
+  check('in ottanta colonne per venticinque, con i caratteri da nove punti',
+    pc.vga.columns === 80 && pc.vga.rows === 25 && pc.vga.width === 720 && pc.vga.height === 400,
+    `${pc.vga.columns}x${pc.vga.rows}, ${pc.vga.width}x${pc.vga.height}`);
+
+  // Il modo dei giochi, chiesto al BIOS della scheda da un programma DOS.
+  dos.type('c:\\scaricati\\vga13\n');
+  dos.run(60);
+  const pixels = pc.vga.render();
+  check('il programma chiede il modo 13h e lo ottiene', pc.vga.graphicsMode && pc.vga.width === 320 && pc.vga.height === 200,
+    `${pc.vga.width}x${pc.vga.height}`);
+  check('e un byte a A000:0000 è un punto bianco, quello a 319 un punto rosso',
+    pixels[0] === 0xffffffff && pixels[319] === 0xff0000aa, `${hex(pixels[0], 8)} ${hex(pixels[319], 8)}`);
+  dos.type(' ');
+  check('un tasto, e si torna al testo e al prompt', dos.waitFor(/C:\\>/, 300) && !pc.vga.graphicsMode, dos.lastLine());
+
+  section('Avvio vero: la Sound Blaster, da un programma DOS');
+
+  check('l\'AUTOEXEC dice ai programmi dove sta la scheda',
+    /set blaster=A220 I7 D1 T3/i.test(text(FAT16.of(image).read('AUTOEXEC.BAT'))));
+  dos.command('set');
+  check('e il DOS lo mette nell\'ambiente', /BLASTER=A220 I7 D1 T3/.test(dos.screen()), dos.lastLine());
+  dos.command('c:\\scaricati\\sbplay');
+  check('il programma trova la scheda, suona il blocco e riceve la IRQ 7', /SB OK/.test(dos.screen()), dos.lastLine());
+  check('un\'interruzione sola, per un blocco solo', pc.sound.dsp.interrupts === 1, `${pc.sound.dsp.interrupts}`);
+  check('e il DOS è ancora in piedi dopo', /C:\\>$/.test(dos.screen()));
 }
 
 console.log(failures === 0 ? '\nPC OK.' : `\n${failures} problema/i.`);

@@ -17,18 +17,28 @@
 //
 // Si esegue con `npm run make-hdd`, e ci mette meno di un minuto.
 
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { basename, join } from 'node:path';
 
 import { bootPC, Session, have, ROMS } from './pcsession.mjs';
+import { KB16, KB16_NAME } from './kb16.mjs';
 import { HDD_SPEC } from '../src/systems/pc/media.js';
 import { FREEDOS_SPEC } from '../src/systems/pc/media.js';
 import { BIOS_SPEC, CARD_SPEC } from '../src/systems/pc/roms.js';
+import { KEYB_PACKAGES, PROGRAMS_DIR } from '../src/systems/pc/layouts.js';
+import { BLASTER } from '../src/systems/pc/soundblaster.js';
+import { FAT16 } from '../src/systems/pc/fat.js';
+import { readZip } from '../src/systems/pc/zip.js';
+
+/** La data di KB16 sul disco: il giorno in cui è stato scritto, a mezzogiorno. */
+const KB16_STAMP = { time: 12 << 11, date: ((2026 - 1980) << 9) | (9 << 5) | 14 };
 
 const missing = [
   !have.bios && BIOS_SPEC.file,
   !have.card && CARD_SPEC.file,
   !have.floppy && FREEDOS_SPEC.file,
+  ...KEYB_PACKAGES.filter(({ file }) => !existsSync(join(ROMS, file))).map(({ file }) => file),
 ].filter(Boolean);
 
 if (missing.length) {
@@ -95,7 +105,37 @@ dos.command('echo LASTDRIVE=E >> c:\\config.sys');
 dos.command('echo @echo off > c:\\autoexec.bat');
 dos.command('echo path c:\\fdos\\bin >> c:\\autoexec.bat');
 dos.command('echo prompt $p$g >> c:\\autoexec.bat');
+// La riga che il programma di installazione della Sound Blaster metteva in
+// ogni AUTOEXEC: porta, interruzione, DMA e modello. È da qui che i giochi
+// sanno dove trovarla, senza doverla cercare porta per porta.
+dos.command(`echo set blaster=${BLASTER} >> c:\\autoexec.bat`);
 dos.command('echo ver >> c:\\autoexec.bat');
+
+// ------------------------------------------------------------------ le tastiere
+
+// KEYB e le sue tastiere non stanno sul dischetto di avvio: stanno in due
+// pacchetti del repository di FreeDOS, e da lì si prendono i due file che
+// servono. Accanto va KB16, il programmino che dà all'XT i due pezzi di BIOS
+// da AT che KEYB si aspetta (vedi kb16.mjs). Questi tre file sono l'unico
+// punto in cui questo script scrive sul filesystem da sé invece di farlo fare
+// al DOS: batterli sulla tastiera un byte per volta vorrebbe dire un'ora. Si
+// scrivono a DOS fermo al prompt, e subito dopo la macchina si riaccende, così
+// il DOS la FAT se la rilegge da capo. Ogni file porta la data che ha nel suo
+// pacchetto, e KB16 una data fissa: con l'ora di adesso il disco non verrebbe
+// più identico byte per byte.
+
+step('KEYB, le tastiere e KB16 in C:\\FDOS\\BIN');
+const volume = FAT16.of(pc.hdc.disk.data);
+const programs = volume.mkdirp(PROGRAMS_DIR);
+for (const { file, members } of KEYB_PACKAGES) {
+  const entries = await readZip(new Uint8Array(await readFile(join(ROMS, file))));
+  for (const member of members) {
+    const entry = entries.find(({ path }) => path.toUpperCase() === member);
+    if (!entry) throw new Error(`${member} non c'è in ${file}`);
+    volume.writeFile(programs, basename(member), entry.bytes, { stamp: entry.stamp });
+  }
+}
+volume.writeFile(programs, KB16_NAME, KB16, { stamp: KB16_STAMP });
 
 // ------------------------------------------------------------------- la prova
 

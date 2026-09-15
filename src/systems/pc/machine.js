@@ -28,12 +28,14 @@
 import { CPU286, CS } from './cpu286.js';
 import { PIC8259 } from './pic.js';
 import { PIT8253, PIT_CLOCK } from './pit.js';
-import { PPI8255, VIDEO_CGA_80 } from './ppi.js';
+import { PPI8255, VIDEO_CGA_80, VIDEO_OPTION_ROM } from './ppi.js';
 import { DMA8237 } from './dma.js';
 import { CGA, DOT_CLOCK, CGA_BASE, CGA_SIZE } from './cga.js';
+import { VGA, VIDEO_BASE, VIDEO_SIZE } from '../pentium/vga.js';
 import { FDC765 } from './fdc.js';
 import { XTCF, XTCF_BASE, XTCF_SIZE, HardDisk } from './ata.js';
 import { XTKeyboard, KB_RESET_MS } from './keyboard.js';
+import { SoundBlaster, SB_IRQ } from './soundblaster.js';
 import { BIOS_BASE } from './roms.js';
 
 /** Il processore, in Hz. Un 286 da otto: veloce per il 1988, non assurdo. */
@@ -60,7 +62,7 @@ export class PC {
   /**
    * @param {Uint8Array} bios gli otto KB del BIOS, mappati in cima
    * @param {object} [options]
-   * @param {number} [options.video] il tipo di scheda video negli interruttori
+   * @param {boolean} [options.vga] una VGA al posto della CGA: la sua ROM va fra le `cards`
    * @param {HardDisk|null} [options.disk] il disco montato sulla scheda XT-CF
    * @param {{base:number,bytes:Uint8Array}[]} [options.cards] le ROM delle schede
    */
@@ -69,10 +71,25 @@ export class PC {
     /** Il tempo, in cicli del processore: c'è da prima dei chip che lo leggono. */
     this.cycles = 0;
     this.ram = new Uint8Array(RAM_SIZE);
-    this.cga = new CGA();
-    // Il disegno delle lettere se lo fa prestare dal BIOS: sulla scheda vera
-    // c'è una ROM apposta, e non è distribuibile più di quanto lo sia il resto.
-    this.cga.useFontFrom(bios);
+    /**
+     * La scheda video, che è una o l'altra. La **CGA** è quella che il BIOS di
+     * un XT sa accendere da sé. La **VGA** è la stessa scheda del Pentium, a
+     * otto bit invece che a sedici: il bus è più stretto, i registri sono gli
+     * stessi. Nel 1988 una VGA su un XT era una spesa grossa e una cosa
+     * normalissima, perché le schede erano tutte ISA a otto bit.
+     */
+    if (options.vga) {
+      this.cga = null;
+      this.vga = new VGA(CPU_CLOCK);
+      this.video = this.vga;
+    } else {
+      this.vga = null;
+      this.cga = new CGA();
+      // Il disegno delle lettere se lo fa prestare dal BIOS: sulla scheda vera
+      // c'è una ROM apposta, e non è distribuibile più di quanto lo sia il resto.
+      this.cga.useFontFrom(bios);
+      this.video = this.cga;
+    }
     this.cardROM = new Uint8Array(CARD_ROM_SIZE).fill(0xff);
     for (const card of options.cards ?? []) {
       this.cardROM.set(card.bytes, card.base - CARD_ROM_BASE);
@@ -97,6 +114,16 @@ export class PC {
       onInterrupt: () => this.pic.pulse(6),
     });
     this.hdc = new XTCF(options.disk ?? null);
+    /**
+     * La Sound Blaster, che non ha una ROM e quindi c'è sempre: una scheda
+     * che il BIOS non vede e che i programmi vanno a cercare da soli, alle
+     * porte che dice la variabile BLASTER.
+     */
+    this.sound = new SoundBlaster({
+      dma: this.dma,
+      setIRQ: (active) => this.pic.setLine(SB_IRQ, active),
+      clock: CPU_CLOCK,
+    });
     this.ppi = new PPI8255(
       {
         readKeyboard: () => this.keyboard.read(),
@@ -104,7 +131,9 @@ export class PC {
         timer2Output: () => this.pit.speakerOutput,
         setSpeaker: (gate, data) => this.setSpeaker(gate, data),
       },
-      { floppies: 1, video: options.video ?? VIDEO_CGA_80 },
+      // Con la VGA gli interruttori del video vanno a 00: "c'è una scheda con
+      // il suo BIOS, chiedi a lei". È l'unico modo che un XT ha di saperlo.
+      { floppies: 1, video: options.vga ? VIDEO_OPTION_ROM : VIDEO_CGA_80 },
     );
 
     this.cpu = new CPU286(this);
@@ -121,13 +150,14 @@ export class PC {
     this.videoRemainder = 0;
 
     this.ram.fill(0);
-    this.cga.reset();
+    this.video.reset();
     this.pic.reset();
     this.pit.reset();
     this.ppi.reset();
     this.dma.reset();
     this.fdc.reset();
     this.hdc.reset();
+    this.sound.reset();
     this.keyboard.reset();
     this.cpu.reset();
 
@@ -142,7 +172,11 @@ export class PC {
   read8(addr) {
     addr &= 0xfffff;
     if (addr < RAM_SIZE) return this.ram[addr];
-    if (addr >= CGA_BASE && addr < CGA_BASE + 2 * CGA_SIZE) {
+    if (this.vga) {
+      // La VGA si prende tutti i 128 KB, e dentro sceglie lei quale finestra
+      // rispondere: A000 in grafica, B800 in modo testo.
+      if (addr < VIDEO_BASE + VIDEO_SIZE) return this.vga.read(addr - VIDEO_BASE);
+    } else if (addr >= CGA_BASE && addr < CGA_BASE + 2 * CGA_SIZE) {
       // Sedici KB di scheda video, ripetuti due volte: la CGA decodifica solo
       // quattordici bit di indirizzo, e quello che c'è sotto B8000 riappare
       // identico sotto BC000.
@@ -161,7 +195,9 @@ export class PC {
       this.ram[addr] = value & 0xff;
       return;
     }
-    if (addr >= CGA_BASE && addr < CGA_BASE + 2 * CGA_SIZE) {
+    if (this.vga) {
+      if (addr < VIDEO_BASE + VIDEO_SIZE) this.vga.write(addr - VIDEO_BASE, value);
+    } else if (addr >= CGA_BASE && addr < CGA_BASE + 2 * CGA_SIZE) {
       this.cga.writeMemory(addr - CGA_BASE, value);
     }
     // Tutto il resto è ROM o vuoto: scriverci non fa niente, e non è un errore.
@@ -179,7 +215,10 @@ export class PC {
     if (port >= 0x80 && port < 0x90) return this.dma.readPage(port);
     if (port >= 0x3f0 && port < 0x3f8) return this.fdc.read(port);
     if (port >= XTCF_BASE && port < XTCF_BASE + XTCF_SIZE) return this.hdc.read(port);
-    if (port >= 0x3d0 && port < 0x3e0) return this.cga.read(port);
+    if (this.vga) {
+      if (port >= 0x3b0 && port < 0x3e0) return this.vga.readPort(port);
+    } else if (port >= 0x3d0 && port < 0x3e0) return this.cga.read(port);
+    if (SoundBlaster.claims(port)) return this.sound.read(port);
     // Nessuno risponde: il bus resta alto, e chi cercava una scheda capisce
     // che non c'è. È così che il BIOS conta le porte seriali che non hai.
     return 0xff;
@@ -201,7 +240,10 @@ export class PC {
     }
     if (port >= 0x3f0 && port < 0x3f8) return this.fdc.write(port, value);
     if (port >= XTCF_BASE && port < XTCF_BASE + XTCF_SIZE) return this.hdc.write(port, value);
-    if (port >= 0x3d0 && port < 0x3e0) return this.cga.write(port, value);
+    if (this.vga) {
+      if (port >= 0x3b0 && port < 0x3e0) return this.vga.writePort(port, value);
+    } else if (port >= 0x3d0 && port < 0x3e0) return this.cga.write(port, value);
+    if (SoundBlaster.claims(port)) return this.sound.write(port, value);
     return undefined;
   }
 
@@ -231,10 +273,16 @@ export class PC {
     this.pitRemainder -= ticks * CPU_CLOCK;
     this.pit.advance(ticks);
 
-    this.videoRemainder += delta * DOT_CLOCK;
-    const dots = Math.floor(this.videoRemainder / CPU_CLOCK);
-    this.videoRemainder -= dots * CPU_CLOCK;
-    this.cga.advance(dots);
+    if (this.vga) {
+      this.vga.advance(delta); // la VGA conta da sé, in cicli del processore
+    } else {
+      this.videoRemainder += delta * DOT_CLOCK;
+      const dots = Math.floor(this.videoRemainder / CPU_CLOCK);
+      this.videoRemainder -= dots * CPU_CLOCK;
+      this.cga.advance(dots);
+    }
+
+    this.sound.advance(delta);
   }
 
   /**

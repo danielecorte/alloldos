@@ -10,6 +10,13 @@
 # sources are at freedos.org — see the README.
 !/roms/pc/hdd.img
 
+# And the BIOS of the 286's VGA card. The free VGABIOS (LGPL) is published only
+# built for the 386, which stops a 286 at its first long jump; this one is built
+# from the same source for the 286 by `npm run build-vgabios`, byte for byte the
+# same every time, and there is nowhere else to get it from. Source pointer and
+# changes: see the README.
+!/roms/pc/vgabios.bin
+
 # Tape and disk images belong to whoever made the games on them.
 *.tap
 *.prg

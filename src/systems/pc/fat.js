@@ -324,9 +324,15 @@ export class FAT16 {
     return this.offsetOf(grown);
   }
 
-  /** Scrive una voce: il nome, il tipo, l'ora, il primo anello e la lunghezza. */
-  writeEntry(at, packed, attributes, cluster, size) {
-    const { time, date } = dosStamp();
+  /**
+   * Scrive una voce: il nome, il tipo, l'ora, il primo anello e la lunghezza.
+   * L'ora è quella di adesso, a meno che non la si dia: chi rifà un disco e lo
+   * vuole identico byte per byte non può lasciarla all'orologio.
+   *
+   * @param {{time:number, date:number}} [stamp] le due parole come le scrive il DOS
+   */
+  writeEntry(at, packed, attributes, cluster, size, stamp = dosStamp()) {
+    const { time, date } = stamp;
     this.image.fill(0, at, at + ENTRY);
     for (let i = 0; i < 11; i++) this.image[at + i] = packed.charCodeAt(i);
     this.image[at + 11] = attributes;
@@ -450,9 +456,11 @@ export class FAT16 {
    * @param {boolean} [options.unique] numerare invece di sovrascrivere, che è
    *   quello che serve svuotando uno zip: due nomi lunghi diversi possono
    *   diventare lo stesso nome corto, e nessuno dei due va perso
+   * @param {{time:number, date:number}} [options.stamp] l'ora da scriverci, se
+   *   non è adesso
    * @returns {string} il nome con cui è finito sul disco
    */
-  writeFile(dir, name, bytes, { unique = false } = {}) {
+  writeFile(dir, name, bytes, { unique = false, stamp } = {}) {
     const wanted = unique ? this.uniqueName(dir, name) : shortName(name);
     const packed = packName(wanted);
     const previous = this.find(dir, packed);
@@ -472,7 +480,7 @@ export class FAT16 {
     });
 
     const at = previous >= 0 ? previous : this.freeSlot(dir);
-    this.writeEntry(at, packed, ATTR_ARCHIVE, clusters[0] ?? 0, bytes.length);
+    this.writeEntry(at, packed, ATTR_ARCHIVE, clusters[0] ?? 0, bytes.length, stamp);
     return displayName(packed);
   }
 }
