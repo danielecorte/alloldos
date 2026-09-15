@@ -6,7 +6,7 @@ Un raccoglitore di vecchi sistemi operativi emulati, che gira interamente dentro
 il browser. Si parte da una schermata di boot in stile GRUB: scegli la macchina
 con le frecce, premi Invio, e quella macchina si accende.
 
-Ce ne sono cinque che partono davvero:
+Ce ne sono sei che partono davvero:
 
 - il **Commodore 64**, emulato dal silicio in su — 6510, VIC-II, due CIA e il
   SID — e avviato sul KERNAL e sul BASIC V2 originali;
@@ -22,17 +22,15 @@ Ce ne sono cinque che partono davvero:
 - il **PC 386** a 33 MHz con otto mega, VGA e mouse PS/2, acceso dal **BIOS di
   Bochs** — libero anche lui — sullo stesso disco con FreeDOS del 286. È la
   scheda del Pentium qui sotto con un processore di cinque anni prima, e il
-  primo PC di questa collezione con il modo protetto in mano al software;
+  primo PC di questa collezione con il modo protetto in mano al software: c'è
+  il 387, e FreeDOS gira anche in modo virtuale 8086, sotto JEMMEX;
+- il **PC Pentium** del 1995 — modo protetto, paginazione, bus PCI, VGA — con
+  sopra **SeaBIOS**, che arriva in fondo al POST e avvia **FreeDOS** dal disco
+  IDE fino al prompt. È lo stesso file di disco che si accende sul 286, letto a
+  sedici bit da un controllore diverso su porte diverse;
 - lo **ZX Spectrum 48K**: uno Z80, una ULA e nient'altro. Si accende sul suo
   BASIC, carica le cassette rifacendo il suono che c'era sul nastro, e la
   macchina si batte da sola il `LOAD ""`.
-
-E ce n'è una sesta a metà strada: un **PC Pentium** del 1995 — modo protetto,
-paginazione, bus PCI, VGA — con sopra **SeaBIOS**, che arriva in fondo al POST e
-avvia **FreeDOS** dal disco IDE fino al prompt, o dal dischetto. È lo stesso file
-di disco che si accende sul 286 di sopra, letto a sedici bit da un controllore
-diverso su porte diverse. Nel menu è ancora una voce che non si avvia, ma la sua
-scheda madre si accende già nel browser: è quella del 386.
 
 Non è una simulazione dell'aspetto di quei computer: sono quei computer che
 eseguono il loro firmware. Il firmware però non è incluso — è di chi lo ha
@@ -150,10 +148,10 @@ vuole, `apt install bcc bin86`.
 **Il Pentium** è il caso fortunato anche lui, con una differenza: il suo firmware
 è libero ma viaggia dentro QEMU invece che su una pagina di download. SeaBIOS
 (LGPLv3) e la sua SeaVGABIOS sono quello che accende ogni macchina virtuale di
-QEMU; `apt install seabios` li mette in `/usr/share/seabios`, e
-`npm run fetch-roms` va a guardare lì — e in `/usr/share/qemu`, e negli altri
-posti dove li mettono i pacchetti — e li copia in `roms/pentium/`. È l'unico
-firmware di alloldos che si cerca sul computer invece che su Internet.
+QEMU, e i due file compilati stanno nel repository di QEMU:
+[`bios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/bios.bin)
+e [`vgabios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/vgabios.bin),
+alla versione 9.0.0. `npm run fetch-roms` li scarica in `roms/pentium/`.
 
 **Il 386** ha il firmware più comodo di tutti: il **BIOS di Bochs** e il
 **VGABIOS LGPL**, entrambi LGPL, stanno già compilati nel repository di Bochs.
@@ -1023,10 +1021,11 @@ nastro: qui le cassette si leggono e non si scrivono.
 ## PC Pentium
 
 La macchina del 1995, e la seconda di questa collezione che gira su **firmware
-libero fino in fondo**. Dal menu di boot non si accende ancora — le manca la
-sessione nel browser, che è il pezzo che fa di una macchina emulata una finestra
-— ma la macchina c'è tutta: il POST arriva in fondo e sopra ci si avvia FreeDOS,
-dal disco fisso o dal dischetto, fino al prompt.
+libero fino in fondo**. Si accende dal menu di boot come le altre: il POST arriva
+in fondo e sopra ci si avvia FreeDOS, dal disco fisso o dal dischetto, fino al
+prompt. La pagina è la stessa del 386 — la scheda madre è la stessa — con la
+tastiera, il mouse PS/2, la Sound Blaster, i dischi da trascinare e la tendina
+delle tastiere.
 
 Fra lei e il 286 di sopra ci sono sette anni e due cose che cambiano tutto:
 
@@ -1050,18 +1049,12 @@ virtuale di QEMU da quindici anni. Con dentro la sua **SeaVGABIOS**, che è la R
 della scheda video: un pezzo a parte, perché su una macchina vera stava in una
 ROM sulla scheda.
 
-Il progetto pubblica i sorgenti e non i binari, quindi il modo più corto di
-averli è un pacchetto che li ha già compilati:
-
-```sh
-apt install seabios      # e poi npm run fetch-roms
-```
-
-`npm run fetch-roms` non va a prenderli in rete: va a guardare in
-`/usr/share/seabios` e `/usr/share/qemu` — cioè dove li mettono i pacchetti — e
-se li trova li copia in `roms/pentium/`. Sono l'unico firmware di alloldos che
-si cerca sul computer invece che su Internet, e c'è una ragione: chi emula, QEMU
-ce l'ha.
+Il progetto pubblica i sorgenti e non i binari; i binari compilati stanno nel
+repository di QEMU, che se li porta dietro, e da lì si prendono con due link
+diretti: [`bios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/bios.bin),
+centoventotto KB, e [`vgabios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/vgabios.bin),
+la variante ISA. Sempre la versione 9.0.0 — SeaBIOS 1.16.3 — e
+`npm run fetch-roms` li mette in `roms/pentium/`.
 
 ### Due chip invece di venti
 
@@ -1224,19 +1217,12 @@ a che fare con l'errore.
 
 ### Cosa manca
 
-La **sessione nel browser**: per adesso questa macchina si accende solo dalle
-prove, e nel menu di boot è una voce che non si avvia. È il pezzo dopo, ed è
-tutto lavoro di finestra — canvas, tastiera, dischi che si trascinano dentro — non
-più di macchina.
-
-Poi la **virgola mobile**, che sul Pentium è dentro il processore per la prima
-volta: finché non c'è, CPUID dice che non c'è, perché un processore che dichiara
-un coprocessore che non ha è peggio di uno che dichiara di non averlo. Il
-**cambio di task** e il **modo virtuale 8086** — il cambio di anello invece c'è,
-ed è raccontato nel 386 qui sotto, che è la macchina per cui è servito. E la velocità: la
-macchina gira, ma gira a una frazione dei sessantasei megahertz che dichiara, e
-per farci sopra qualcosa di più di un prompt del DOS quella frazione andrà
-alzata.
+La **velocità**: la macchina gira, ma gira a una frazione dei sessantasei
+megahertz che dichiara, e per farci sopra qualcosa di più di un prompt del DOS
+quella frazione andrà alzata. La virgola mobile, il cambio di task e il modo
+virtuale 8086 invece ci sono: sono gli stessi del 386 qui sotto, perché il
+motore è lo stesso, e sono raccontati lì — e sul Pentium CPUID dichiara il
+coprocessore, che per la prima volta sta dentro il processore.
 
 ## PC 386
 
@@ -1325,13 +1311,78 @@ dischetti e i dischi fissi si trascinano sulla finestra, i file sciolti e gli zi
 finiscono su C:, e la tastiera si sceglie dalla barra con la stessa riga di KEYB
 nell'AUTOEXEC.BAT.
 
+### Il 387
+
+Fino al 486 la virgola mobile era un chip a parte, in uno zoccolo vuoto sulla
+scheda madre che si riempiva pagando. Qui lo zoccolo è pieno: il 387
+(`pentium/fpu.js`) si prende tutte le istruzioni da D8h a DFh — il processore
+gli calcola solo l'indirizzo dell'operando — e le esegue sulla sua **pila di
+otto registri**, il modo delle calcolatrici HP. Ci sono l'aritmetica, i
+confronti che accendono i codici di condizione, le trascendenti (seni, coseni,
+tangenti, logaritmi, esponenziali), gli interi da sedici a sessantaquattro bit,
+il BCD a diciotto cifre, e il formato a **ottanta bit** scritto in memoria byte
+per byte come lo scrive il chip, con l'uno davanti alla mantissa scritto invece
+che sottinteso. Dentro i numeri sono double di JavaScript — undici bit in meno
+del chip, che nessun programma del 1990 notava — e fuori sono quelli veri.
+
+Con EM acceso in CR0 il coprocessore sparisce e le sue istruzioni diventano
+un'eccezione, e con TS la prima istruzione di un task nuovo lo dice al sistema
+operativo: sono i due modi in cui un sistema si mette in mezzo, per emulare un
+387 che non c'è o per salvare quello di un altro programma solo quando serve.
+Sul Pentium il coprocessore è dentro il chip, e adesso CPUID lo dichiara.
+
+### Il modo virtuale 8086 e i task
+
+La cosa per cui il 386 è diventato il processore di Windows: **un programma del
+DOS dentro il modo protetto**. Con il bit VM acceso in EFLAGS i segmenti tornano
+quelli del modo reale — il selettore per sedici — e il programma crede di avere
+la macchina tutta per sé; ma è all'anello 3, sotto la paginazione, e ogni volta
+che fa qualcosa di delicato il processore lo ferma e lo dice a chi sorveglia.
+Un'interruzione lo porta all'anello 0 salvando anche i suoi quattro segmenti di
+dati, sopra tutto il resto; IRETD con VM acceso lo rimette dov'era. Le
+istruzioni che toccano le interruzioni — CLI, STI, PUSHF, POPF, INT, IRET —
+passano solo se IOPL è 3, e le porte le decide la **mappa dei permessi** in
+fondo al TSS, un bit per porta.
+
+La prova è quella vera: **JEMMEX**, il gestore di memoria di FreeDOS, caricato
+dal `CONFIG.SYS` del 386. Accende il modo protetto e la paginazione, rimette il
+DOS a girare in modo virtuale sotto di sé, e gli dà in cambio la memoria sopra il
+primo mega come memoria espansa. Il prompt arriva, `EMSSTAT` vede i sette mega,
+`DIR` legge il disco — e ogni interruzione del DOS, nel frattempo, è passata
+dall'anello 0 e tornata indietro.
+
+Due cose le ha trovate JEMMEX, e nessuna prova scritta a mano:
+
+- **le letture della IDT, della GDT e del TSS sono sempre accessi di sistema.**
+  Il processore le fa per conto suo, anche nel mezzo di un programma
+  all'anello 3; contarle con i diritti del programma voleva dire un page fault
+  su una pagina del sistema a ogni interruzione, e poi un double fault. E la
+  memoria delle traduzioni adesso si ricorda i diritti, non solo l'indirizzo;
+- **`pop dword [esp+4]` conta l'indirizzo dopo aver tolto il valore.** È la
+  regola del manuale, e JEMM ci costruisce sopra il modo in cui si sposta
+  l'indirizzo di ritorno; contandolo prima, il `ret` subito dopo tornava in
+  mezzo a una tabella delle pagine.
+
+Accanto c'è il **cambio di task**: JMP o CALL a un TSS o a una porta di task, le
+porte di task nella IDT, IRET con NT acceso che torna al task di prima. Tutto lo
+stato del programma finisce nel suo TSS e quello dell'altro si carica dal suo —
+registri, segmenti, tabella locale, pagine — con i bit "occupato" e il
+collegamento al task che ha chiamato.
+
+### Il suono
+
+La **Sound Blaster** del 286, la stessa: il bus ISA c'è anche su questa scheda,
+dietro al ponte sud, e le porte, la IRQ 7 e il canale 1 del DMA sono gli stessi
+— è per questo che la riga `BLASTER` dello stesso disco va bene su tutte e due.
+Nello stesso suono entra l'altoparlante, e la pagina ha il suo pulsante per
+l'audio.
+
 ### Cosa manca
 
-Quello che manca al Pentium, cioè la **virgola mobile** — sul 386 era un chip a
-parte, il 387, e anche lui manca — il **cambio di task** e il **modo virtuale
-8086**. Sono le tre cose che servono a Windows 3.1 in modo 386 avanzato; in modo
-standard gli bastano gli anelli, che ci sono. E il **suono**: per ora il 386 ha
-l'altoparlante sulla scheda ma nessuno che lo ascolti.
+Windows 3.1, che è il motivo per cui questa macchina esiste, non è provato: gli
+servono un disco con Windows sopra, che alloldos non ha, e più velocità di quella
+che la macchina ha adesso. E la velocità in generale: il 386 dichiara trentatré
+megahertz e ne fa una frazione.
 
 ## Schermo intero
 
@@ -1425,9 +1476,12 @@ src/systems/pentium/  il PC del 1995
   fwcfg.js            il canale da cui il firmware chiede com'è la macchina
   ide.js              i due canali IDE: i registri, l'LBA, e i settori a parole
   roms.js             dove trovare SeaBIOS e la sua ROM video
+  fpu.js              il 387: la pila di otto registri e gli ottanta bit
+  session.js          la pagina della scheda: canvas, dischi, tastiera, mouse, suono
+  index.js            il Pentium su quella pagina
 src/systems/pc386/    il PC 386, sulla scheda del Pentium
   roms.js             dove trovare il BIOS di Bochs e il VGABIOS LGPL
-  index.js            la sessione: canvas, dischi, tastiera, mouse, comandi
+  index.js            il 386 sulla stessa pagina
 ```
 
 Le macchine sono costruite allo stesso modo: la CPU esegue i cicli di una

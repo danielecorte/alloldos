@@ -28,6 +28,9 @@ export const FUSE_VERSION = '1.6.0';
 export const FUSE_SOURCE_URL =
   `https://downloads.sourceforge.net/project/fuse-emulator/fuse/${FUSE_VERSION}/fuse-${FUSE_VERSION}.tar.gz`;
 
+/** Il file da solo, dal repository di Fuse: sedici KB, pronti da trascinare. */
+export const ROM_DIRECT_URL = 'https://sourceforge.net/p/fuse-emulator/fuse/ci/master/tree/roms/48.rom?format=raw';
+
 /** Il rimpiazzo libero, per chi lo preferisce. */
 export const OPENSE_URL = 'https://spectrumcomputing.co.uk/entry/27510/ZX-Spectrum/OpenSE_BASIC';
 

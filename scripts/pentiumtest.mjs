@@ -331,7 +331,7 @@ section('CPUID, cioè la fine degli indovinelli');
   check('e che famiglia è: la quinta, cioè un Pentium', ((second.get32(EAX) >> 8) & 0xf) === 5, hex(second.get32(EAX)));
   check('con il contatore di cicli e le pagine grandi fra quello che sa fare',
     (second.get32(EDX) & 0x10) !== 0 && (second.get32(EDX) & 0x08) !== 0, hex(second.get32(EDX)));
-  check('e senza mentire sulla virgola mobile, che non c\'è', (second.get32(EDX) & 1) === 0);
+  check('e con la virgola mobile, che adesso c\'è', (second.get32(EDX) & 1) === 1);
 }
 
 {
@@ -484,6 +484,72 @@ section('Lo stesso motore, da 386');
   };
   check('su un 386 CPUID è un opcode non valido', cpuid(386) === 0x66, hex(cpuid(386), 4));
   check('su un Pentium risponde, e dice chi è', cpuid(586) === 0x6547, hex(cpuid(586), 4));
+}
+
+section('Il coprocessore');
+
+{
+  // Il 387 si prova come lo provavano i programmi: FNINIT, e poi si guarda la
+  // parola di controllo — 037Fh vuol dire che nello zoccolo c'è qualcuno. Poi
+  // un po' di conti che ogni programma del 1990 faceva, e i tre formati in cui
+  // il chip li scrive in memoria.
+  const { cpu, bus } = realMode([
+    0xdb, 0xe3, // fninit
+    0xd9, 0x3e, ...dh(0x214), // fnstcw [214h]
+    0xdd, 0x3e, ...dh(0x216), // fnstsw [216h]
+    0xd9, 0xe8, // fld1
+    0xd9, 0xeb, // fldpi
+    0xde, 0xc1, // faddp st(1), st
+    0xdd, 0x1e, ...dh(0x200), // fstp qword [200h]
+    0xdf, 0x06, ...dh(0x210), // fild word [210h]
+    0xd9, 0xfa, // fsqrt
+    0xdf, 0x1e, ...dh(0x212), // fistp word [212h]
+    0xd9, 0xe8, // fld1
+    0xd9, 0xee, // fldz
+    0xde, 0xd9, // fcompp: zero contro uno
+    0xdf, 0xe0, // fnstsw ax
+    0xa3, ...dh(0x218), // mov [218h], ax
+    0xdf, 0x06, ...dh(0x210), // fild word [210h]
+    0xdf, 0x36, ...dh(0x220), // fbstp [220h]
+    0xd9, 0xeb, // fldpi
+    0xdb, 0x3e, ...dh(0x230), // fstp tword [230h]
+    0xd9, 0xe8, // fld1
+    0xd9, 0xfe, // fsin
+    0xdd, 0x1e, ...dh(0x240), // fstp qword [240h]
+    HLT,
+  ], { offset: 0x100 });
+  cpu.model = 386;
+  const at = 0x10000;
+  bus.memory.set(Uint8Array.from(dh(144)), at + 0x210);
+  run(cpu);
+  const view = new DataView(bus.memory.buffer);
+  check('FNINIT e la parola di controllo dicono che il 387 c\'è', view.getUint16(at + 0x214, true) === 0x037f,
+    hex(view.getUint16(at + 0x214, true), 4));
+  check('e la parola di stato parte da zero', view.getUint16(at + 0x216, true) === 0);
+  check('uno più pi greco, scritto in un double', view.getFloat64(at + 0x200, true) === 1 + Math.PI,
+    String(view.getFloat64(at + 0x200, true)));
+  check('la radice di 144, riscritta come intero', view.getUint16(at + 0x212, true) === 12);
+  const compared = view.getUint16(at + 0x218, true);
+  check('zero contro uno accende C0, "minore", e lascia spenti C2 e C3', (compared & 0x4500) === 0x0100, hex(compared, 4));
+  check('144 in BCD sono le cifre 1, 4 e 4', bus.memory[at + 0x220] === 0x44 && bus.memory[at + 0x221] === 0x01 &&
+    bus.memory[at + 0x229] === 0);
+  const tword = [...bus.memory.subarray(at + 0x230, at + 0x23a)];
+  check('pi greco a ottanta bit ha l\'uno davanti scritto, e l\'esponente 4000h',
+    tword[7] === 0xc9 && tword[6] === 0x0f && tword[8] === 0x00 && tword[9] === 0x40,
+    tword.map((byte) => byte.toString(16).padStart(2, '0')).join(' '));
+  check('il seno di uno', Math.abs(view.getFloat64(at + 0x240, true) - Math.sin(1)) < 1e-15);
+  check('e la pila torna vuota', cpu.fpu.tags.every((tag) => tag === 3));
+}
+
+{
+  // Con EM acceso in CR0 il coprocessore non c'è: la sua istruzione diventa un
+  // #NM, e un sistema operativo ci attacca il suo emulatore.
+  const { cpu, bus } = realMode([0xd9, 0xe8, HLT]);
+  bus.memory.set(Uint8Array.from([...dh(0x100), ...dh(0x1000)]), 7 * 4);
+  bus.memory.set(Uint8Array.from([0xbb, ...dh(0x77), HLT]), 0x10100);
+  cpu.cr0 |= 0x04;
+  run(cpu);
+  check('con EM acceso, un FLD1 è un #NM', cpu.get16(EBX) === 0x77);
 }
 
 section('Il passaggio al modo protetto');
@@ -837,6 +903,122 @@ section('Le interruzioni in modo protetto');
 }
 
 {
+  // POP con la destinazione contata da ESP: l'indirizzo si calcola dopo aver
+  // tolto il valore. È la regola su cui JEMM costruisce il suo modo di
+  // spostare l'indirizzo di ritorno, e sbagliandola il 386 finiva a eseguire
+  // una tabella delle pagine.
+  const { cpu } = crossOver([
+    0x68, ...dw(0x11111111), // push 11111111h
+    0x68, ...dw(0x22222222), // push 22222222h
+    0x8f, 0x44, 0x24, 0x04, // pop dword [esp+4]
+    0x8b, 0x04, 0x24, // mov eax, [esp]
+    0x8b, 0x5c, 0x24, 0x04, // mov ebx, [esp+4]
+    HLT,
+  ]);
+  run(cpu);
+  check('POP [ESP+4] conta l\'indirizzo con ESP già cresciuto',
+    cpu.get32(EAX) === 0x11111111 && cpu.get32(EBX) === 0x22222222, `${hex(cpu.get32(EAX))} ${hex(cpu.get32(EBX))}`);
+}
+
+{
+  // Il cambio di task. Il task di partenza carica il suo TSS con LTR, e con
+  // una CALL lontana al TSS di un altro task gli passa la mano: il processore
+  // salva tutto nel primo, carica tutto dal secondo, e ci scrive dentro da dove
+  // si veniva. Il secondo task scrive un numero in memoria e fa IRET — con NT
+  // acceso, che vuol dire "torna al task di prima" — e il primo riprende
+  // dall'istruzione dopo la CALL, con i suoi registri com'erano.
+  const TSS1_AT = 0x12000;
+  const TSS2_AT = 0x12100;
+  const TASK2_AT = 0x11400;
+  const tss = (at) => [0x67, 0x00, ...dh(at & 0xffff), (at >>> 16) & 0xff, 0x89, 0x00, (at >>> 24) & 0xff];
+  const { cpu, bus } = crossOver(
+    [
+      0xbe, ...dw(0x55), // mov esi, 55h: un registro del primo task
+      0x66, 0xb8, ...dh(0x18), // mov ax, 18h
+      0x0f, 0x00, 0xd8, // ltr ax
+      0x9a, ...dw(0), ...dh(0x20), // call far 20h:0 — il TSS del secondo task
+      0xbf, ...dw(0x77), // mov edi, 77h: si torna qui
+      HLT,
+    ],
+    { extra: [tss(TSS1_AT), tss(TSS2_AT)] },
+  );
+  write32(bus, TSS2_AT + 0x20, TASK2_AT); // EIP
+  write32(bus, TSS2_AT + 0x24, 0x2); // EFLAGS
+  write32(bus, TSS2_AT + 0x38, 0x6800); // ESP
+  for (const [offset, selector] of [[0x48, 0x10], [0x4c, 0x08], [0x50, 0x10], [0x54, 0x10], [0x58, 0x10], [0x5c, 0x10]]) {
+    write32(bus, TSS2_AT + offset, selector);
+  }
+  bus.memory.set(Uint8Array.from([
+    0xbe, ...dw(0x1234), // mov esi, 1234h: lo stesso registro, nell'altro task
+    0xc7, 0x05, ...dw(0x5000), ...dw(0x1234), // mov dword [5000h], 1234h
+    0xcf, // iretd: NT è acceso, si torna al task di prima
+  ]), TASK2_AT);
+  run(cpu);
+  check('il secondo task ha girato', read32(bus, 0x5000) === 0x1234, hex(read32(bus, 0x5000)));
+  check('e ci si è tornati dall\'istruzione dopo la CALL', cpu.get32(EDI) === 0x77);
+  check('con i registri del primo task com\'erano', cpu.get32(ESI) === 0x55, hex(cpu.get32(ESI)));
+  check('il TSS del secondo si ricorda chi l\'ha chiamato', (read32(bus, TSS2_AT) & 0xffff) === 0x18);
+  check('ed è di nuovo libero, mentre il primo è occupato',
+    (bus.memory[GDT_AT + 0x20 + 5] & 0x0f) === 0x09 && (bus.memory[GDT_AT + 0x18 + 5] & 0x0f) === 0x0b);
+  check('e CR0 dice che il coprocessore ha lo stato di un altro task', (cpu.cr0 & 0x08) !== 0);
+}
+
+{
+  // Il modo virtuale 8086. Il sistema all'anello 0 carica il suo TSS — con lo
+  // stack dell'anello 0 e la mappa delle porte — e con un IRETD che ha il bit VM
+  // acceso nei flag entra in un programma del modo reale, a 2000:0000. Il
+  // programma scrive sulla porta 70h, che la mappa gli lascia, e poi legge la
+  // 60h, che la mappa gli nega: #GP, e il gestore all'anello 0 trova sullo stack
+  // tutto il programma — anche i quattro segmenti di dati, sopra il resto.
+  const TSS_AT = 0x12000;
+  const limit = 0x68 + 0x2000;
+  const tss = [limit & 0xff, (limit >>> 8) & 0xff, ...dh(TSS_AT & 0xffff), (TSS_AT >>> 16) & 0xff, 0x89, 0x00, 0x00];
+  const { cpu, bus } = crossOver(
+    [
+      0x66, 0xb8, ...dh(0x18), // mov ax, 18h
+      0x0f, 0x00, 0xd8, // ltr ax
+      0x6a, 0x00, // push 0: GS del programma
+      0x6a, 0x00, // push 0: FS
+      0x68, ...dw(0x2000), // push 2000h: DS
+      0x68, ...dw(0x2000), // push 2000h: ES
+      0x68, ...dw(0x2000), // push 2000h: SS
+      0x68, ...dw(0xfff0), // push 0FFF0h: SP
+      0x68, ...dw(0x00020002), // push EFLAGS: VM acceso, IOPL 0
+      0x68, ...dw(0x2000), // push 2000h: CS
+      0x6a, 0x00, // push 0: IP
+      0xcf, // iretd: dentro
+    ],
+    {
+      extra: [tss],
+      gates: [[13, gate(HANDLER_AT)]],
+      handler: [
+        0x8b, 0x44, 0x24, 0x04, // mov eax, [esp+4]: dov'era il programma
+        0x8b, 0x5c, 0x24, 0x0c, // mov ebx, [esp+12]: i suoi flag
+        0x8b, 0x4c, 0x24, 0x1c, // mov ecx, [esp+28]: il suo DS
+        0x8c, 0xd2, // mov edx, ss
+        HLT,
+      ],
+    },
+  );
+  write32(bus, TSS_AT + 4, 0x6000); // ESP0
+  write32(bus, TSS_AT + 8, 0x10); // SS0
+  bus.memory.set(Uint8Array.from(dh(0x68)), TSS_AT + 0x66); // dove comincia la mappa
+  bus.memory[TSS_AT + 0x68 + (0x60 >> 3)] |= 1; // la porta 60h, negata
+  bus.memory.set(Uint8Array.from([
+    0xb0, 0x5a, // mov al, 5Ah
+    0xe6, 0x70, // out 70h, al: permessa
+    0xe4, 0x60, // in al, 60h: negata
+    HLT,
+  ]), 0x20000);
+  run(cpu);
+  check('il programma in modo virtuale scrive sulla porta che la mappa gli lascia', bus.ports.get(0x70) === 0x5a);
+  check('e sulla porta negata si ferma, all\'istruzione giusta', cpu.get32(EAX) === 4, hex(cpu.get32(EAX)));
+  check('il gestore trova i flag del programma, con VM acceso', (cpu.get32(EBX) & 0x20000) !== 0, hex(cpu.get32(EBX)));
+  check('e sopra tutto il resto i suoi segmenti di dati', cpu.get32(ECX) === 0x2000, hex(cpu.get32(ECX)));
+  check('mentre lui è all\'anello 0, fuori dal modo virtuale', cpu.get16(EDX) === 0x10 && cpu.vm === 0 && cpu.cpl === 0);
+}
+
+{
   // REP MOVSD: la copia di memoria che ogni sistema operativo fa un milione di
   // volte. A trentadue bit sposta quattro byte per giro, e si deve poter
   // interrompere a metà — il processore che non torna sull'istruzione tiene fuori
@@ -876,6 +1058,8 @@ import { IDE, IDEChannel, PRIMARY, SECONDARY } from '../src/systems/pentium/ide.
 import { HardDisk } from '../src/systems/pc/ata.js';
 import { bootPentium, installedDisk, Session, have, ROMS } from './pentiumsession.mjs';
 import { setLayout } from '../src/systems/pc/layouts.js';
+import { FAT16 } from '../src/systems/pc/fat.js';
+import { readZip } from '../src/systems/pc/zip.js';
 import { existsSync as fileExists } from 'node:fs';
 import { build386 } from '../src/systems/pc386/index.js';
 import { BIOS_SPEC as PC386_BIOS, VIDEO_SPEC as PC386_VIDEO } from '../src/systems/pc386/roms.js';
@@ -1585,6 +1769,51 @@ Nessun BIOS di Bochs in roms/pc386: la prova del 386 è stata saltata.
   check('e FreeDOS arriva al prompt', dos.waitFor(/C:\\>/, 600), dos.lastLine());
   check('senza una sola istruzione che il 386 non avesse', invalid === 0, `${invalid} opcode non validi`);
   check('su un processore che dice di essere un 386', pc.cpu.model === 386 && pc.clock === 33000000);
+
+  // La Sound Blaster sta anche su questa scheda, alle stesse porte del 286.
+  pc.outb(0x226, 1);
+  pc.outb(0x226, 0);
+  check('e sulla scheda c\'è la Sound Blaster, che risponde AAh al reset', pc.inb(0x22a) === 0xaa);
+}
+
+const JEMM_PACKAGE = join(PC386_ROMS, 'jemm.zip');
+if (!fileExists(join(PC386_ROMS, PC386_BIOS.file)) || !fileExists(JEMM_PACKAGE) || !have.disk) {
+  console.log(`
+Nessun jemm.zip in roms/pc386: la prova del modo virtuale 8086 con JEMMEX è
+stata saltata. \`npm run fetch-roms\` lo prende dal repository di FreeDOS.`);
+} else {
+  section('Il 386 in modo virtuale 8086: FreeDOS sotto JEMMEX');
+
+  // La prova che il modo virtuale 8086 c'è davvero, fatta con un sorvegliante
+  // vero e non scritto per l'occasione: JEMMEX di FreeDOS, che si carica dal
+  // CONFIG.SYS, accende il modo protetto e la paginazione, e rimette il DOS a
+  // girare in modo virtuale sotto di sé — dandogli in cambio la memoria sopra
+  // il primo mega, come memoria espansa. Da lì in poi ogni interruzione del
+  // DOS passa per l'anello 0 e torna indietro, ogni pagina è tradotta, e il
+  // prompt deve arrivare lo stesso.
+  const disk = installedDisk();
+  const volume = FAT16.of(disk.data);
+  const entries = await readZip(new Uint8Array(readFileSync(JEMM_PACKAGE)));
+  const folder = volume.mkdirp('JEMM');
+  for (const name of ['JEMMEX.EXE', 'EMSSTAT.EXE']) {
+    volume.writeFile(folder, name, entries.find(({ path }) => path.toUpperCase() === `BIN/${name}`).bytes);
+  }
+  const config = new TextDecoder().decode(volume.read('CONFIG.SYS'));
+  volume.writeFile(null, 'CONFIG.SYS', new TextEncoder().encode(`DEVICE=C:\\JEMM\\JEMMEX.EXE\r\n${config}`));
+
+  const pc = build386(new Uint8Array(readFileSync(join(PC386_ROMS, PC386_BIOS.file))), {
+    video: new Uint8Array(readFileSync(join(PC386_ROMS, PC386_VIDEO.file))),
+    disk,
+  });
+  const dos = new Session(pc, (text) => console.log(text));
+  check('JEMMEX si carica', dos.waitFor(/JemmEx loaded/, 1500), dos.lastLine());
+  check('e il DOS arriva al prompt lo stesso', dos.waitFor(/C:\\>/, 1500), dos.lastLine());
+  check('ma adesso in modo virtuale 8086, all\'anello 3', pc.cpu.vm === 1 && pc.cpu.cpl === 3 && pc.cpu.protectedMode);
+  check('con la paginazione accesa', (pc.cpu.cr0 & 0x80000000) !== 0);
+  dos.command('c:\\jemm\\emsstat', { limit: 1200 });
+  check('e la memoria sopra il primo mega diventa memoria espansa', /EMS page frame/.test(dos.screen()), dos.lastLine());
+  dos.command('dir c:\\jemm', { limit: 1200 });
+  check('e il DOS legge il disco, da dentro il modo virtuale', /JEMMEX\s+EXE/.test(dos.screen()), dos.lastLine());
 }
 
 section('Quanto va');

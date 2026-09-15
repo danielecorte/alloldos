@@ -9,9 +9,12 @@
 // perché su una macchina vera stava in una ROM sulla scheda.
 //
 // Sono due file e vanno in `roms/pentium/`. Non stanno nel repository — nessun
-// firmware ci sta — ma sono più facili da trovare di tutti gli altri: se sul
-// computer c'è QEMU installato, ci sono già, e `npm run fetch-roms` se li prende
-// da lì.
+// firmware ci sta — ma il progetto SeaBIOS pubblica solo i sorgenti, e i binari
+// già compilati stanno dentro QEMU, nel suo repository. Da lì si prendono, alla
+// versione 9.0.0, sempre la stessa: sono due link diretti, e `npm run
+// fetch-roms` li scarica.
+
+const QEMU_BIOS = 'https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios';
 
 const BIOS_KEY = 'alloldos.rom.pentium.bios';
 const VIDEO_KEY = 'alloldos.rom.pentium.vgabios';
@@ -32,7 +35,7 @@ export const BIOS_SPEC = {
   file: 'seabios.bin',
   sizes: [65536, 131072, 262144],
   label: 'SeaBIOS',
-  from: '/usr/share/seabios/bios.bin',
+  source: `${QEMU_BIOS}/bios.bin`,
 };
 
 /**
@@ -46,7 +49,7 @@ export const BIOS_SPEC = {
 export const VIDEO_SPEC = {
   file: 'vgabios.bin',
   label: 'SeaVGABIOS',
-  from: '/usr/share/seabios/vgabios-isavga.bin',
+  source: `${QEMU_BIOS}/vgabios.bin`,
 };
 
 export class MissingBIOSError extends Error {

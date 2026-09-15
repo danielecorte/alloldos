@@ -16,9 +16,10 @@ import {
   GLABIOS_VERSION,
   GLABIOS_SOURCE_URL,
   XTIDE_SOURCE_URL,
+  VIDEO_DOWNLOAD_URL as PC_VGABIOS_FILE,
 } from '../systems/pc/roms.js';
-import { FREEDOS_URL } from '../systems/pc/media.js';
-import { FUSE_URL, FUSE_SOURCE_URL, OPENSE_URL } from '../systems/zx/roms.js';
+import { FREEDOS_SPEC } from '../systems/pc/media.js';
+import { FUSE_URL, ROM_DIRECT_URL as ZX_ROM_FILE, OPENSE_URL } from '../systems/zx/roms.js';
 import {
   SEABIOS_URL,
   SEABIOS_PACKAGE_URL,
@@ -337,13 +338,15 @@ class AboutPage {
         (GPLv2): un BIOS XT non sa cosa sia un disco fisso, e chi lo sa è la
         scheda, che se lo porta dietro in dodici KB a C800;</li>
         <li>il <b>BIOS della VGA</b>, il
-        <a class="about__link" href="${VGABIOS_URL}" target="_blank" rel="noopener noreferrer">VGABIOS LGPL</a>:
+        <a class="about__link" href="${PC_VGABIOS_FILE}" target="_blank" rel="noopener noreferrer">VGABIOS LGPL</a>:
         quello pubblicato è compilato per il 386 e sul 286 si ferma al primo
         salto, quindi questo è compilato qui dallo stesso sorgente per il 286,
         e viaggia col repository — <code>npm run build-vgabios</code> lo rifà
         identico. Senza, la macchina monta una CGA;</li>
         <li>un <b>dischetto avviabile</b>, se lo si vuole: quello di
-        <a class="about__link" href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS 1.3</a>
+        <a class="about__link" href="${FREEDOS_SPEC.source}" target="_blank" rel="noopener noreferrer">FreeDOS 1.3</a>
+        (lo zip dell'edizione a dischetti: si trascina così com'è, e la macchina
+        ci trova dentro il suo)
         da 720 KB, che è l'unica misura che un controllore XT sappia leggere. Il
         DOS però sta già sul disco fisso, e senza dischetto la macchina parte lo
         stesso.</li>
@@ -459,18 +462,19 @@ class AboutPage {
       <h3 class="about__heading">Dove trovare le ROM</h3>
       <p>Due file, entrambi LGPL, e per una volta già compilati:</p>
       <ul class="about__list">
-        <li>il <b>BIOS di sistema</b>, quello di
+        <li><a class="about__link" href="${BOCHS_SPEC.source}" target="_blank" rel="noopener noreferrer">BIOS-bochs-legacy</a>,
+        il <b>BIOS di sistema</b> di
         <a class="about__link" href="${BOCHS_URL}" target="_blank" rel="noopener noreferrer">Bochs</a>
         nella versione «legacy», tutta a sedici bit. SeaBIOS, quello del
         Pentium, su un 386 non parte: usa BSWAP, un'istruzione del 486, senza
         chiedere;</li>
-        <li>il
-        <a class="about__link" href="${VGABIOS_URL}" target="_blank" rel="noopener noreferrer">VGABIOS LGPL</a>,
+        <li><a class="about__link" href="${VGABIOS_SPEC.source}" target="_blank" rel="noopener noreferrer">VGABIOS-lgpl-latest</a>,
+        il <a class="about__link" href="${VGABIOS_URL}" target="_blank" rel="noopener noreferrer">VGABIOS LGPL</a>:
         la ROM della scheda video, che la macchina affaccia a C0000.</li>
       </ul>
-      <p class="about__note">Stanno nel
-      <a class="about__link" href="${BOCHS_RELEASE_URL}" target="_blank" rel="noopener noreferrer">repository di Bochs</a>
-      alla versione 2.7, e <code>npm run fetch-roms</code> li mette in
+      <p class="about__note">Si scaricano dai due link e si trascinano sulla
+      finestra. Stanno nel repository di Bochs alla versione 2.7, e
+      <code>npm run fetch-roms</code> li mette in
       <code>roms/pc386/</code>: <code>${BOCHS_SPEC.file}</code> e
       <code>${VGABIOS_SPEC.file}</code>. Si possono anche trascinare sulla
       finestra.</p>
@@ -489,6 +493,16 @@ class AboutPage {
         <li>Il <b>filo del cambio disco</b>, che si alza quando lo sportello si
         apre e si abbassa quando la testina fa un passo: senza, il DOS si teneva
         la FAT del dischetto di prima.</li>
+        <li>Il <b>387</b>, nello zoccolo accanto al processore: la pila di otto
+        registri, l'aritmetica, le trascendenti, gli interi, il BCD e il formato
+        a ottanta bit in memoria byte per byte.</li>
+        <li>Il <b>modo virtuale 8086</b>: un programma del DOS dentro il modo
+        protetto, all'anello 3 e sotto la paginazione, con la mappa delle porte
+        nel TSS. La prova è JEMMEX di FreeDOS, che rimette il DOS in modo
+        virtuale sotto di sé e gli dà sette mega di memoria espansa.</li>
+        <li>Il <b>cambio di task</b>, con i TSS, le porte di task e il ritorno
+        con IRET.</li>
+        <li>La <b>Sound Blaster</b> del 286, sulla stessa scheda del Pentium.</li>
       </ul>
 
       <h3 class="about__heading">Le cose che solo un BIOS diverso ha trovato</h3>
@@ -505,12 +519,8 @@ class AboutPage {
 
       <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li>Il <b>387</b>, la virgola mobile, che sul 386 era un chip a
-        parte.</li>
-        <li>Il <b>cambio di task</b> e il <b>modo virtuale 8086</b>, che
-        servono a Windows 3.1 in modo 386 avanzato.</li>
-        <li>Il <b>suono</b>: l'altoparlante c'è sulla scheda, ma nessuno lo
-        ascolta.</li>
+        <li><b>Windows 3.1</b>, che è il motivo per cui questa macchina esiste,
+        non è provato: servono un disco con Windows sopra, e più velocità.</li>
       </ul>
     `;
   }
@@ -537,22 +547,20 @@ class AboutPage {
       <h3 class="about__heading">Dove trovare le ROM</h3>
       <p>Sono due file, e sono entrambi <b>software libero</b>:</p>
       <ul class="about__list">
-        <li><b>SeaBIOS</b> (LGPLv3), il BIOS di sistema: è quello che accende
-        ogni macchina virtuale di
+        <li><a class="about__link" href="${SEABIOS_SPEC.source}" target="_blank" rel="noopener noreferrer">bios.bin</a>:
+        <b>SeaBIOS</b> (LGPLv3), il BIOS di sistema — quello che accende ogni
+        macchina virtuale di
         <a class="about__link" href="${SEABIOS_URL}" target="_blank" rel="noopener noreferrer">QEMU</a>
         da quindici anni, scritto da zero;</li>
-        <li><b>SeaVGABIOS</b>, la ROM della scheda video, che su una macchina
-        vera stava in una ROM sulla scheda: serve la variante <b>ISA</b>, perché
-        la VGA di questa macchina è una VGA e basta.</li>
+        <li><a class="about__link" href="${SEAVGABIOS_SPEC.source}" target="_blank" rel="noopener noreferrer">vgabios.bin</a>:
+        <b>SeaVGABIOS</b>, la ROM della scheda video, nella variante <b>ISA</b>,
+        perché la VGA di questa macchina è una VGA e basta.</li>
       </ul>
-      <p class="about__note">Il progetto pubblica i sorgenti e non i binari,
-      quindi il modo più corto di averli è un pacchetto che li ha già compilati:
-      <code>apt install seabios</code> li mette in
-      <code>/usr/share/seabios</code>, che è dove
-      <code>npm run fetch-roms</code> va a guardare
-      (<a class="about__link" href="${SEABIOS_PACKAGE_URL}" target="_blank" rel="noopener noreferrer">packages.debian.org/seabios</a>).
-      I due file vanno in <code>roms/pentium/</code>:
-      <code>${SEABIOS_SPEC.file}</code> e <code>${SEAVGABIOS_SPEC.file}</code>.</p>
+      <p class="about__note">Il progetto pubblica i sorgenti e non i binari; i
+      binari compilati stanno nel repository di QEMU, e i due link sono quelli,
+      alla versione 9.0.0. <code>npm run fetch-roms</code> li mette in
+      <code>roms/pentium/</code> come <code>${SEABIOS_SPEC.file}</code> e
+      <code>${SEAVGABIOS_SPEC.file}</code>.</p>
 
       <h3 class="about__heading">Cosa è stato fatto</h3>
       <ul class="about__list">
@@ -600,14 +608,10 @@ class AboutPage {
 
       <h3 class="about__heading">Cosa manca</h3>
       <ul class="about__list">
-        <li>La <b>sessione nel browser</b>: il Pentium si accende solo dalle
-        prove. La sua scheda madre però nel browser c'è già — è quella del 386.</li>
-        <li>La <b>virgola mobile</b>, che sul Pentium è dentro il processore per
-        la prima volta. Finché non c'è, CPUID dice che non c'è: un processore che
-        dichiara un coprocessore che non ha è peggio di uno che dichiara di non
-        averlo.</li>
-        <li>Il <b>cambio di task</b> e il <b>modo virtuale 8086</b>: servono a
-        far girare più programmi DOS insieme, e il DOS da solo non li usa.</li>
+        <li>La <b>velocità</b>: la macchina dichiara sessantasei megahertz e ne
+        fa una frazione. La virgola mobile, il cambio di task e il modo virtuale
+        8086 invece ci sono — sono gli stessi del 386, perché il motore è lo
+        stesso.</li>
       </ul>
     `;
   }
@@ -634,10 +638,10 @@ class AboutPage {
       allora ne permette la ridistribuzione insieme agli emulatori — quindi, a
       differenza della Kickstart, si trova senza cercarla:</p>
       <ul class="about__list">
-        <li>dentro il sorgente di
-        <a class="about__link" href="${FUSE_URL}" target="_blank" rel="noopener noreferrer">Fuse</a>
-        (<a class="about__link" href="${FUSE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">fuse-1.6.0.tar.gz</a>,
-        in <code>roms/48.rom</code>), ed è quello che scarica
+        <li><a class="about__link" href="${ZX_ROM_FILE}" target="_blank" rel="noopener noreferrer">48.rom</a>,
+        dal repository di
+        <a class="about__link" href="${FUSE_URL}" target="_blank" rel="noopener noreferrer">Fuse</a>,
+        che la ridistribuisce da sempre — ed è quella che scarica
         <code>npm run fetch-roms</code>;</li>
         <li>oppure
         <a class="about__link" href="${OPENSE_URL}" target="_blank" rel="noopener noreferrer">OpenSE BASIC</a>,

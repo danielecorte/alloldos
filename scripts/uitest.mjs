@@ -911,6 +911,35 @@ if (pc386.machine === null) {
 pc386.dispose();
 check('the 386 shuts down cleanly', pc386.running === false);
 
+// ------------------------------------------------------------------ il Pentium
+
+// La stessa pagina del 386, con SeaBIOS. Se il firmware è in roms/pentium si
+// accende davvero, fino al DOS; se no, chiede i due file con i loro link.
+const pentiumEntry = (await import('../src/boot/systems.js')).SYSTEMS.find((s) => s.id === 'pentium');
+check('the boot menu offers the Pentium', pentiumEntry?.available === true);
+const pentium = await (await pentiumEntry.load()).boot(new StubElement('main'), { onExit: () => {} });
+if (pentium.machine === null) {
+  const panel = pentium.overlay.children[0];
+  const text = panel ? [panel.innerHTML, ...panel.children.map((n) => n.innerHTML || n.textContent)].join(' ') : '';
+  check('the Pentium asks for SeaBIOS, with direct links to the files', text.includes('pc-bios/bios.bin'));
+} else {
+  check('the Pentium booted, with a Pentium in it', pentium.machine.cpu.model === 586);
+  let prompt = false;
+  for (let i = 0; i < 900 && !prompt; i++) {
+    pump(4);
+    prompt = /C:\\>/.test(pentium.machine.video.text().join('\n'));
+  }
+  check('and reaches the DOS prompt', prompt, pentium.machine.video.text().filter(Boolean).pop());
+  check('the canvas follows the VGA text mode', pentium.canvas.width === 720 && pentium.canvas.height === 400,
+    `${pentium.canvas.width}x${pentium.canvas.height}`);
+  sendKey('keydown', 'KeyA', 'a');
+  check('a key press reaches the 8042', pentium.machine.kbc.output.some((entry) => entry.byte === 0x1e));
+  sendKey('keyup', 'KeyA', 'a');
+  check('and the Sound Blaster is on the board, turning out samples', pentium.machine.sound.sampleRate > 0);
+}
+pentium.dispose();
+check('the Pentium shuts down cleanly', pentium.running === false);
+
 
 // ------------------------------------------------------- lo ZX Spectrum
 
@@ -998,7 +1027,7 @@ check(
 );
 check('the C64 section links its own ROMs', aboutText.includes('kernal-901227-03.bin'));
 check('and the Amiga section says where its Kickstart comes from', aboutText.includes('amigaforever.com'));
-check('and the PC section links the free firmware it runs on', aboutText.includes('glabios') && aboutText.includes('freedos.org'));
+check('and the PC section links the free firmware it runs on', aboutText.includes('glabios') && aboutText.includes('/freedos/files/'));
 check('and the 386 section links Bochs and its VGA BIOS', aboutText.includes('bochs.sourceforge.io') && aboutText.includes('nongnu.org/vgabios'));
 
 sendKey('keydown', 'Escape', 'Escape');

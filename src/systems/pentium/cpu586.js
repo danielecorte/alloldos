@@ -49,6 +49,8 @@ export const FS = 4;
 export const GS = 5;
 
 /** I bit di CR0 che contano qui: il modo protetto, e la paginazione. */
+import { FPU } from './fpu.js';
+
 export const CR0_PE = 0x00000001;
 export const CR0_TS = 0x00000008;
 export const CR0_WP = 0x00010000;
@@ -163,6 +165,13 @@ export class CPU586 {
      * grande caricato in modo protetto e portato dietro in real mode.
      */
     this.seg = Array.from({ length: 6 }, () => descriptorCache());
+    /**
+     * Il coprocessore: il 387 nello zoccolo accanto al 386, dentro il chip dal
+     * 486 in poi. Un'eccezione non mascherata la segnala alla scheda madre, che
+     * su un PC la fa diventare la IRQ 13.
+     */
+    this.fpu = new FPU(this);
+    this.fpu.onError = () => this.bus.fpuError?.();
     this.reset();
   }
 
@@ -200,6 +209,8 @@ export class CPU586 {
     this.rf = 0;
     this.ac = 0;
     this.id = 0;
+    /** Il modo virtuale 8086: un programma del DOS dentro il modo protetto. */
+    this.vm = 0;
 
     // ET acceso, come si sveglia un Pentium; CD e NW, le due cache, sono del 486
     // e il 386 non li ha.
@@ -228,6 +239,9 @@ export class CPU586 {
      */
     this.tsc = 0;
     this.tlb = new Map();
+    /** Quanti accessi di sistema sono in corso: finché non è zero, niente diritti dell'utente. */
+    this.systemAccess = 0;
+    this.fpu.reset();
 
     this.resetPrefixes();
   }
@@ -340,6 +354,7 @@ export class CPU586 {
         (this.iopl << 12) |
         (this.nt << 14) |
         (this.rf << 16) |
+        (this.vm << 17) |
         (this.ac << 18) |
         (this.id << 21)) >>>
       0
@@ -359,6 +374,7 @@ export class CPU586 {
     this.iopl = (value >> 12) & 3;
     this.nt = (value >> 14) & 1;
     this.rf = (value >> 16) & 1;
+    this.vm = (value >> 17) & 1;
     // I due bit con cui il software riconosce il processore: AC c'è dal 486, ID
     // dal Pentium. Si prova ad accenderli e si guarda se restano accesi — su un
     // 386 AC ricade, e il programma sa di avere davanti un 386.
@@ -429,15 +445,19 @@ export class CPU586 {
    * @param {boolean} write se l'accesso è in scrittura
    * @returns {number} l'indirizzo fisico
    */
-  translate(linear, write = false) {
+  translate(linear, write = false, system = this.systemAccess > 0) {
     linear >>>= 0;
     if (!(this.cr0 & CR0_PG)) return linear;
 
     const page = linear >>> 12;
+    // Le tabelle dei descrittori, l'IDT e il TSS li legge il processore per
+    // conto suo, e sono sempre accessi di sistema — anche nel mezzo di un
+    // programma all'anello 3, che quelle pagine non ha il diritto di vederle.
+    const user = this.cpl === 3 && !system;
     const cached = this.tlb.get(page);
-    if (cached && (!write || cached.dirty)) return (cached.phys | (linear & 0xfff)) >>> 0;
-
-    const user = this.cpl === 3;
+    if (cached && (!write || cached.dirty) && (!user || cached.user) && (!write || !user || cached.writable)) {
+      return (cached.phys | (linear & 0xfff)) >>> 0;
+    }
     const fail = (present) => {
       this.cr2 = linear;
       throw new Fault(PAGE_FAULT, (present ? 1 : 0) | (write ? 2 : 0) | (user ? 4 : 0));
@@ -478,7 +498,10 @@ export class CPU586 {
     if ((entry & touched) !== touched) this.writePhys32(entryAt, (entry | touched) >>> 0);
     if (!huge && (dir & 0x20) === 0) this.writePhys32(dirAt, (dir | 0x20) >>> 0);
 
-    this.tlb.set(page, { phys, dirty: write });
+    // La traduzione si ricorda anche i diritti: una pagina del sistema tradotta
+    // per il sistema non deve diventare, dalla memoria delle traduzioni, una
+    // pagina che un programma può leggere.
+    this.tlb.set(page, { phys, dirty: write, user: !supervisor, writable });
     return (phys | (linear & 0xfff)) >>> 0;
   }
 
@@ -524,6 +547,16 @@ export class CPU586 {
 
   writeLinear(size, linear, value) {
     for (let i = 0; i < size; i++) this.writeLinear8(linear + i, (value >>> (i * 8)) & 0xff);
+  }
+
+  /** Una lettura che fa il processore per conto suo: il TSS, la mappa delle porte. */
+  readSystem(size, linear) {
+    this.systemAccess++;
+    try {
+      return this.readLinear(size, linear);
+    } finally {
+      this.systemAccess--;
+    }
   }
 
   // ---------------------------------------------------- la memoria a segmenti
@@ -633,8 +666,8 @@ export class CPU586 {
     // "quello che hai chiesto non c'è".
     if (offset + 7 > table.limit) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
     const at = (table.base + offset) >>> 0;
-    const low = this.readPhys32(this.translate(at, false));
-    const high = this.readPhys32(this.translate(at + 4, false));
+    const low = this.readPhys32(this.translate(at, false, true));
+    const high = this.readPhys32(this.translate(at + 4, false, true));
 
     const granularity = (high & 0x00800000) !== 0;
     let limit = ((high & 0x000f0000) | (low & 0xffff)) >>> 0;
@@ -665,7 +698,11 @@ export class CPU586 {
    */
   loadSegment(index, selector) {
     selector &= 0xffff;
-    if (!this.protectedMode) {
+    // Nel modo virtuale 8086 i segmenti sono quelli del modo reale — il
+    // selettore per sedici, sessantaquattro KB — anche se tutto intorno la
+    // macchina è in modo protetto: è il trucco che fa girare il DOS dentro un
+    // sistema operativo che lo sorveglia.
+    if (!this.protectedMode || this.vm) {
       this.s[index] = selector;
       const cache = this.seg[index];
       cache.base = (selector << 4) >>> 0;
@@ -676,7 +713,7 @@ export class CPU586 {
       cache.readable = true;
       cache.expandDown = false;
       cache.present = true;
-      cache.dpl = 0;
+      cache.dpl = this.vm ? 3 : 0;
       return;
     }
 
@@ -736,8 +773,12 @@ export class CPU586 {
    */
   farJump(selector, offset) {
     const wasBig = this.seg[CS].big;
-    if (this.protectedMode && (selector & 0xfffc) !== 0) {
+    if (this.protectedMode && !this.vm && (selector & 0xfffc) !== 0) {
       const d = this.descriptorAt(selector);
+      if (d.system && this.isTask(d)) {
+        this.enterTask(selector, d, 'jmp');
+        return wasBig;
+      }
       if (d.system) {
         // Un salto attraverso una porta: la porta dice dove, e un JMP — a
         // differenza di una CALL — non cambia anello, perché non ha nessun
@@ -766,8 +807,9 @@ export class CPU586 {
    * @param {number} size la misura degli operandi dell'istruzione
    */
   farCall(selector, offset, size) {
-    if (this.protectedMode && (selector & 0xfffc) !== 0) {
+    if (this.protectedMode && !this.vm && (selector & 0xfffc) !== 0) {
       const d = this.descriptorAt(selector);
+      if (d.system && this.isTask(d)) return this.enterTask(selector, d, 'call');
       if (d.system) return this.callThroughGate(selector, d);
     }
     this.push(this.s[CS], size);
@@ -780,13 +822,10 @@ export class CPU586 {
    * Le verifiche di una porta di chiamata, che sono due volte quelle di un
    * segmento: prima la porta — chi ha il diritto di passarci — poi il segmento
    * di codice dall'altra parte, che deve stare in un anello non più esterno di
-   * quello di chi chiama. Una porta di task invece vorrebbe dire cambiare
-   * programma, e quello qui non c'è ancora.
+   * quello di chi chiama. Le porte di task e i TSS non arrivano qui: sono un
+   * cambio di programma, e li smista chi chiama.
    */
   openCallGate(selector, gate) {
-    if (gate.type === 5 || gate.type === 1 || gate.type === 9) {
-      throw new Unsupported('il cambio di task non c\'è ancora');
-    }
     if (gate.type !== 4 && gate.type !== 12) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
     if (gate.dpl < Math.max(this.cpl, selector & 3)) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
     if (!gate.present) throw new Fault(SEGMENT_NOT_PRESENT, selector & 0xfffc);
@@ -884,6 +923,8 @@ export class CPU586 {
     this.reg = (byte >> 3) & 7;
     this.rm = byte & 7;
     this.memory = this.mod !== 3;
+    /** Se l'indirizzo è contato da ESP: POP lo deve ricontare dopo aver tolto il valore. */
+    this.espBase = false;
     if (!this.memory) return;
     if (this.addrsize === 2) this.address16();
     else this.address32();
@@ -944,6 +985,7 @@ export class CPU586 {
       else {
         offset += this.get32(base);
         if (base === 4 || base === 5) segment = SS;
+        this.espBase = base === 4;
       }
     } else if (this.rm === 5 && this.mod === 0) {
       offset = this.fetch32();
@@ -1221,8 +1263,8 @@ export class CPU586 {
 
     const at = (this.idt.base + vector * 8) >>> 0;
     if (vector * 8 + 7 > this.idt.limit) throw new Fault(GENERAL_PROTECTION, vector * 8 + 2);
-    const low = this.readPhys32(this.translate(at, false));
-    const high = this.readPhys32(this.translate(at + 4, false));
+    const low = this.readPhys32(this.translate(at, false, true));
+    const high = this.readPhys32(this.translate(at + 4, false, true));
     const type = (high >>> 8) & 0x1f;
     const dpl = (high >>> 13) & 3;
     if ((high & 0x8000) === 0) throw new Fault(SEGMENT_NOT_PRESENT, vector * 8 + 2);
@@ -1230,7 +1272,14 @@ export class CPU586 {
     // privilegiato per quella porta; un'eccezione passa sempre, perché non è il
     // programma che l'ha chiesta.
     if (software && dpl < this.cpl) throw new Fault(GENERAL_PROTECTION, vector * 8 + 2);
-    if (type === 5) throw new Unsupported('le porte di task non ci sono ancora');
+    if (type === 5) {
+      // Una porta di task: l'interruzione non chiama un gestore, cambia
+      // programma. È così che un sistema operativo si difende da un double
+      // fault — che arriva con uno stack di cui non ci si può fidare — facendolo
+      // servire da un task tutto suo, con uno stack suo.
+      this.switchTask((low >>> 16) & 0xffff, 'int', code);
+      return;
+    }
     if (type !== 6 && type !== 7 && type !== 14 && type !== 15) {
       throw new Fault(GENERAL_PROTECTION, vector * 8 + 2);
     }
@@ -1247,6 +1296,9 @@ export class CPU586 {
     if (!target.present) throw new Fault(SEGMENT_NOT_PRESENT, selector & 0xfffc);
     const conforming = (target.type & 0x04) !== 0;
     const ring = conforming ? this.cpl : target.dpl;
+    // Dal modo virtuale 8086 si esce solo verso l'anello 0: è lì che sta chi
+    // sorveglia il DOS, e nessun altro ha il diritto di vederlo interrotto.
+    if (this.vm && (conforming || target.dpl !== 0)) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
 
     // Quello che si impila è lo stato dell'istruzione *interrotta*, e va letto
     // prima di toccare qualunque cosa: da qui in poi CS e EIP sono già quelli
@@ -1267,11 +1319,25 @@ export class CPU586 {
         // prima di tutto il resto, va lo stack di prima, così che IRET sappia
         // dove tornare.
         const stack = this.innerStack(ring);
+        const fromV86 = this.vm === 1;
+        const data = [this.s[GS], this.s[FS], this.s[DS], this.s[ES]];
+        this.vm = 0;
         this.cpl = ring;
         this.loadSegment(SS, stack.ss);
         this.set(this.stacksize, ESP, stack.esp);
+        // Uscendo dal modo virtuale 8086 i quattro segmenti di dati sono numeri
+        // del modo reale, che in modo protetto non vogliono dire niente: si
+        // salvano per primi, sotto tutto il resto, e si svuotano. Il gestore li
+        // trova sullo stack, e IRET li rimette.
+        if (fromV86) for (const selectorValue of data) this.push(selectorValue, size);
         this.push(from.ss, size);
         this.push(size === 4 ? from.esp : from.esp & 0xffff, size);
+        if (fromV86) {
+          for (const index of [GS, FS, DS, ES]) {
+            this.s[index] = 0;
+            this.seg[index].present = false;
+          }
+        }
       }
       this.tf = 0;
       this.nt = 0;
@@ -1309,12 +1375,155 @@ export class CPU586 {
     const at = wide ? 4 + ring * 8 : 2 + ring * 4;
     const last = at + (wide ? 5 : 3);
     if (last > this.tr.limit) throw new Fault(INVALID_TSS, this.tr.selector & 0xfffc);
-    const esp = this.readLinear(wide ? 4 : 2, this.tr.base + at);
-    const ss = this.readLinear(2, this.tr.base + at + (wide ? 4 : 2));
+    const esp = this.readSystem(wide ? 4 : 2, this.tr.base + at);
+    const ss = this.readSystem(2, this.tr.base + at + (wide ? 4 : 2));
     // Uno stack interno sbagliato è colpa del sistema operativo che ha scritto
     // il TSS, e il processore lo dice con l'eccezione del TSS e non con un #GP.
     if ((ss & 0xfffc) === 0 || (ss & 3) !== ring) throw new Fault(INVALID_TSS, ss & 0xfffc);
     return { ss, esp };
+  }
+
+  /**
+   * Le istruzioni che nel modo virtuale 8086 non passano se IOPL non è 3:
+   * quelle con cui un programma DOS toccherebbe le interruzioni. Chi sorveglia
+   * tiene IOPL basso apposta, così che ogni CLI, ogni INT e ogni POPF diventi un
+   * #GP che lui può guardare e rifare a modo suo.
+   */
+  v86Sensitive() {
+    if (this.vm && this.iopl < 3) throw new Fault(GENERAL_PROTECTION, 0);
+  }
+
+  isTask(d) {
+    return d.type === 1 || d.type === 3 || d.type === 5 || d.type === 9 || d.type === 11;
+  }
+
+  /** Un JMP o una CALL lontana verso un TSS, o verso una porta che ne indica uno. */
+  enterTask(selector, d, reason) {
+    if (d.dpl < Math.max(this.cpl, selector & 3)) throw new Fault(GENERAL_PROTECTION, selector & 0xfffc);
+    if (!d.present) throw new Fault(SEGMENT_NOT_PRESENT, selector & 0xfffc);
+    this.switchTask(d.type === 5 ? (d.low >>> 16) & 0xffff : selector, reason);
+  }
+
+  /** Il bit "occupato" di un TSS, nella sua voce della GDT. */
+  setBusy(selector, busy) {
+    const at = this.translate((this.gdt.base + (selector & 0xfff8) + 4) >>> 0, true, true);
+    const high = this.readPhys32(at);
+    this.writePhys32(at, busy ? (high | 0x200) >>> 0 : (high & ~0x200) >>> 0);
+  }
+
+  /**
+   * **Il cambio di task**, che è il pezzo del 386 pensato per fare da sistema
+   * operativo da solo. Un task è un programma con tutto il suo stato — i
+   * registri, i segmenti, la sua tabella locale, le sue pagine — scritto in un
+   * TSS; saltare a un altro TSS vuol dire salvare tutto quello del programma di
+   * adesso nel suo, e caricare tutto quello dell'altro. Un'istruzione sola al
+   * posto di cento. Quasi nessun sistema operativo l'ha usato per davvero —
+   * farlo a mano era più veloce — ma tutti ci passano per il double fault, e un
+   * programma DOS in modo virtuale può vivere dentro un task tutto suo.
+   *
+   * @param {number} selector il TSS in cui si entra
+   * @param {'jmp'|'call'|'int'|'iret'} reason come ci si arriva: cambia chi resta occupato
+   * @param {?number} [code] il codice d'errore di un'eccezione, che va sullo stack nuovo
+   */
+  switchTask(selector, reason, code = null) {
+    // Tutto quello che il cambio di task legge e scrive — i due TSS, la GDT —
+    // lo fa il processore per conto suo.
+    this.systemAccess++;
+    try {
+      this.switchTaskNow(selector, reason, code);
+    } finally {
+      this.systemAccess--;
+    }
+  }
+
+  switchTaskNow(selector, reason, code) {
+    const refusal = reason === 'iret' ? INVALID_TSS : GENERAL_PROTECTION;
+    if (selector & 4 || (selector & 0xfffc) === 0) throw new Fault(refusal, selector & 0xfffc);
+    const d = this.descriptorAt(selector);
+    const wide = d.type === 9 || d.type === 11;
+    if (!d.system || !(wide || d.type === 1 || d.type === 3)) throw new Fault(refusal, selector & 0xfffc);
+    const busy = (d.type & 2) !== 0;
+    // Si torna solo in un task occupato, e si entra solo in uno libero: è così
+    // che un task non si richiama da sé.
+    if (reason === 'iret' ? !busy : busy) throw new Fault(refusal, selector & 0xfffc);
+    if (!d.present) throw new Fault(SEGMENT_NOT_PRESENT, selector & 0xfffc);
+    if (d.limit < (wide ? 0x67 : 0x2b)) throw new Fault(INVALID_TSS, selector & 0xfffc);
+
+    // Lo stato di adesso, nel TSS di adesso: EIP è già quello dell'istruzione
+    // dopo, così che tornando si riparta da lì.
+    const old = this.tr;
+    const flags = reason === 'iret' ? this.eflags & ~0x4000 : this.eflags;
+    if ((old.selector & 0xfffc) !== 0) {
+      const at = old.base;
+      if (old.wide !== false) {
+        this.writeLinear(4, at + 0x20, this.eip);
+        this.writeLinear(4, at + 0x24, flags);
+        for (let i = 0; i < 8; i++) this.writeLinear(4, at + 0x28 + i * 4, this.r[i]);
+        for (let i = 0; i < 6; i++) this.writeLinear(2, at + 0x48 + i * 4, this.s[i]);
+      } else {
+        this.writeLinear(2, at + 0x0e, this.eip & 0xffff);
+        this.writeLinear(2, at + 0x10, flags & 0xffff);
+        for (let i = 0; i < 8; i++) this.writeLinear(2, at + 0x12 + i * 2, this.r[i] & 0xffff);
+        for (let i = 0; i < 4; i++) this.writeLinear(2, at + 0x22 + i * 2, this.s[i]);
+      }
+      if (reason === 'jmp' || reason === 'iret') this.setBusy(old.selector, false);
+    }
+
+    // Lo stato del task nuovo, letto con le pagine di prima.
+    const base = d.base;
+    const r = [];
+    let segments;
+    let eip;
+    let eflags;
+    let ldt;
+    let cr3 = this.cr3;
+    if (wide) {
+      cr3 = this.readLinear(4, base + 0x1c);
+      eip = this.readLinear(4, base + 0x20);
+      eflags = this.readLinear(4, base + 0x24);
+      for (let i = 0; i < 8; i++) r.push(this.readLinear(4, base + 0x28 + i * 4));
+      segments = [0, 1, 2, 3, 4, 5].map((i) => this.readLinear(2, base + 0x48 + i * 4));
+      ldt = this.readLinear(2, base + 0x60);
+    } else {
+      eip = this.readLinear(2, base + 0x0e);
+      eflags = (this.eflags & 0xffff0000) | this.readLinear(2, base + 0x10);
+      for (let i = 0; i < 8; i++) r.push((this.r[i] & 0xffff0000) | this.readLinear(2, base + 0x12 + i * 2));
+      segments = [0, 1, 2, 3].map((i) => this.readLinear(2, base + 0x22 + i * 2)).concat([0, 0]);
+      ldt = this.readLinear(2, base + 0x2a);
+    }
+    // Chi ci è arrivato con una CALL o un'interruzione lascia il suo nome nel
+    // TSS nuovo e il bit NT acceso: è la strada del ritorno.
+    if (reason === 'call' || reason === 'int') {
+      this.writeLinear(2, base, old.selector);
+      eflags |= 0x4000;
+    }
+    if (reason !== 'iret') this.setBusy(selector, true);
+    this.tr = { selector, base, limit: d.limit, busy: true, wide };
+    // Il coprocessore resta com'era, ma si segna che il suo stato è del task
+    // di prima: la prima istruzione x87 del task nuovo lo dirà al sistema.
+    this.cr0 |= CR0_TS;
+    if (wide) {
+      this.cr3 = cr3 >>> 0;
+      this.flushTLB();
+    }
+    for (let i = 0; i < 8; i++) this.r[i] = r[i] >>> 0;
+    this.eflags = eflags;
+
+    if ((ldt & 0xfffc) === 0) {
+      this.ldt = { selector: ldt, base: 0, limit: 0 };
+    } else {
+      const table = this.descriptorAt(ldt & ~4);
+      if (!table.system || table.type !== 2) throw new Fault(INVALID_TSS, ldt & 0xfffc);
+      this.ldt = { selector: ldt, base: table.base, limit: table.limit };
+    }
+
+    const [es, cs, ss, ds, fs, gs] = segments;
+    this.cpl = this.vm ? 3 : cs & 3;
+    this.loadSegment(SS, ss);
+    for (const [index, value] of [[ES, es], [DS, ds], [FS, fs], [GS, gs]]) this.loadSegment(index, value);
+    this.loadSegment(CS, cs);
+    this.eip = wide ? eip >>> 0 : eip & 0xffff;
+    if (code !== null) this.push(code, wide ? 4 : 2);
   }
 
   /**
@@ -1375,11 +1584,51 @@ export class CPU586 {
       this.eflags = size === 4 ? flags : (this.eflags & 0xffff0000) | flags;
       return;
     }
-    if (this.nt) throw new Unsupported('il ritorno da un task vuole un TSS');
+    if (this.vm) {
+      // IRET dentro il modo virtuale 8086. Con IOPL 3 è quello del modo reale,
+      // tre valori dallo stack — e non tocca né VM né IOPL, che non sono affari
+      // del DOS. Con IOPL più basso è un #GP, e a rispondere è chi sorveglia.
+      this.v86Sensitive();
+      const eip = this.pop(size);
+      const cs = this.pop(size);
+      const flags = this.pop(size);
+      const keep = this.eflags & 0x23000;
+      this.loadSegment(CS, cs);
+      this.eip = eip & 0xffff;
+      const merged = size === 4 ? flags : (this.eflags & 0xffff0000) | flags;
+      this.eflags = (merged & ~0x23000) | keep;
+      return;
+    }
+    if (this.nt) {
+      // Il ritorno da un task: il bit NT dice che si è arrivati qui da un altro
+      // task, e il TSS di questo dice quale — nella sua prima parola.
+      this.switchTask(this.readSystem(2, this.tr.base), 'iret');
+      return;
+    }
 
     const eip = this.pop(size);
     const cs = this.pop(size);
     const flags = this.pop(size);
+    if (size === 4 && flags & 0x20000 && this.cpl === 0) {
+      // Il ritorno **nel** modo virtuale 8086: l'unico modo di entrarci. Chi
+      // sorveglia prepara sullo stack, sotto EIP, CS ed EFLAGS con il bit VM
+      // acceso, lo stack e i quattro segmenti di dati del programma DOS, e IRET
+      // li carica tutti — in modo reale, perché da quel momento lo è.
+      const esp = this.pop(4);
+      const ss = this.pop(4);
+      const es = this.pop(4);
+      const ds = this.pop(4);
+      const fs = this.pop(4);
+      const gs = this.pop(4);
+      this.eflags = flags;
+      this.cpl = 3;
+      for (const [index, selector] of [[CS, cs], [SS, ss], [ES, es], [DS, ds], [FS, fs], [GS, gs]]) {
+        this.loadSegment(index, selector);
+      }
+      this.eip = eip & 0xffff;
+      this.set32(ESP, esp);
+      return;
+    }
     const outer = (cs & 3) > this.cpl;
     let sp = 0;
     let ss = 0;
@@ -1618,8 +1867,27 @@ export class CPU586 {
     if (this.protectedMode && this.cpl > this.iopl) throw new Fault(GENERAL_PROTECTION, 0);
   }
 
+  /**
+   * Le porte, con la mappa dei permessi. Chi non ha IOPL sufficiente — e un
+   * programma nel modo virtuale 8086 non ce l'ha mai per le porte — può comunque
+   * usare quelle che il TSS gli concede: un bit per porta, in fondo al TSS,
+   * spento vuol dire "questa sì". È così che chi sorveglia il DOS lascia passare
+   * la tastiera e ferma il controllore dei dischi.
+   */
+  checkIO(port, size) {
+    if (!this.protectedMode) return;
+    if (!this.vm && this.cpl <= this.iopl) return;
+    if (!this.tr.wide || this.tr.limit < 0x67) throw new Fault(GENERAL_PROTECTION, 0);
+    const map = this.readSystem(2, this.tr.base + 0x66);
+    for (let p = port; p < port + size; p++) {
+      const at = map + ((p & 0xffff) >> 3);
+      if (at > this.tr.limit) throw new Fault(GENERAL_PROTECTION, 0);
+      if ((this.readSystem(1, this.tr.base + at) >> (p & 7)) & 1) throw new Fault(GENERAL_PROTECTION, 0);
+    }
+  }
+
   portIn(size, port) {
-    this.checkIOPrivilege();
+    this.checkIO(port, size);
     if (size === 2 && this.bus.inw) return this.bus.inw(port) & 0xffff;
     if (size === 4 && this.bus.ind) return this.bus.ind(port) >>> 0;
     let value = 0;
@@ -1628,7 +1896,7 @@ export class CPU586 {
   }
 
   portOut(size, port, value) {
-    this.checkIOPrivilege();
+    this.checkIO(port, size);
     if (size === 2 && this.bus.outw) return this.bus.outw(port, value & 0xffff);
     if (size === 4 && this.bus.outd) return this.bus.outd(port, value >>> 0);
     for (let i = 0; i < size; i++) this.bus.outb(port + i, (value >>> (i * 8)) & 0xff);
@@ -1956,10 +2224,18 @@ export class CPU586 {
         this.loadSegment(index, this.readRM(2));
         return 3;
       }
-      case 0x8f:
+      case 0x8f: {
+        // POP con la destinazione in memoria: il valore esce dallo stack prima,
+        // e l'indirizzo si conta dopo, con ESP già cresciuto. Chi scrive
+        // `pop dword [esp+4]` ci conta — è il trucco con cui JEMM si sposta
+        // l'indirizzo di ritorno sullo stack — e contarlo prima vuol dire
+        // scrivere quattro byte più in basso e tornare nel posto sbagliato.
         this.modrm();
-        this.writeRM(size, this.pop(size));
+        const value = this.pop(size);
+        if (this.memory && this.espBase) this.opOffset = trim(this.addrsize, this.opOffset + size);
+        this.writeRM(size, value);
         return 2;
+      }
 
       // --------------------------------------------------------- i registri
       case 0x90:
@@ -1995,14 +2271,22 @@ export class CPU586 {
         return 6;
       }
       case 0x9b:
-        return 1; // WAIT: aspetta il coprocessore, e qui non c'è nessuno
+        // WAIT: aspetta il coprocessore — e se il suo stato è di un altro task
+        // (MP e TS accesi) prima lo dice al sistema operativo.
+        if ((this.cr0 & 0x0a) === 0x0a) throw new Fault(DEVICE_NOT_AVAILABLE);
+        return 1;
       case 0x9c:
+        this.v86Sensitive();
         this.push(size === 4 ? this.eflags & 0x00fcffff : this.eflags & 0xffff, size);
         return 2;
       case 0x9d: {
+        this.v86Sensitive();
         const value = this.pop(size);
         const before = this.eflags;
         this.eflags = size === 4 ? value : (before & 0xffff0000) | value;
+        // Né dentro né fuori dal modo virtuale 8086 con un POPF: quel bit lo
+        // cambiano solo IRET e il cambio di task.
+        this.vm = (before >>> 17) & 1;
         // Chi non è abbastanza privilegiato non cambia il livello delle porte né
         // riapre le interruzioni: POPF non è un buco.
         if (this.protectedMode && this.cpl > 0) this.iopl = (before >>> 12) & 3;
@@ -2193,13 +2477,22 @@ export class CPU586 {
         return 5;
       }
       case 0xcc:
+        this.v86Sensitive();
         this.interrupt(BREAKPOINT, { software: true });
         return 10;
-      case 0xcd:
-        this.interrupt(this.fetch8(), { software: true });
+      case 0xcd: {
+        const vector = this.fetch8();
+        // Nel modo virtuale 8086 un INT del DOS non va alla tabella del modo
+        // reale: con IOPL basso è un #GP, e chi sorveglia lo rifà lui.
+        this.v86Sensitive();
+        this.interrupt(vector, { software: true });
         return 10;
+      }
       case 0xce:
-        if (this.of) this.interrupt(OVERFLOW_TRAP, { software: true });
+        if (this.of) {
+          this.v86Sensitive();
+          this.interrupt(OVERFLOW_TRAP, { software: true });
+        }
         return 3;
       case 0xcf:
         this.iret(size);
@@ -2248,10 +2541,12 @@ export class CPU586 {
       case 0xdd:
       case 0xde:
       case 0xdf:
-        // La virgola mobile. Sul Pentium sta dentro il processore per la prima
-        // volta, e qui non c'è ancora: è il pezzo dopo, e finché non c'è è
-        // meglio dirlo che eseguire qualcosa a caso.
-        throw new Unsupported(`la virgola mobile non c'è ancora (opcode ${opcode.toString(16)})`);
+        // La virgola mobile: il 387 accanto al 386, e dentro il Pentium. Il
+        // processore passa l'istruzione al coprocessore, a meno che CR0 non dica
+        // che il coprocessore non c'è (EM) o che il suo stato è di un altro
+        // task (TS): allora #NM, e decide il sistema operativo.
+        if (this.cr0 & 0x0c) throw new Fault(DEVICE_NOT_AVAILABLE);
+        return this.fpu.execute(opcode);
 
       // ------------------------------------------------------ i cicli e i salti
       case 0xe0:
@@ -2472,6 +2767,9 @@ export class CPU586 {
     // Quello che è arrivato dopo, su un processore di prima, non esiste: è un
     // opcode non valido, ed è così che un programma prudente se ne accorge.
     if (this.model < NEWER_0F[opcode]) throw new Fault(INVALID_OPCODE);
+    // Le tabelle dei descrittori non esistono per un programma del modo reale:
+    // nel modo virtuale 8086 chiedere di loro è un opcode non valido.
+    if (this.vm && opcode <= 0x03 && opcode !== 0x01) throw new Fault(INVALID_OPCODE);
     switch (opcode) {
       case 0x00:
         return this.group6();
@@ -2855,12 +3153,10 @@ export class CPU586 {
       this.set32(EAX, 0x0000052c);
       this.set32(EBX, 0);
       this.set32(ECX, 0);
-      // Quello che questa macchina sa fare davvero, e niente di più: le pagine
-      // grandi, il contatore di cicli, i registri di modello, CMPXCHG8B. Il bit
-      // della virgola mobile resta spento finché la virgola mobile non c'è: un
-      // processore che dice di avere un coprocessore e non ce l'ha è peggio di
-      // uno che dice di non averlo.
-      this.set32(EDX, 0x00000138);
+      // Quello che questa macchina sa fare davvero, e niente di più: la virgola
+      // mobile, le pagine grandi, il contatore di cicli, i registri di modello,
+      // CMPXCHG8B.
+      this.set32(EDX, 0x00000139);
       return 5;
     }
     this.set32(EAX, 0);
@@ -2906,7 +3202,7 @@ export class CPU586 {
         // se è quello del 386 o quello del 286: le coppie SS:ESP stanno in posti
         // diversi.
         const entry = (this.gdt.base + (selector & 0xfff8) + 4) >>> 0;
-        this.writePhys32(this.translate(entry, true), (d.high | 0x200) >>> 0);
+        this.writePhys32(this.translate(entry, true, true), (d.high | 0x200) >>> 0);
         this.tr = { selector, base: d.base, limit: d.limit, busy: true, wide: d.type === 9 };
         return 3;
       }

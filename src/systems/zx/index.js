@@ -13,7 +13,7 @@ import {
   isSpectrumROM,
   MissingROMError,
   FUSE_URL,
-  FUSE_SOURCE_URL,
+  ROM_DIRECT_URL,
   OPENSE_URL,
 } from './roms.js';
 
@@ -198,10 +198,10 @@ class SpectrumSession {
       lettere, il caricamento da nastro. È di Amstrad, che ne permette la
       ridistribuzione insieme agli emulatori, quindi si trova senza fatica:</p>
       <ul>
-        <li>dentro il sorgente di
-        <a href="${FUSE_URL}" target="_blank" rel="noopener noreferrer">Fuse</a>
-        (<a href="${FUSE_SOURCE_URL}" target="_blank" rel="noopener noreferrer">fuse-1.6.0.tar.gz</a>,
-        in <code>roms/48.rom</code>);</li>
+        <li><a href="${ROM_DIRECT_URL}" target="_blank" rel="noopener noreferrer">48.rom</a>
+        — il file, dal repository di
+        <a href="${FUSE_URL}" target="_blank" rel="noopener noreferrer">Fuse</a>:
+        scaricalo e trascinalo qui;</li>
         <li>oppure, se preferisci una ROM libera,
         <a href="${OPENSE_URL}" target="_blank" rel="noopener noreferrer">OpenSE BASIC</a>,
         che è un rimpiazzo compatibile in GPL.</li>

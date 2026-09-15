@@ -16,9 +16,9 @@ import {
   CARD_ROM_BASE,
   VIDEO_SPEC,
   VIDEO_ROM_BASE,
+  VIDEO_DOWNLOAD_URL,
   GLABIOS_URL,
   GLABIOS_SOURCE_URL,
-  VGABIOS_URL,
   XTIDE_URL,
   XTIDE_SOURCE_URL,
 } from './roms.js';
@@ -28,8 +28,9 @@ import {
   hardDiskFrom,
   storeFloppy,
   classifyImage,
-  FREEDOS_URL,
+  FREEDOS_SPEC,
 } from './media.js';
+import { isZip, readZip } from './zip.js';
 import { formatOf } from './fdc.js';
 import {
   LAYOUTS,
@@ -311,13 +312,15 @@ class PCSession {
         — la <a href="${XTIDE_URL}" target="_blank" rel="noopener noreferrer">XTIDE Universal BIOS</a>,
         cioè la ROM della scheda del disco fisso: senza non c'è nessun C:, e il
         DOS sta lì sopra — quindi serve anche questa</li>
-        <li><a href="${VGABIOS_URL}" target="_blank" rel="noopener noreferrer">${VIDEO_SPEC.file}</a>
-        — il ${VIDEO_SPEC.label}, la ROM della scheda <b>VGA</b>: senza, la
-        macchina monta una CGA, che il BIOS di sistema sa accendere da solo</li>
-        <li>un dischetto avviabile, se ti va: quello di
-        <a href="${FREEDOS_URL}" target="_blank" rel="noopener noreferrer">FreeDOS</a>
-        da 720 KB si trascina qui come gli altri — ma non serve per accendere,
-        perché il DOS sta già sul disco fisso</li>
+        <li><a href="${VIDEO_DOWNLOAD_URL}" target="_blank" rel="noopener noreferrer">${VIDEO_SPEC.file}</a>
+        — il ${VIDEO_SPEC.label} compilato per il 286, la ROM della scheda
+        <b>VGA</b>: senza, la macchina monta una CGA, che il BIOS di sistema sa
+        accendere da solo</li>
+        <li>un dischetto avviabile, se ti va:
+        <a href="${FREEDOS_SPEC.source}" target="_blank" rel="noopener noreferrer">lo zip di FreeDOS</a>
+        si trascina qui così com'è, e la macchina ci trova dentro il dischetto
+        da 720 KB — ma non serve per accendere, perché il DOS sta già sul disco
+        fisso</li>
         <li>e un'<b>immagine di disco fisso</b>, se ne hai una: va nella scheda
         al posto di quella che c'è, grande quanto è, con la geometria letta
         dalla sua tabella delle partizioni</li>
@@ -710,6 +713,17 @@ class PCSession {
     let video = false;
     for (const file of files) {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      // Lo zip dell'edizione a dischetti di FreeDOS, che è la sola forma in cui
+      // il progetto lo pubblica: dentro c'è il dischetto da 720 KB, e si infila
+      // quello invece di copiare lo zip sul disco fisso.
+      if (isZip(bytes)) {
+        const wanted = FREEDOS_SPEC.member.toUpperCase();
+        const entry = (await readZip(bytes).catch(() => [])).find(({ path }) => path.toUpperCase() === wanted);
+        if (entry) {
+          this.pending.push({ bytes: entry.bytes, name: 'FreeDOS', kind: 'floppy' });
+          continue;
+        }
+      }
       const image = classifyImage(bytes);
       if (image) {
         this.pending.push({ bytes, name: file.name, ...image });

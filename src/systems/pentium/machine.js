@@ -38,6 +38,7 @@ import { PIC8259 } from '../pc/pic.js';
 import { FDC765 } from '../pc/fdc.js';
 import { PIT8253, PIT_CLOCK } from '../pc/pit.js';
 import { DMA8237 } from '../pc/dma.js';
+import { SoundBlaster, SB_IRQ } from '../pc/soundblaster.js';
 
 /**
  * Il primo Pentium, sessantasei milioni di cicli al secondo. Non è la velocità a
@@ -213,6 +214,18 @@ export class Pentium {
     this.dma = new DMA8237(bus);
     this.dma16 = new DMA8237(bus);
 
+    /**
+     * La Sound Blaster, la stessa del 286: una scheda ISA, e il bus ISA sta
+     * anche su questa scheda madre, dietro al ponte sud. Stesse porte, stessa
+     * IRQ 7, stesso canale 1 del DMA — che è il motivo per cui la riga BLASTER
+     * del disco va bene su tutte e due le macchine.
+     */
+    this.sound = new SoundBlaster({
+      dma: this.dma,
+      setIRQ: (active) => this.pics.setLine(SB_IRQ, active),
+      clock: this.clock,
+    });
+
     /** La scheda video, che è l'unica di cui questa macchina non può fare a meno. */
     this.video = new VGA(this.clock);
 
@@ -272,6 +285,7 @@ export class Pentium {
     this.video?.reset();
     this.floppy.reset();
     this.disks.reset();
+    this.sound.reset();
     this.a20 = true;
     // I PAM tornano come li trova l'accensione: la ROM risponde a tutta la
     // memoria alta, e la RAM che c'è sotto non la vede nessuno.
@@ -436,6 +450,7 @@ export class Pentium {
       const changed = this.floppy.drives[0]?.changed ?? true;
       return (changed ? 0x80 : 0x00) | (this.disks.read(0x3f7) & 0x7f);
     }
+    if (SoundBlaster.claims(port)) return this.sound.read(port);
     if (port >= 0x3b0 && port < 0x3e0) return this.video?.readPort(port) ?? 0xff;
     if (port >= PCI_ADDRESS && port < PCI_ADDRESS + 8) return this.pci.read(port);
     if (port === FWCFG_SELECTOR || port === FWCFG_DATA) return this.fwcfg.read(port);
@@ -475,6 +490,7 @@ export class Pentium {
     if (port === PRIMARY.control || port === SECONDARY.control) return this.disks.write(port, value);
     if (port >= 0x3f0 && port < 0x3f6) return this.floppy.write(port, value);
     if (port === 0x3f7) return undefined; // il registro della velocità, che qui non cambia niente
+    if (SoundBlaster.claims(port)) return this.sound.write(port, value);
     if (port >= 0x3b0 && port < 0x3e0) return this.video?.writePort(port, value);
     if (port >= PCI_ADDRESS && port < PCI_ADDRESS + 8) return this.pci.write(port, value);
     if (port >= FWCFG_SELECTOR && port <= FWCFG_SELECTOR + 1) return this.fwcfg.write(port, value);
@@ -568,6 +584,15 @@ export class Pentium {
     this.pit.setGate2((value & 1) !== 0);
   }
 
+  /**
+   * Il filo dell'errore del coprocessore. Su un AT non va al processore, va al
+   * secondo 8259, come IRQ 13: è una scelta di IBM del 1984 per non dover
+   * cambiare il BIOS, e tutti i PC dopo se la sono tenuta.
+   */
+  fpuError() {
+    this.pics.pulse(13);
+  }
+
   /** Un carattere del racconto del firmware. */
   trace(value) {
     const char = String.fromCharCode(value);
@@ -586,6 +611,9 @@ export class Pentium {
     this.pitRemainder -= ticks * this.clock;
     if (ticks) this.pit.advance(ticks);
     this.video?.advance(delta);
+    // L'altoparlante va nello stesso suono della scheda: il bit dei dati della
+    // porta 61h in AND con l'uscita del contatore 2.
+    this.sound.advance(delta, this.portB & 2 && this.pit.speakerOutput ? 1 : 0);
   }
 
   /**

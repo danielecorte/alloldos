@@ -94,6 +94,9 @@ export const VIDEO_SPEC = {
   label: 'VGABIOS LGPL',
 };
 
+/** Il file compilato per il 286, dal repository di alloldos, dove viaggia. */
+export const VIDEO_DOWNLOAD_URL = 'https://raw.githubusercontent.com/danielecorte/alloldos/main/roms/pc/vgabios.bin';
+
 /** Dove la scheda video si affaccia: dove ogni BIOS la va a cercare. */
 export const VIDEO_ROM_BASE = 0xc0000;
 

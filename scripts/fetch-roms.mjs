@@ -355,85 +355,34 @@ function extractFromZip(zip, name) {
 // — i due file sono già su questo computer, e questo script se li prende da lì.
 // Sono l'unico firmware di alloldos che non si va a cercare in rete.
 
-const PENTIUM_PLACES = [
-  '/usr/share/seabios',
-  '/usr/share/qemu',
-  '/usr/local/share/seabios',
-  '/usr/local/share/qemu',
-  '/opt/homebrew/share/qemu',
-  join(homedir(), '.local', 'share', 'qemu'),
-];
-
-/**
- * Cerca un file di firmware nei posti dove lo mettono i pacchetti, provando più
- * nomi: le distribuzioni chiamano lo stesso file in modi diversi.
- *
- * @param {string[]} names
- * @returns {Promise<?{bytes:Uint8Array, from:string}>}
- */
-async function findFirmware(names) {
-  for (const place of PENTIUM_PLACES) {
-    for (const name of names) {
-      try {
-        const at = join(place, name);
-        return { bytes: new Uint8Array(await readFile(at)), from: at };
-      } catch {
-        /* non è lì: si prova il prossimo */
-      }
+// SeaBIOS pubblica i sorgenti, e i binari già compilati stanno nel repository
+// di QEMU: da lì si prendono, alla versione 9.0.0, due link diretti.
+for (const [spec, accept] of [[PENTIUM_BIOS, isSystemBIOS], [PENTIUM_VIDEO, isOptionROM]]) {
+  const target = join(PENTIUM_DEST, spec.file);
+  if (!process.argv.includes('--force')) {
+    try {
+      await access(target);
+      console.log(`\n· ${spec.file} already present, skipping (use --force to refetch)`);
+      continue;
+    } catch {
+      /* not there yet, download it */
     }
   }
-  return null;
-}
-
-let havePentium = false;
-{
-  const bios = join(PENTIUM_DEST, PENTIUM_BIOS.file);
+  process.stdout.write(`\n↓ ${spec.file} … `);
   try {
-    await access(bios);
-    havePentium = true;
-    console.log(`\n· ${bios} already present, leaving it alone`);
-  } catch {
-    // bios.bin è quello da 128 KB, che è la misura con cui la macchina è
-    // provata; bios-256k.bin va bene anche lui.
-    const found = await findFirmware(['bios.bin', 'bios-256k.bin', 'seabios.bin']);
-    if (found && isSystemBIOS(found.bytes)) {
-      await writeFile(bios, found.bytes);
-      console.log(`\n↓ SeaBIOS from ${found.from}`);
-      console.log(`  → ${bios} (${found.bytes.length} bytes)`);
-      havePentium = true;
-    }
-  }
-
-  const video = join(PENTIUM_DEST, PENTIUM_VIDEO.file);
-  try {
-    await access(video);
-    console.log(`· ${video} already present, leaving it alone`);
-  } catch {
-    // Serve la variante ISA: la scheda video di questa macchina è una VGA
-    // normale, senza le estensioni di Bochs.
-    const found = await findFirmware(['vgabios-isavga.bin', 'vgabios.bin']);
-    if (found && isOptionROM(found.bytes)) {
-      await writeFile(video, found.bytes);
-      console.log(`↓ SeaVGABIOS from ${found.from}`);
-      console.log(`  → ${video} (${found.bytes.length} bytes)`);
-    }
+    const res = await fetch(spec.source, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!accept(bytes)) throw new Error(`unexpected contents (${bytes.length} bytes)`);
+    await writeFile(target, bytes);
+    console.log(`ok (${bytes.length} bytes)`);
+  } catch (error) {
+    console.log(`FAILED (${error.message})`);
+    console.error(`  could not fetch ${spec.source}`);
+    process.exitCode = 1;
   }
 }
-
-if (!havePentium) {
-  console.log(`
-No SeaBIOS. It is free software (LGPLv3) and it is what boots every QEMU machine,
-but the project ships sources, not binaries — so the quickest way to have it is a
-package that already built it:
-
-  · apt install seabios        — puts bios.bin and vgabios-isavga.bin in
-                                 /usr/share/seabios, where this script looks
-  · ${SEABIOS_PACKAGE_URL}
-  · ${SEABIOS_URL}  — the project, and how to build it yourself
-
-Two files go in ${PENTIUM_DEST}: ${PENTIUM_BIOS.file} (the system BIOS, 64/128/256 KB)
-and ${PENTIUM_VIDEO.file} (the ISA VGA BIOS). Dragging them onto the page works too.`);
-}
+console.log(`  ${SEABIOS_URL} — LGPLv3, the BIOS of the Pentium, as QEMU ships it`);
 
 // -------------------------------------------------------------------- il 386
 
@@ -471,6 +420,29 @@ and ${PENTIUM_VIDEO.file} (the ISA VGA BIOS). Dragging them onto the page works 
       console.log(`FAILED (${error.message})`);
       console.error(`  could not fetch ${spec.source}`);
       process.exitCode = 1;
+    }
+  }
+  // JEMM, il programma di FreeDOS che mette il DOS in modo virtuale 8086 e gli
+  // dà la memoria espansa. Alla macchina non serve: serve alla prova che il
+  // 386 quel modo lo sa fare, con un sorvegliante vero invece che con uno
+  // scritto per l'occasione.
+  const jemm = join(dest, 'jemm.zip');
+  try {
+    await access(jemm);
+  } catch {
+    process.stdout.write('\n↓ jemm.zip … ');
+    try {
+      const res = await fetch(
+        'https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/1.3/base/jemm.zip',
+        { redirect: 'follow' },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('not a zip');
+      await writeFile(jemm, bytes);
+      console.log(`ok (${bytes.length} bytes)`);
+    } catch (error) {
+      console.log(`FAILED (${error.message})`);
     }
   }
   console.log(`  ${BOCHS_URL} — LGPL, the BIOS of the 386`);
