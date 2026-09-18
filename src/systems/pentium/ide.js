@@ -108,6 +108,20 @@ export class CDDrive {
 }
 
 /**
+ * La geometria che un disco ATA può dichiarare. La tabella delle partizioni di
+ * un disco grande parla con la geometria *tradotta* dal BIOS — 32, 64, 255
+ * testine — ma il disco non può: il registro della testina ha quattro bit, e
+ * sedici testine sono il massimo. Un disco così dice 16 testine e 63 settori e
+ * tanti cilindri quanti ne servono, e a raddoppiare le testine ci pensa il BIOS.
+ */
+function physicalGeometry(disk) {
+  const g = disk.geometry ?? GEOMETRY;
+  if (g.heads <= 16 && g.sectors <= 63) return { ...g };
+  const cylinders = Math.min(16383, Math.floor(disk.sectorCount / (16 * 63)));
+  return { cylinders, heads: 16, sectors: 63 };
+}
+
+/**
  * Un disco attaccato a un canale: i byte, la geometria che racconta, e il pezzo
  * di settore in transito.
  */
@@ -125,7 +139,8 @@ class Drive {
      * parameters" può cambiarla: è così che i dischi grandi entravano nei BIOS
      * piccoli, e il conto torna comunque perché a tradurre è il disco.
      */
-    this.logical = { ...(disk.geometry ?? GEOMETRY) };
+    this.physical = physicalGeometry(disk);
+    this.logical = { ...this.physical };
     this.multiple = 16;
     this.reset();
   }
@@ -773,7 +788,7 @@ export class IDEChannel {
         words[index + i / 2] = (padded.charCodeAt(i) << 8) | padded.charCodeAt(i + 1);
       }
     };
-    const g = drive.disk.geometry ?? GEOMETRY;
+    const g = drive.physical;
     const megabytes = Math.round((drive.sectorCount * SECTOR) / 1024 / 1024);
     words[0] = 0x0040; // disco fisso, non rimovibile
     // Le due parole che la norma ha poi dichiarato superate e che i dischi
@@ -782,7 +797,7 @@ export class IDEChannel {
     // del blocco da leggere, e con uno zero lì legge zero parole.
     words[4] = (SECTOR * (g.sectors ?? 17)) & 0xffff;
     words[5] = SECTOR;
-    words[1] = Math.min(g.cylinders, 16383);
+    words[1] = g.cylinders;
     words[3] = g.heads;
     words[6] = g.sectors;
     put(10, 'ALLOLDOS-IDE-1', 20); // numero di serie

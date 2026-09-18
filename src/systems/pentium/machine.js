@@ -290,6 +290,7 @@ export class Pentium {
     this.video?.reset();
     this.floppy.reset();
     this.disks.reset();
+    this.describeDisks();
     this.sound.reset();
     this.a20 = true;
     // I PAM tornano come li trova l'accensione: la ROM risponde a tutta la
@@ -338,6 +339,25 @@ export class Pentium {
     // Il byte dell'equipaggiamento: il bit 0 dice se c'è un lettore, i bit 6-7
     // quanti. E lo schermo, che è sempre una VGA.
     this.cmos.bytes[0x14] = (type ? 0x01 : 0x00) | 0x04;
+  }
+
+  /**
+   * Come il BIOS deve raccontare i dischi fissi al DOS. Un disco con più di 1024
+   * cilindri non entra nei dieci bit che l'INT 13h ha per il cilindro, e il BIOS
+   * lo *traduce*: dimezza i cilindri e raddoppia le testine finché non ci sta.
+   * Se tradurre o no lo decideva il setup, e stava scritto qui, due bit per
+   * disco — 1 vuol dire LBA — nel byte che SeaBIOS e il BIOS di Bochs leggono
+   * tutti e due. Un disco piccolo non si traduce: la sua tabella delle partizioni
+   * parla con la geometria vera, e tradurlo vorrebbe dire spostargli i settori.
+   */
+  describeDisks() {
+    let flags = 0;
+    this.disks.channels.forEach((channel, c) => {
+      channel.drives.forEach((drive, d) => {
+        if (drive && !drive.atapi && drive.physical.cylinders > 1024) flags |= 1 << (c * 4 + d * 2);
+      });
+    });
+    this.cmos.bytes[0x39] = flags;
   }
 
   // ------------------------------------------------------------- la mappa

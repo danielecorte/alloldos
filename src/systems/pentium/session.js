@@ -9,6 +9,7 @@
 
 import { FPS } from './machine.js';
 import { SCANCODES, scanBytes } from '../pc/scancodes.js';
+import { enlarge } from './bigdisk.js';
 import { loadHardDisk, hardDiskFrom, classifyImage } from '../pc/media.js';
 import { formatOf } from '../pc/fdc.js';
 import {
@@ -216,8 +217,11 @@ export class BoardSession {
       throw error;
     }
     this.bios = bios;
-    const [video, disk] = await Promise.all([this.roms.loadVideoROM(), loadHardDisk()]);
+    const [video, small] = await Promise.all([this.roms.loadVideoROM(), loadHardDisk()]);
     this.video = video;
+    // Il disco del repository è quello del 286, venti mega: qui si trasloca su
+    // un disco da un giga, che è la misura di questa macchina (vedi bigdisk.js).
+    const disk = enlarge(small);
     setLayout(disk.data, preferredLayout());
     setCDROM(disk.data, true);
     try {

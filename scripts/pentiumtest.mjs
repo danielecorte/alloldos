@@ -1119,6 +1119,7 @@ import { BIOS_SPEC as PC386_BIOS, VIDEO_SPEC as PC386_VIDEO } from '../src/syste
 import { SCANCODES, scanBytes } from '../src/systems/pc/scancodes.js';
 import { makeISO } from './iso.mjs';
 import { setCDROM } from '../src/systems/pc/cdrom.js';
+import { enlarge, BIG_DISK_SIZE } from '../src/systems/pentium/bigdisk.js';
 
 const romPath = (spec) => join(ROMS, spec.file);
 
@@ -2327,6 +2328,74 @@ Nessun BIOS di Bochs in roms/pc386: la prova del 386 è stata saltata.
   pc.outb(0x226, 1);
   pc.outb(0x226, 0);
   check('e sulla scheda c\'è la Sound Blaster, che risponde AAh al reset', pc.inb(0x22a) === 0xaa);
+}
+
+if (!fileExists(join(PC386_ROMS, PC386_BIOS.file)) || !have.bios || !have.video || !have.disk) {
+  console.log(`
+Manca un BIOS o il disco: la prova del disco da un giga è stata saltata.`);
+} else {
+  section('Il disco da un giga, sul Pentium e sul 386');
+
+  // Il disco del repository traslocato su uno da un giga, com'è quando si apre
+  // la pagina. Dentro ci va un programmino di ventidue byte che chiede al BIOS
+  // la geometria del disco (INT 13h, funzione 08h) e la lascia a 0:04F0, dove
+  // la prova la va a leggere: è quella che userà chiunque parli con il disco per
+  // cilindro, testina e settore, e deve essere la stessa della tabella delle
+  // partizioni.
+  const GEOMETRY_COM = Uint8Array.from([
+    0x31, 0xc0, 0x8e, 0xc0, 0xb4, 0x08, 0xb2, 0x80, 0xcd, 0x13,
+    0x26, 0x89, 0x0e, 0xf0, 0x04, 0x26, 0x89, 0x16, 0xf2, 0x04, 0xcd, 0x20,
+  ]);
+  const small = installedDisk();
+  const smallFiles = FAT16.of(small.data);
+  const kernel = smallFiles.read('KERNEL.SYS');
+
+  const machines = [
+    ['Pentium', (disk) => bootPentium({ disk })],
+    ['386', (disk) => build386(new Uint8Array(readFileSync(join(PC386_ROMS, PC386_BIOS.file))), {
+      video: new Uint8Array(readFileSync(join(PC386_ROMS, PC386_VIDEO.file))),
+      disk,
+    })],
+  ];
+  for (const [name, boot] of machines) {
+    const disk = enlarge(installedDisk());
+    const volume = FAT16.of(disk.data);
+    check(`${name}: il disco è di un giga, con una FAT16 sopra`,
+      disk.data.length === BIG_DISK_SIZE && volume?.valid && volume.clusterSize === 16384);
+    check(`${name}: e i file del disco piccolo ci sono passati identici`,
+      volume.read('KERNEL.SYS')?.every((byte, i) => byte === kernel[i]) &&
+      volume.read('FDOS\\BIN\\UDVD2.SYS')?.length === smallFiles.read('FDOS\\BIN\\UDVD2.SYS').length);
+    volume.writeFile(null, 'GEO.COM', GEOMETRY_COM);
+
+    const pc = boot(disk);
+    const dos = new Session(pc, (text) => console.log(text));
+    check(`${name}: la CMOS chiede la traduzione LBA per il disco grande`, pc.cmos.bytes[0x39] === 0x01);
+    check(`${name}: FreeDOS parte dal disco grande`, dos.waitFor(/C:\\>/, 900), dos.lastLine());
+    check(`${name}: e ci trova la partizione da un giga`, /size=\s*1006 MB/.test(dos.screen()));
+    check(`${name}: senza lamentarsi della tabella delle partizioni`, !/WARNING/.test(dos.screen()));
+
+    dos.command('geo');
+    const cx = pc.ram[0x4f0] | (pc.ram[0x4f1] << 8);
+    const dx = pc.ram[0x4f2] | (pc.ram[0x4f3] << 8);
+    check(`${name}: il BIOS racconta 32 testine e 63 settori, come la tabella`,
+      (dx >> 8) + 1 === 32 && (cx & 0x3f) === 63, `${(dx >> 8) + 1} testine, ${cx & 0x3f} settori`);
+
+    dos.command('dir c:\\');
+    check(`${name}: e il DOS vede quasi tutto il giga libero`,
+      /1,05\d,\d{3},\d{3} bytes free/.test(dos.screen()), dos.lastLine());
+    dos.command('echo grande>c:\\g.txt');
+    dos.reboot();
+    check(`${name}: una scrittura sopravvive al riavvio`, dos.waitFor(/C:\\>/, 900), dos.lastLine());
+    dos.command('type c:\\g.txt');
+    check(`${name}: e si rilegge`, /^grande$/m.test(dos.screen()), dos.lastLine());
+  }
+
+  // Un disco piccolo non si traduce: la sua tabella parla con 4 testine e 17
+  // settori, e tradurlo gli sposterebbe i settori sotto i piedi.
+  check('il disco piccolo resta senza traduzione', bootPentium({ disk: small }).cmos.bytes[0x39] === 0);
+  const leftAlone = installedDisk();
+  leftAlone.data.fill(0, 0, 512);
+  check('e un disco senza FAT16 non si ingrandisce', enlarge(leftAlone) === leftAlone);
 }
 
 const JEMM_PACKAGE = join(PC386_ROMS, 'jemm.zip');

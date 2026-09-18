@@ -449,8 +449,8 @@ class AboutPage {
       <p>La macchina del 1990: un <b>386DX a 33 MHz</b> con otto mega, una VGA
       e un mouse PS/2 — il processore su cui è nato Windows 3.1, e il primo di
       questa collezione con il modo protetto in mano al software. Si accende sul
-      <b>BIOS di Bochs</b>, libero, e sopra ci gira lo stesso disco con
-      <b>FreeDOS</b> del 286.</p>
+      <b>BIOS di Bochs</b>, libero, e sopra ci gira lo stesso <b>FreeDOS</b> del
+      286, su un disco da un giga come quello del Pentium.</p>
       <p>La scheda è quella del Pentium qui sotto, con un altro processore e un
       altro BIOS: un anacronismo dichiarato, e innocuo, perché i chip che il DOS
       tocca hanno gli stessi indirizzi dal 1984. Il processore è lo stesso
@@ -605,7 +605,10 @@ class AboutPage {
         <li>I <b>dischi</b>: i due canali IDE del ponte sud, con i dati a sedici
         bit e l'indirizzamento lineare, e il lettore di dischetti — lo stesso
         NEC 765 del 286. Sopra ci si avvia <b>FreeDOS</b> fino al prompt, dal
-        disco fisso o dal dischetto, e il disco è lo stesso file del 286.</li>
+        disco fisso o dal dischetto. Il FreeDOS è quello del 286, ma il disco no:
+        all'accensione i suoi file traslocano su un <b>disco da un giga</b>, che
+        il BIOS traduce a 1024 cilindri e 32 testine perché l'INT 13h ci arrivi
+        tutto.</li>
         <li>Il <b>lettore di CD</b>, sul secondo canale: parla <b>ATAPI</b>, cioè
         comandi SCSI da dodici byte dentro il protocollo dei dischi. Un
         <code>.iso</code> trascinato sulla finestra finisce nel cassetto, e sotto

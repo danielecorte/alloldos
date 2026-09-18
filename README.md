@@ -20,14 +20,16 @@ Ce ne sono sei che partono davvero:
   **XTIDE**, il **VGABIOS** LGPL compilato qui per il 286, e sopra **FreeDOS**,
   che si accende dal dischetto o dal disco e arriva al suo prompt;
 - il **PC 386** a 33 MHz con otto mega, VGA e mouse PS/2, acceso dal **BIOS di
-  Bochs** — libero anche lui — sullo stesso disco con FreeDOS del 286. È la
+  Bochs** — libero anche lui — sullo stesso FreeDOS del 286, traslocato su un
+  disco da un giga. È la
   scheda del Pentium qui sotto con un processore di cinque anni prima, e il
   primo PC di questa collezione con il modo protetto in mano al software: c'è
   il 387, e FreeDOS gira anche in modo virtuale 8086, sotto JEMMEX;
 - il **PC Pentium** del 1995 — modo protetto, paginazione, bus PCI, VGA — con
   sopra **SeaBIOS**, che arriva in fondo al POST e avvia **FreeDOS** dal disco
-  IDE fino al prompt. È lo stesso file di disco che si accende sul 286, letto a
-  sedici bit da un controllore diverso su porte diverse;
+  IDE fino al prompt. È lo stesso FreeDOS che si accende sul 286, copiato
+  all'accensione su un disco da un giga e letto a sedici bit da un controllore
+  diverso su porte diverse;
 - lo **ZX Spectrum 48K**: uno Z80, una ULA e nient'altro. Si accende sul suo
   BASIC, carica le cassette rifacendo il suono che c'era sul nastro, e la
   macchina si batte da sola il `LOAD ""`.
@@ -157,7 +159,8 @@ alla versione 9.0.0. `npm run fetch-roms` li scarica in `roms/pentium/`.
 **VGABIOS LGPL**, entrambi LGPL, stanno già compilati nel repository di Bochs.
 `npm run fetch-roms` prende quelli della versione 2.7 — sempre la stessa, così i
 byte sono quelli provati — e li mette in `roms/pc386/` come `bochs-legacy.bin` e
-`vgabios-lgpl.bin`. Il disco fisso è quello del 286.
+`vgabios-lgpl.bin`. Il disco fisso è quello del 286, ingrandito a un giga
+quando la pagina si apre.
 
 **Lo ZX Spectrum** sta in mezzo fra i due casi. La sua ROM è di Amstrad, che
 comprò Sinclair nel 1986 e che da allora ne permette la ridistribuzione insieme
@@ -1172,6 +1175,32 @@ resto no. Quindi questa macchina dichiara il lettore che serve al dischetto che
 c'è, e quando non c'è nessun dischetto dichiara di non avere il lettore: che è
 vero, e che risparmia al firmware cinque secondi passati a interrogare un lettore
 vuoto.
+
+### Il disco da un giga
+
+Il disco che viaggia con alloldos è quello del 286: venti mega, uno Seagate
+ST-225 del 1988. Su una macchina del 1995 è un disco ridicolo — un Pentium
+usciva di fabbrica con cinquecento mega o un giga, e Windows 98 da solo ne vuole
+trecento. Un'immagine da un giga però non può stare nel repository, e non
+serve: quasi tutta sono zeri. Quindi la pagina del Pentium e del 386, quando si
+apre, fa quello che si faceva comprando un disco più grande
+(`pentium/bigdisk.js`): una partizione sola da un giga, una FAT16 nuova con
+cluster da sedici KB, e sopra i file del disco piccolo copiati uno per uno, con
+le cartelle, le date e gli attributi. Il settore di avvio è quello che FreeDOS
+aveva scritto sul disco piccolo, con i numeri del disco nuovo: il codice li
+legge da lì. **Salva il disco fisso** scarica tutto il giga, e trascinato di
+nuovo sulla finestra si rimonta com'è.
+
+Un disco da un giga ha 2048 cilindri, e l'INT 13h ne sa contare 1024: è il muro
+dei 504 MB che nel 1994 tutti hanno sbattuto. Il disco dichiara quello che un
+disco ATA può dichiarare — 16 testine e 63 settori, in IDENTIFY — e il BIOS lo
+**traduce**, dimezzando i cilindri e raddoppiando le testine: 1024 cilindri, 32
+testine. Ma lo fa solo se glielo si chiede, e a chiederlo è la CMOS, due bit per
+disco nel byte 39h, che SeaBIOS e il BIOS di Bochs leggono tutti e due. La
+macchina lo accende per i dischi con più di 1024 cilindri e lo lascia spento
+per gli altri, perché un disco piccolo tradotto si vedrebbe spostare i settori
+sotto la propria tabella delle partizioni. La partizione finisce un cilindro
+prima della fine: SeaBIOS l'ultimo lo tiene per sé, come facevano i BIOS veri.
 
 ### Il lettore di CD
 
