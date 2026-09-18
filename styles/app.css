@@ -829,6 +829,46 @@ body[data-screen='amiga'] {
   display: none;
 }
 
+.pc__progress {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(1rem, 4vw, 3rem);
+  transform: translateX(-50%);
+  width: min(32rem, calc(100% - 2rem));
+  padding: 0.6rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  background: rgba(10, 10, 10, 0.92);
+  border: 1px solid #333;
+  color: #c8c8c8;
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.pc__progress[hidden] {
+  display: none;
+}
+
+.pc__progress-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc__progress-track {
+  height: 0.5rem;
+  background: #1e1e1e;
+  border: 1px solid #333;
+}
+
+.pc__progress-fill {
+  width: 0;
+  height: 100%;
+  background: var(--pc-amber);
+  transition: width 0.1s linear;
+}
+
 .pc__panel {
   pointer-events: auto;
   max-width: min(46rem, 90%);
@@ -1155,7 +1195,8 @@ body[data-screen='amiga'] {
   .c64--fullscreen .c64__controls,
   .amiga--fullscreen .amiga__controls,
   .pc--fullscreen .pc__controls,
-  .zx--fullscreen .zx__controls {
+  .zx--fullscreen .zx__controls,
+  .pc__progress-fill {
     transition: none;
   }
 }

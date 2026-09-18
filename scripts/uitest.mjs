@@ -736,6 +736,29 @@ if (pc.machine === null) {
     check('and the machine says which one and how big', pc.status.textContent.includes('720 KB'), pc.status.textContent);
   }
 
+  // Un file grande si legge a pezzi, e intanto la barra sopra lo schermo dice
+  // quanto manca; finito di leggere, se ne va.
+  {
+    const big = new Uint8Array(6 * 1024 * 1024).map((_, i) => i & 0xff);
+    const widths = [];
+    let visible = false;
+    const show = pc.progress.show.bind(pc.progress);
+    pc.progress.show = (name, done, total) => {
+      show(name, done, total);
+      widths.push(pc.progress.fill.style.width);
+      visible ||= !pc.progress.root.hidden && /grande\.bin/.test(pc.progress.label.textContent);
+    };
+    let arrived = null;
+    await pc.progress.readAll([new File([big], 'grande.bin')], (file, bytes) => {
+      arrived = bytes;
+    });
+    pc.progress.show = show;
+    check('a big file shows the loading bar, with its name', visible);
+    check('which fills up to 100%', widths.at(-1) === '100%', widths.join(' '));
+    check('the bytes arrive whole', arrived?.length === big.length && arrived[4097] === (4097 & 0xff));
+    check('and the bar goes away when the reading is done', pc.progress.root.hidden);
+  }
+
   // E un file che non è né una ROM né un disco: quello finisce *dentro* la
   // macchina, su C:\SCARICATI. Come è fatta la FAT lo prova pctest.mjs
   // facendola leggere a FreeDOS; qui si prova il filo che ci arriva — il

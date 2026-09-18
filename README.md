@@ -660,7 +660,9 @@ via come file quello che c'è dentro adesso, e ritrascinandolo lo si rimette.
 #### Cambiare il disco
 
 Un'immagine di disco fisso si trascina sulla finestra come un dischetto, e va
-nella scheda al posto di quella che c'era. Fra i due gesti però ci sono tre
+nella scheda al posto di quella che c'era. Un file grande — un disco, un CD sul
+Pentium — il browser ci mette qualche secondo a leggerlo, e intanto una barra
+sopra lo schermo dice quanto manca (`pc/progress.js`). Fra i due gesti però ci sono tre
 differenze, e sono tutte e tre nel disco e non nel codice:
 
 - **la misura**. Un dischetto è grande una delle sette misure che esistono, e si

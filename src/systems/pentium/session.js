@@ -30,6 +30,7 @@ import {
 } from '../pc/layouts.js';
 import { setCDROM } from '../pc/cdrom.js';
 import { AudioOutput } from '../zx/audio.js';
+import { LoadProgress } from '../pc/progress.js';
 
 const MAX_CATCHUP_FRAMES = 4;
 
@@ -89,7 +90,8 @@ export class BoardSession {
     stage.append(this.canvas);
 
     this.overlay = element('div', 'pc__overlay');
-    stage.append(this.overlay);
+    this.progress = new LoadProgress();
+    stage.append(this.overlay, this.progress.root);
 
     this.bar = element('div', 'pc__bar');
     this.status = element('span', 'pc__status');
@@ -533,18 +535,17 @@ export class BoardSession {
   async acceptFiles(files) {
     let bios = false;
     let video = false;
-    for (const file of files) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
+    await this.progress.readAll(files, (file, bytes) => {
       const image = classifyImage(bytes);
       if (image) {
         this.pending.push({ bytes, name: file.name, ...image });
-        continue;
+        return;
       }
       const kind = this.roms.acceptROMFile(bytes);
       if (kind === 'bios') bios = true;
       else if (kind === 'video') video = true;
       else this.pending.push({ bytes, name: file.name, kind: 'file' });
-    }
+    });
     if ((bios || video) && !this.machine) {
       if (!bios && video) this.setStatus('BIOS della scheda video salvato — adesso serve il BIOS di sistema');
       else {

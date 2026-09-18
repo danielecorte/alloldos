@@ -31,6 +31,7 @@ import {
   FREEDOS_SPEC,
 } from './media.js';
 import { isZip, readZip } from './zip.js';
+import { LoadProgress } from './progress.js';
 import { formatOf } from './fdc.js';
 import {
   LAYOUTS,
@@ -101,7 +102,8 @@ class PCSession {
     stage.append(this.canvas);
 
     this.overlay = element('div', 'pc__overlay');
-    stage.append(this.overlay);
+    this.progress = new LoadProgress();
+    stage.append(this.overlay, this.progress.root);
 
     this.bar = element('div', 'pc__bar');
     this.status = element('span', 'pc__status');
@@ -711,8 +713,7 @@ class PCSession {
     let bios = false;
     let card = false;
     let video = false;
-    for (const file of files) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
+    await this.progress.readAll(files, async (file, bytes) => {
       // Lo zip dell'edizione a dischetti di FreeDOS, che è la sola forma in cui
       // il progetto lo pubblica: dentro c'è il dischetto da 720 KB, e si infila
       // quello invece di copiare lo zip sul disco fisso.
@@ -721,37 +722,37 @@ class PCSession {
         const entry = (await readZip(bytes).catch(() => [])).find(({ path }) => path.toUpperCase() === wanted);
         if (entry) {
           this.pending.push({ bytes: entry.bytes, name: 'FreeDOS', kind: 'floppy' });
-          continue;
+          return;
         }
       }
       const image = classifyImage(bytes);
       if (image) {
         this.pending.push({ bytes, name: file.name, ...image });
-        continue;
+        return;
       }
       const kind = acceptROMFile(bytes);
       if (kind === 'bios') {
         bios = true;
-        continue;
+        return;
       }
       if (kind === 'card') {
         card = true;
-        continue;
+        return;
       }
       if (kind === 'video') {
         video = true;
-        continue;
+        return;
       }
       if (kind === 'video386') {
         // Il VGABIOS come lo pubblica il progetto: si presenta come una ROM
         // video, ma è codice da 386 e il 286 si fermerebbe al primo salto.
         this.setStatus(`«${file.name}» è il VGABIOS compilato per il 386: su questo processore non parte — serve ${VIDEO_SPEC.file}, compilato per il 286`);
-        continue;
+        return;
       }
       // Non è una ROM e non è un disco: allora è roba da mettere dentro la
       // macchina, e la macchina ha un posto dove metterla.
       this.pending.push({ bytes, name: file.name, kind: 'file' });
-    }
+    });
 
     if (bios && !this.machine) {
       this.setStatus('BIOS salvato — accensione…');
