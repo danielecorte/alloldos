@@ -1252,9 +1252,9 @@ a che fare con l'errore.
 ### Cosa manca
 
 La **velocità**: la macchina gira, ma gira a una frazione dei sessantasei
-megahertz che dichiara, e per farci sopra qualcosa di più di un prompt del DOS
-quella frazione andrà alzata — il lavoro da fare è la traduzione a blocchi,
-raccontata nel 386 qui sotto, che vale per tutte e due le macchine. La virgola mobile, il cambio di task e il modo
+megahertz che dichiara. La traduzione a blocchi — raccontata nel 386 qui sotto,
+e che vale per tutte e due le macchine perché il processore è lo stesso — quella
+frazione l'ha raddoppiata, e il resto è ancora da prendere. La virgola mobile, il cambio di task e il modo
 virtuale 8086 invece ci sono: sono gli stessi del 386 qui sotto, perché il
 motore è lo stesso, e sono raccontati lì — e sul Pentium CPUID dichiara il
 coprocessore, che per la prima volta sta dentro il processore.
@@ -1439,26 +1439,77 @@ trovati Setup, nessuno una prova scritta a mano:
   risponde spegnendo ZF, non con un'eccezione. Lo stesso per LSL, VERR e VERW,
   che adesso controllano anche i privilegi e il tipo come il chip.
 
+### La traduzione a blocchi
+
+Un interprete fa tre lavori per ogni istruzione, e due li rifà per niente.
+Legge i byte uno per uno dalla memoria, li smonta — i prefissi, l'opcode, il
+byte mod-reg-r/m, lo spostamento, l'immediato — e poi finalmente fa quello che
+l'istruzione dice. Dentro un ciclo che gira un milione di volte, i primi due
+lavori danno ogni volta la stessa risposta, e ogni volta si pagano per intero.
+
+Adesso si pagano una volta sola. Il processore prende il codice dal punto in cui
+si trova fino al primo salto, lo smonta tutto insieme, e da quello che ne esce
+**scrive una funzione JavaScript** — una vera, fatta di testo e data a
+`new Function`, che il browser compila come se l'avessimo scritta noi. Dentro
+quella funzione non c'è più niente da decidere: i registri sono indici scritti
+nel codice, le misure sono numeri, gli indirizzi sono formule già ridotte, e i
+salti hanno la destinazione già contata. La funzione si tiene da parte,
+indicizzata dall'indirizzo *fisico* della sua prima istruzione, e la volta dopo
+che il processore passa di lì si esegue e basta.
+
+Vale per il 386 e per il Pentium insieme, perché il processore è lo stesso, e
+sta tutto in `blocks.js`. Trenta secondi di Windows 3.1 in grafica sul 386
+costavano ottanta secondi veri e adesso ne costano **quaranta**: da sei milioni
+di istruzioni al secondo a dodici, e da un terzo dei trentatré megahertz
+dichiarati a tre quarti. E le istruzioni eseguite in quei trenta secondi sono
+**le stesse, tutte e 509 milioni**, fino all'ultima — è la prova che la macchina
+non sta facendo qualcosa di diverso, solo la stessa cosa in metà tempo.
+
+Quello che non si poteva perdere, e che non si è perso:
+
+- **le eccezioni a metà istruzione.** Un page fault deve poter arrivare nel
+  mezzo e far ricominciare l'istruzione da capo, o non esiste la memoria
+  virtuale. Ogni istruzione del blocco si lascia dietro da dove era cominciata,
+  e tutto il blocco sta dentro un `try`: l'eccezione esce, la si consegna allo
+  stesso gestore di sempre, e il blocco finisce lì;
+- **le interruzioni guardate fra un'istruzione e l'altra.** Un blocco finisce a
+  ogni salto e a ogni istruzione che possa toccare il bit delle interruzioni —
+  STI, CLI, POPF, IRET, HLT, i registri di controllo, le porte in uscita. La
+  finestra di un'istruzione che `sti` apre resta larga com'era, perché finché
+  c'è un rinvio in corso il blocco non si usa proprio;
+- **il codice che si riscrive da sé.** Ogni pagina fisica che contiene un blocco
+  è segnata in una mappa di bit, e ogni scrittura che cade lì dentro — dal
+  processore, dal DMA del dischetto, da chiunque — butta via i blocchi che
+  coprono quel byte. Se a riscriverlo è il blocco che sta girando, quello si
+  ferma su due piedi;
+- **e il rattoppo, che è la cosa che si è vista solo misurando.** Il modo normale
+  di chiamare un servizio del DOS il cui numero si sa solo a tempo di esecuzione
+  è scriversi quel numero dentro il proprio `INT nn` e poi eseguirlo. Windows lo
+  fa trentamila volte al secondo, e un blocco tradotto che finisse lì dentro si
+  butterebbe via a ogni chiamata. Allora ci si ricorda **fin dove** quel posto si
+  lascia riscrivere, e dal terzo colpo in poi il blocco si ferma un byte prima:
+  le undici istruzioni buone restano tradotte, e la dodicesima passa
+  dall'interprete come ha sempre fatto.
+
+L'interprete non è andato via, e non andrà: è lui la risposta giusta per tutto
+quello che non ha un traduttore suo. Nella funzione di un blocco, un'istruzione
+che non si sa scrivere diventa una chiamata all'interprete per quella sola
+istruzione e un controllo che dice se il processore è andato dove ci si
+aspettava. È il motivo per cui questa cosa si è potuta accendere tutta insieme
+senza riscrivere trecento opcode — e girando Windows 3.1, oggi, le istruzioni
+che passano di lì sono **due su mille**.
+
 ### Cosa manca
 
-La velocità: il 386 dichiara trentatré megahertz e ne fa una frazione, e
-Windows se ne accorge. Oggi trenta secondi di Windows 3.1 in grafica costano
-ottanta secondi veri, circa sei milioni di istruzioni al secondo. I ritocchi
-fatti fin qui — la RAM toccata direttamente dal processore, le letture di più
-byte in un colpo, i prefissi con una tabella — ne hanno dato un terzo in più, e
-i prossimi renderebbero pochi punti ciascuno.
-
-Il salto vero è un lavoro da fare: la **traduzione a blocchi**. Oggi il
-processore interpreta un'istruzione alla volta — la legge, la decodifica, la
-esegue, e ricomincia — anche quando è la stessa istruzione del giro prima di un
-ciclo che ne fa un milione. Tradurre a blocchi vuol dire prendere un pezzo di
-codice fino al primo salto, decodificarlo una volta sola in una funzione
-JavaScript, e rieseguire quella funzione ogni volta che il processore ci
-ritorna, finché qualcuno non scrive sopra quel codice. È come fanno gli
-emulatori veloci, e vale per il 386 e il Pentium insieme, perché il processore
-è lo stesso. Deve restare tutto quello che c'è: le eccezioni a metà istruzione,
-le interruzioni guardate fra un'istruzione e l'altra, il codice che si
-riscrive da sé, e le prove, che devono passare tutte come adesso.
+La velocità è ancora la cosa che manca, ma di un'altra misura: il 386 dichiara
+trentatré megahertz e ne fa tre quarti. Quello che resta da prendere non è più
+nella decodifica — quella non c'è più — ma nei tre posti in cui il tempo si è
+spostato: il giro della macchina, che gira una volta per blocco e i
+blocchi sono lunghi tre istruzioni e mezzo; gli accessi alla memoria, che passano
+ancora per i controlli del modo protetto a ogni byte; e i caricamenti di
+segmento, che rileggono la tabella dei descrittori tutte le volte. Il passo dopo,
+se si vorrà farlo, è **incatenare i blocchi**: far saltare un blocco dentro il
+prossimo senza tornare al giro della macchina.
 
 E la prova dell'installazione arriva solo fino a Windows
 che si accende e disegna il suo Setup grafico: il resto — il nome, i dischetti
@@ -1549,6 +1600,7 @@ src/systems/zx/       lo ZX Spectrum 48K
   index.js            la sessione: canvas, audio, cassette, tastiera, comandi
 src/systems/pentium/  il PC del 1995
   cpu586.js           il Pentium: real mode, modo protetto, paginazione, CPUID
+  blocks.js           la traduzione a blocchi: il codice che diventa JavaScript
   machine.js          la scheda madre: la mappa, i chip, il tempo, il riavvio
   pci.js              il bus PCI e lo spazio di configurazione
   i440fx.js           il ponte nord con i PAM, e il PIIX3 con l'IDE

@@ -269,6 +269,8 @@ export class Pentium {
     this.log = '';
 
     this.cpu = new CPU586(this, { model: options.model ?? 586 });
+    /** La mappa delle pagine che contengono codice tradotto, presa in prestito dal processore. */
+    this.codeFlags = this.cpu.codeFlags;
     this.reset();
   }
 
@@ -347,9 +349,13 @@ export class Pentium {
       this.shadow[first + i].read = read;
       this.shadow[first + i].write = write;
     }
+    // Allo stesso indirizzo fisico adesso risponde un altro pezzo di silicio:
+    // il codice tradotto di lì non è più quello che c'è.
+    this.cpu?.blocks.clear();
   }
 
   setA20(open) {
+    if (this.a20 !== open) this.cpu.blocks.clear();
     this.a20 = open;
     // Il cancello cambia quali byte sono quali: le traduzioni che il processore
     // si è tenuto non valgono più.
@@ -397,6 +403,10 @@ export class Pentium {
     addr >>>= 0;
     if (!this.a20) addr &= ~0x100000;
     value &= 0xff;
+    // Anche quello che non scrive il processore può scrivere sopra del codice
+    // tradotto: il DMA del dischetto che carica un programma dove ce n'era un
+    // altro fa esattamente questo, ed è il caso normale, non quello strano.
+    if (this.codeFlags[addr >>> 12]) this.cpu.blocks.invalidate(addr, 1);
     if (addr < LOW_RAM) {
       this.ram[addr] = value;
       return;
@@ -653,7 +663,7 @@ export class Pentium {
     const end = this.cycles + count;
     while (this.cycles < end) {
       if (this.cpu.halted) this.cycles = Math.min(end, this.idleUntil());
-      else this.cycles += this.cpu.step();
+      else this.cycles += this.cpu.run();
       // Le interruzioni si guardano fra un'istruzione e l'altra, come le guarda
       // il processore, e non ogni tanto. Non è un dettaglio di precisione: il
       // firmware, mentre aspetta un disco, apre le interruzioni per **tre

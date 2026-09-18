@@ -50,6 +50,7 @@ export const GS = 5;
 
 /** I bit di CR0 che contano qui: il modo protetto, e la paginazione. */
 import { FPU } from './fpu.js';
+import { Blocks } from './blocks.js';
 
 export const CR0_PE = 0x00000001;
 export const CR0_TS = 0x00000008;
@@ -198,6 +199,15 @@ export class CPU586 {
      */
     this.fpu = new FPU(this);
     this.fpu.onError = () => this.bus.fpuError?.();
+    /**
+     * I blocchi tradotti, e la mappa di bit delle pagine che ne contengono —
+     * tenuta qui accanto al processore perché ogni scrittura in memoria la
+     * guarda, e passare da una proprietà in più si sentirebbe.
+     */
+    this.blocks = new Blocks(this);
+    this.codeFlags = this.blocks.flags;
+    /** Acceso quando qualcuno ha riscritto il blocco che sta girando adesso. */
+    this.abort = 0;
     this.reset();
   }
 
@@ -271,6 +281,8 @@ export class CPU586 {
     this.codeCpl = 0;
     /** Quanti accessi di sistema sono in corso: finché non è zero, niente diritti dell'utente. */
     this.systemAccess = 0;
+    this.abort = 0;
+    this.blocks?.clear();
     this.fpu.reset();
 
     this.resetPrefixes();
@@ -443,6 +455,11 @@ export class CPU586 {
 
   writePhys8(addr, value) {
     addr >>>= 0;
+    // Se in questa pagina c'è del codice tradotto, quel codice adesso è diverso
+    // da quello che era: i blocchi che coprono il byte scritto se ne vanno. È
+    // un indice in un array di byte per ogni scrittura, ed è il prezzo di poter
+    // tradurre.
+    if (this.codeFlags[addr >>> 12]) this.blocks.invalidate(addr, 1);
     if (this.inRAM(addr, 1)) this.ram[addr] = value;
     else this.bus.write8(addr, value & 0xff);
   }
@@ -605,6 +622,7 @@ export class CPU586 {
     if (size > 1 && (linear & 0xfff) <= 0x1000 - size) {
       const phys = this.cr0 & CR0_PG ? this.translate(linear, true) : linear;
       if (this.inRAM(phys, size)) {
+        if (this.codeFlags[phys >>> 12]) this.blocks.invalidate(phys, size);
         const r = this.ram;
         r[phys] = value;
         r[phys + 1] = value >>> 8;
@@ -1783,7 +1801,6 @@ export class CPU586 {
       return 1;
     }
 
-    this.resetPrefixes();
     this.startEIP = this.eip;
     this.startCS = this.s[CS];
     this.startESP = this.r[ESP];
@@ -1791,19 +1808,7 @@ export class CPU586 {
 
     let cost = 1;
     try {
-      let opcode = this.fetch8();
-      let kind = PREFIX[opcode];
-      while (kind !== 0) {
-        if (kind <= 6) this.segmentOverride = kind - 1;
-        else if (kind === 7) this.opsizePrefix = true;
-        else if (kind === 8) this.addrsizePrefix = true;
-        else if (kind === 9) this.repeat = opcode;
-        else this.lock = true;
-        opcode = this.fetch8();
-        kind = PREFIX[opcode];
-      }
-      this.instructions++;
-      cost = this.execute(opcode) || 1;
+      cost = this.interpret();
     } catch (error) {
       cost = this.serviceFault(error);
     }
@@ -1811,6 +1816,51 @@ export class CPU586 {
     if (delay && this.stiDelay === delay) this.stiDelay = delay - 1;
     this.tsc += cost;
     return cost;
+  }
+
+  /**
+   * Un'istruzione letta e fatta, senza niente intorno: nessun conto dei cicli,
+   * nessun rinvio delle interruzioni, e l'eccezione lasciata uscire.
+   *
+   * Sta a parte perché la chiamano in due. La chiama `step`, che ci mette
+   * intorno tutto il resto; e la chiama un blocco tradotto, per le istruzioni
+   * che non hanno ancora un traduttore loro — che è il modo in cui la
+   * traduzione ha potuto accendersi senza riscrivere l'intera tabella degli
+   * opcode. Chi la chiama ha già messo EIP dove l'istruzione comincia.
+   */
+  interpret() {
+    this.resetPrefixes();
+    let opcode = this.fetch8();
+    let kind = PREFIX[opcode];
+    while (kind !== 0) {
+      if (kind <= 6) this.segmentOverride = kind - 1;
+      else if (kind === 7) this.opsizePrefix = true;
+      else if (kind === 8) this.addrsizePrefix = true;
+      else if (kind === 9) this.repeat = opcode;
+      else this.lock = true;
+      opcode = this.fetch8();
+      kind = PREFIX[opcode];
+    }
+    this.instructions++;
+    return this.execute(opcode) || 1;
+  }
+
+  /**
+   * Un passo della macchina, per chi la fa andare davvero.
+   *
+   * È `step` con la traduzione a blocchi davanti: dove c'è un blocco si esegue
+   * quello, e dove non c'è si torna a un'istruzione per volta. Le due strade
+   * lasciano il processore esattamente nello stesso stato — è la cosa che le
+   * prove controllano — e la differenza è solo quanto tempo vero ci vuole.
+   *
+   * Un'istruzione per volta si torna sempre in due casi: quando il processore è
+   * fermo su un HLT, e quando c'è un rinvio delle interruzioni in corso. Il
+   * secondo non è un dettaglio: è la finestra di un'istruzione che `sti` apre,
+   * e dentro un blocco non la vedrebbe nessuno.
+   */
+  run() {
+    if (this.halted || this.stiDelay) return this.step();
+    return this.blocks.run();
   }
 
   /**
@@ -1846,6 +1896,59 @@ export class CPU586 {
     }
     this.faultDepth = 0;
     return 30;
+  }
+
+  /**
+   * Il ritorno da una chiamata lontana.
+   *
+   * Sta in una funzione sua perché la chiamano in due — l'interprete e il codice
+   * tradotto — e perché quello che fa non è una cosa sola: se il selettore che
+   * torna indietro è meno privilegiato di chi sta girando, il ritorno cambia
+   * anche stack, e i parametri che `RET n` salta stavano su tutti e due — la
+   * porta di chiamata li aveva ricopiati.
+   *
+   * @param {number} size la misura degli operandi
+   * @param {number} extra quanti byte di parametri saltare
+   */
+  farReturn(size, extra) {
+    const target = this.pop(size);
+    const selector = this.pop(size);
+    const outer = this.protectedMode && (selector & 3) > this.cpl;
+    let sp = 0;
+    let ss = 0;
+    if (outer) {
+      this.set(this.stacksize, ESP, this.get(this.stacksize, ESP) + extra);
+      sp = this.pop(size);
+      ss = this.pop(size);
+    }
+    this.farJump(selector, target);
+    if (outer) {
+      this.loadSegment(SS, ss);
+      this.set(this.stacksize, ESP, trim(this.stacksize, sp + extra));
+      this.dropPrivilegedSegments();
+    } else {
+      this.set(this.stacksize, ESP, this.get(this.stacksize, ESP) + extra);
+    }
+  }
+
+  /**
+   * ENTER: lo stack frame in un'istruzione, con i livelli annidati che
+   * servivano al Pascal e che il C non ha mai usato.
+   *
+   * @param {number} size
+   * @param {number} space quanti byte di variabili locali
+   * @param {number} level quanti frame di fuori restano visibili
+   */
+  enterFrame(size, space, level) {
+    this.push(this.get(size, EBP), size);
+    const frame = this.get(this.stacksize, ESP);
+    for (let i = 1; i < level; i++) {
+      this.set(size, EBP, this.get(size, EBP) - size);
+      this.push(this.read(size, SS, this.get(this.stacksize, EBP)), size);
+    }
+    if (level > 0) this.push(frame, size);
+    this.set(size, EBP, frame);
+    this.set(this.stacksize, ESP, this.get(this.stacksize, ESP) - space);
   }
 
   /** Se il salto condizionato salta, secondo i quattro bit della condizione. */
@@ -2545,51 +2648,17 @@ export class CPU586 {
         this.modrm();
         this.writeRM(size, this.fetch(size));
         return 1;
-      case 0xc8: {
-        // ENTER: lo stack frame in un'istruzione, con i livelli annidati che
-        // servivano al Pascal e che il C non ha mai usato.
-        const space = this.fetch16();
-        const level = this.fetch8() & 0x1f;
-        this.push(this.get(size, EBP), size);
-        const frame = this.get(this.stacksize, ESP);
-        for (let i = 1; i < level; i++) {
-          this.set(size, EBP, this.get(size, EBP) - size);
-          this.push(this.read(size, SS, this.get(this.stacksize, EBP)), size);
-        }
-        if (level > 0) this.push(frame, size);
-        this.set(size, EBP, frame);
-        this.set(this.stacksize, ESP, this.get(this.stacksize, ESP) - space);
+      case 0xc8:
+        this.enterFrame(size, this.fetch16(), this.fetch8() & 0x1f);
         return 6;
-      }
       case 0xc9:
         this.set(this.stacksize, ESP, this.get(size, EBP));
         this.set(size, EBP, this.pop(size));
         return 3;
       case 0xca:
-      case 0xcb: {
-        const extra = opcode === 0xca ? this.fetch16() : 0;
-        const target = this.pop(size);
-        const selector = this.pop(size);
-        const outer = this.protectedMode && (selector & 3) > this.cpl;
-        let sp = 0;
-        let ss = 0;
-        if (outer) {
-          this.set(this.stacksize, ESP, this.get(this.stacksize, ESP) + extra);
-          sp = this.pop(size);
-          ss = this.pop(size);
-        }
-        this.farJump(selector, target);
-        if (outer) {
-          // I parametri stavano su tutti e due gli stack — la porta li aveva
-          // ricopiati — e RET n li salta su tutti e due.
-          this.loadSegment(SS, ss);
-          this.set(this.stacksize, ESP, trim(this.stacksize, sp + extra));
-          this.dropPrivilegedSegments();
-        } else {
-          this.set(this.stacksize, ESP, this.get(this.stacksize, ESP) + extra);
-        }
+      case 0xcb:
+        this.farReturn(size, opcode === 0xca ? this.fetch16() : 0);
         return 5;
-      }
       case 0xcc:
         this.v86Sensitive();
         this.interrupt(BREAKPOINT, { software: true });

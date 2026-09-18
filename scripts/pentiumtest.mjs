@@ -63,13 +63,20 @@ function board(megabytes = 16) {
   const memory = new Uint8Array(megabytes * 1024 * 1024);
   const ports = new Map();
   const written = [];
-  return {
+  const bus = {
     memory,
     ports,
     written,
+    /** Il processore attaccato, se c'è: serve a dirgli quando gli si riscrive il codice. */
+    cpu: null,
     read8: (addr) => memory[addr >>> 0] ?? 0xff,
     write8: (addr, value) => {
-      memory[addr >>> 0] = value & 0xff;
+      addr >>>= 0;
+      // Una scheda vera fa questo: prima di lasciar cambiare un byte, dice al
+      // processore che se lo aveva tradotto quel codice non c'è più. È da qui
+      // che passa il DMA di un dischetto che carica un programma sopra un altro.
+      if (bus.cpu !== null && bus.cpu.codeFlags[addr >>> 12]) bus.cpu.blocks.invalidate(addr, 1);
+      memory[addr] = value & 0xff;
     },
     inb: (port) => ports.get(port) ?? 0xff,
     outb: (port, value) => {
@@ -77,6 +84,7 @@ function board(megabytes = 16) {
       written.push([port, value & 0xff]);
     },
   };
+  return bus;
 }
 
 /**
@@ -86,6 +94,7 @@ function board(megabytes = 16) {
 function realMode(code, { segment = 0x1000, offset = 0, memory = 16 } = {}) {
   const bus = board(memory);
   const cpu = new CPU586(bus);
+  bus.cpu = cpu;
   cpu.loadSegment(CS, segment);
   cpu.eip = offset;
   cpu.loadSegment(DS, segment);
@@ -1179,6 +1188,337 @@ section('Quanto va');
   for (let i = 0; i < 200; i++) paged.step(); // il tempo di accendere tutto
   const virtual = measure(paged, 2_000_000);
   check('e con la paginazione accesa più di uno', virtual > 1, `${virtual.toFixed(1)} milioni`);
+}
+
+section('La traduzione a blocchi');
+
+{
+  // Il traduttore deve essere invisibile. Non «quasi uguale», non «uguale nei
+  // casi normali»: la macchina che passa dai blocchi deve finire esattamente
+  // dove finisce quella che legge un'istruzione per volta, con gli stessi
+  // registri, gli stessi flag, la stessa memoria e lo stesso conto dei cicli.
+  // Quindi la prova non è guardare un risultato: è far correre due volte lo
+  // stesso programma, di qua e di là, e confrontare tutto.
+
+  /** Tutto quello che si può guardare di un processore, in una stringa sola. */
+  const state = (cpu, bus, watch) => [
+    [...cpu.r].map((v) => hex(v)).join(' '),
+    [...cpu.s].map((v) => hex(v, 4)).join(' '),
+    hex(cpu.eip),
+    `${cpu.cf}${cpu.pf}${cpu.af}${cpu.zf}${cpu.sf}${cpu.df}${cpu.of}${cpu.if_}`,
+    `${cpu.tsc} ${cpu.instructions} ${cpu.halted ? 'hlt' : 'run'}`,
+    watch.map((at) => hex(bus.memory[at], 2)).join(''),
+  ].join(' | ');
+
+  /**
+   * Lo stesso programma due volte: una a istruzioni, una a blocchi. Torna le
+   * due fotografie, che devono essere identiche.
+   */
+  const bothWays = (code, { watch = [], limit = 20000, before = null } = {}) => {
+    const shots = [];
+    for (const blocks of [false, true]) {
+      const { cpu, bus } = realMode(code);
+      if (before) before(cpu, bus);
+      let steps = 0;
+      while (!cpu.halted && steps < limit) {
+        if (blocks) cpu.run();
+        else cpu.step();
+        steps++;
+      }
+      if (!cpu.halted) throw new Error(`non si è fermata in ${limit} passi`);
+      shots.push({ text: state(cpu, bus, watch), cpu, bus, steps });
+    }
+    return shots;
+  };
+
+  const same = (label, code, options = {}) => {
+    const [slow, fast] = bothWays(code, options);
+    check(label, slow.text === fast.text, slow.text === fast.text
+      ? `${fast.cpu.instructions} istruzioni in ${fast.steps} blocchi`
+      : `\n    a istruzioni: ${slow.text}\n    a blocchi:    ${fast.text}`);
+    return fast;
+  };
+
+  // La griglia dell'aritmetica, tutte e otto le operazioni, con i flag che ne
+  // escono: se una sola colonna di quella tabella fosse tradotta male, qui si
+  // vedrebbe.
+  same('l\'aritmetica e i suoi flag danno lo stesso risultato', [
+    0xb8, ...dh(0x1234), // mov ax, 1234h
+    0xbb, ...dh(0xf0f0), // mov bx, f0f0h
+    0x01, 0xd8, // add ax, bx
+    0x11, 0xd8, // adc ax, bx
+    0x29, 0xd8, // sub ax, bx
+    0x19, 0xd8, // sbb ax, bx
+    0x21, 0xd8, // and ax, bx
+    0x09, 0xd8, // or ax, bx
+    0x31, 0xd8, // xor ax, bx
+    0x39, 0xd8, // cmp ax, bx
+    0x04, 0x7f, // add al, 7fh
+    0x2c, 0x80, // sub al, 80h
+    0x40, 0x48, 0x43, 0x4b, // inc ax, dec ax, inc bx, dec bx
+    0xf7, 0xd8, // neg ax
+    0xf7, 0xd0, // not ax
+    0xa9, ...dh(0x00ff), // test ax, 00ffh
+    HLT,
+  ]);
+
+  // La memoria, con tutti i modi di indirizzarla a sedici bit, e gli
+  // scorrimenti che i flag li toccano in modo tutto loro.
+  same('gli indirizzi, la memoria e gli scorrimenti pure', [
+    0xbb, ...dh(0x0200), // mov bx, 200h
+    0xbe, ...dh(0x0004), // mov si, 4
+    0xc7, 0x00, ...dh(0xbeef), // mov word [bx+si*0], beefh -> [bx]
+    0x8b, 0x00, // mov ax, [bx+si]
+    0x89, 0x44, 0x02, // mov [si+2], ax
+    0x8a, 0x27, // mov ah, [bx]
+    0x88, 0x67, 0x10, // mov [bx+10h], ah
+    0xd1, 0xe0, // shl ax, 1
+    0xd1, 0xe8, // shr ax, 1
+    0xc1, 0xe0, 0x05, // shl ax, 5
+    0xc1, 0xf8, 0x03, // sar ax, 3
+    0xd1, 0xc0, // rol ax, 1
+    0xd1, 0xd8, // rcr ax, 1
+    0x8d, 0x40, 0x0c, // lea ax, [bx+si+0ch]
+    HLT,
+  ], { watch: [0x10200, 0x10201, 0x10206, 0x10207, 0x10210] });
+
+  // Lo stack, i salti, i cicli e le chiamate: cioè i posti dove un blocco
+  // finisce, che sono quelli in cui è più facile sbagliare.
+  same('lo stack, i salti, i cicli e le chiamate', [
+    0xb9, ...dh(0x0010), // mov cx, 16
+    0x31, 0xc0, // xor ax, ax
+    0x50, // push ax                <- 5
+    0x40, // inc ax
+    0xe2, 0xfc, // loop -4
+    0xb9, ...dh(0x0010), // mov cx, 16
+    0x58, // pop ax
+    0xe2, 0xfd, // loop -3
+    0xe8, ...dh(0x0003), // call 21          <- 15
+    0xeb, 0x02, // jmp 22                       <- 18
+    0x90, // nop, che nessuno esegue            <- 20
+    0xc3, // ret, cioè la funzione più corta    <- 21
+    0x83, 0xf8, 0x00, // cmp ax, 0              <- 22
+    0x74, 0x01, // jz +1
+    0x90, // nop
+    0xe3, 0x01, // jcxz +1
+    0x90, // nop
+    HLT,
+  ]);
+
+  // I segmenti, che in modo protetto sono la parte cara e in real mode sono il
+  // pezzo che ogni programma del DOS tocca di continuo.
+  same('i segmenti che vanno e vengono dallo stack', [
+    0x1e, // push ds
+    0x06, // push es
+    0x0e, // push cs
+    0x07, // pop es
+    0x1f, // pop ds
+    0x07, // pop es
+    0xb8, ...dh(0x2000), // mov ax, 2000h
+    0x8e, 0xc0, // mov es, ax
+    0x8c, 0xc3, // mov bx, es
+    0x26, 0xc7, 0x06, ...dh(0x0100), ...dh(0x1234), // mov word [es:100h], 1234h
+    0x26, 0x8b, 0x0e, ...dh(0x0100), // mov cx, [es:100h]
+    HLT,
+  ], { watch: [0x20100, 0x20101] });
+
+  // Le stringhe con il prefisso di ripetizione, che è l'istruzione che si
+  // rimette EIP indietro da sé: un blocco la deve lasciare finire.
+  same('le stringhe ripetute, che tornano sull\'istruzione da sole', [
+    0xbe, ...dh(0x0300), // mov si, 300h
+    0xbf, ...dh(0x0400), // mov di, 400h
+    0xb9, ...dh(0x0008), // mov cx, 8
+    0xfc, // cld
+    0xf3, 0xa4, // rep movsb
+    0xbf, ...dh(0x0400), // mov di, 400h
+    0xb9, ...dh(0x0008), // mov cx, 8
+    0xb0, 0x5a, // mov al, 'Z'
+    0xf3, 0xaa, // rep stosb
+    HLT,
+  ], {
+    watch: [0x10400, 0x10401, 0x10407],
+    before: (cpu, bus) => bus.memory.set([1, 2, 3, 4, 5, 6, 7, 8], 0x10300),
+  });
+
+  // E adesso il mondo grande: modo protetto, trentadue bit, paginazione accesa.
+  // È dove sta Windows, ed è dove un errore del traduttore non si vedrebbe
+  // subito — un flag sbagliato in un segmento sbagliato con una pagina che non
+  // c'è.
+  {
+    const PD = 0x20000;
+    const PT0 = 0x21000;
+    const program = [
+      0xb8, ...dw(PD),
+      0x0f, 0x22, 0xd8, // mov cr3, eax
+      0x0f, 0x20, 0xc0, // mov eax, cr0
+      0x0d, ...dw(0x80000000), // or eax, 80000000h
+      0x0f, 0x22, 0xc0, // mov cr0, eax — da qui ogni byte passa da una traduzione
+      0xbb, ...dw(0x30000), // mov ebx, 30000h
+      0xb9, ...dw(0x0040), // mov ecx, 64
+      0x89, 0x0b, // mov [ebx], ecx        <- il ciclo, a 0x15
+      0x83, 0xc3, 0x04, // add ebx, 4
+      0x0f, 0xb6, 0x03, // movzx eax, byte [ebx]
+      0x0f, 0xaf, 0xc1, // imul eax, ecx
+      0x0f, 0x94, 0xc2, // sete dl
+      0x49, // dec ecx
+      0x0f, 0x85, ...dw(-19), // jnz lungo, indietro al ciclo
+      0x55, // push ebp
+      0x89, 0xe5, // mov ebp, esp
+      0xc9, // leave
+      HLT,
+    ];
+    const shots = [];
+    for (const blocks of [false, true]) {
+      const { cpu, bus } = crossOver(program);
+      for (let i = 0; i < 1024; i++) write32(bus, PT0 + i * 4, (i * 0x1000) | 3);
+      write32(bus, PD, PT0 | 3);
+      let steps = 0;
+      while (!cpu.halted && steps < 20000) {
+        if (blocks) cpu.run();
+        else cpu.step();
+        steps++;
+      }
+      if (!cpu.halted) throw new Error('non si è fermata');
+      shots.push({ text: state(cpu, bus, [0x30000, 0x30004, 0x300fc]), cpu, steps });
+    }
+    const [slow, fast] = shots;
+    check('in modo protetto, a trentadue bit e con la paginazione, idem', slow.text === fast.text,
+      slow.text === fast.text
+        ? `${fast.cpu.instructions} istruzioni in ${fast.steps} blocchi`
+        : `\n    a istruzioni: ${slow.text}\n    a blocchi:    ${fast.text}`);
+  }
+
+  // L'eccezione a metà blocco, che è la cosa che un traduttore rischia di
+  // rompere per prima. Un'istruzione in mezzo al blocco tocca una pagina che non
+  // c'è; il gestore la mette; l'istruzione deve ricominciare da capo e il blocco
+  // riprendere da lì — con lo stesso risultato di una macchina che non traduce
+  // niente. È il meccanismo su cui poggia la memoria virtuale.
+  {
+    const PD = 0x20000;
+    const PT0 = 0x21000;
+    const PT1 = 0x22000;
+    const program = [
+      0xb8, ...dw(PD),
+      0x0f, 0x22, 0xd8,
+      0x0f, 0x20, 0xc0,
+      0x0d, ...dw(0x80000000),
+      0x0f, 0x22, 0xc0,
+      0xb9, ...dw(0x1111), // mov ecx, 1111h
+      0xb8, ...dw(0x12345678), // mov eax, 12345678h
+      0xa3, ...dw(0x400000), // mov [400000h], eax — qui la pagina non c'è ancora
+      0xbb, ...dw(0x2222), // mov ebx, 2222h
+      HLT,
+    ];
+    const handler = [
+      0x50, // push eax
+      0xb8, ...dw(PT1 | 3), // mov eax, PT1|3
+      0xa3, ...dw(PD + 4), // mov [PD+4], eax — ecco la pagina che mancava
+      0x58, // pop eax
+      // Il page fault lascia sullo stack anche il suo codice di errore, e IRET
+      // non lo toglie: lo toglie il gestore, come ha sempre fatto.
+      0x83, 0xc4, 0x04, // add esp, 4
+      0xcf, // iret, e l'istruzione di prima ricomincia da capo
+    ];
+    const shots = [];
+    for (const blocks of [false, true]) {
+      const { cpu, bus } = crossOver(program, { gates: [[PAGE_FAULT, gate(HANDLER_AT)]], handler });
+      for (let i = 0; i < 1024; i++) write32(bus, PT0 + i * 4, (i * 0x1000) | 3);
+      write32(bus, PT1, 0x30000 | 3);
+      write32(bus, PD, PT0 | 3);
+      let steps = 0;
+      while (!cpu.halted && steps < 20000) {
+        if (blocks) cpu.run();
+        else cpu.step();
+        steps++;
+      }
+      if (!cpu.halted) throw new Error('non si è fermata');
+      shots.push({ text: state(cpu, bus, [0x30000, 0x30001, 0x30002, 0x30003]), cpu });
+    }
+    const [slow, fast] = shots;
+    check('una pagina che manca in mezzo a un blocco: l\'istruzione ricomincia',
+      slow.text === fast.text,
+      slow.text === fast.text
+        ? `${fast.cpu.instructions} istruzioni`
+        : `\n    a istruzioni: ${slow.text}\n    a blocchi:    ${fast.text}`);
+    check('e il blocco riprende da dopo, con quello che doveva scrivere scritto',
+      fast.cpu.get32(EBX) === 0x2222, hex(fast.cpu.get32(EBX)));
+  }
+
+  // Il conto delle istruzioni e dei cicli: lo stesso di prima, byte per byte,
+  // perché è da lì che la macchina decide quando guardare le interruzioni.
+  {
+    const [slow, fast] = bothWays([
+      0xb9, ...dh(0x0064), // mov cx, 100
+      0x49, // dec cx
+      0x75, 0xfd, // jnz -3
+      HLT,
+    ]);
+    check('un ciclo di cento giri costa gli stessi cicli e le stesse istruzioni',
+      slow.cpu.tsc === fast.cpu.tsc && slow.cpu.instructions === fast.cpu.instructions,
+      `${fast.cpu.tsc} cicli, ${fast.cpu.instructions} istruzioni, ${fast.steps} blocchi`);
+    // Il corpo del ciclo è di due istruzioni, e un blocco finisce al salto: due
+    // istruzioni per blocco è tutto quello che c'è da prendere, ed è la metà dei
+    // giri della macchina.
+    check('e a blocchi la macchina gira la metà delle volte', fast.steps * 2 <= slow.steps,
+      `${fast.steps} contro ${slow.steps}`);
+  }
+}
+
+{
+  // Il codice che riscrive sé stesso. Non è un caso di scuola: il modo normale
+  // di chiamare un servizio del DOS il cui numero si sa solo a tempo di
+  // esecuzione è scriversi quel numero dentro il proprio `INT nn`. Un blocco
+  // tradotto che non se ne accorgesse eseguirebbe per sempre il codice di
+  // prima.
+  const { cpu, bus } = realMode([
+    0xb0, 0x2a, // mov al, 2ah
+    0x88, 0x06, ...dh(0x0007), // mov [7], al   <- scrive nell'istruzione qui sotto
+    0xb3, 0x11, // mov bl, 11h — il byte 7 è quell'11h, e diventa 2ah
+    HLT,
+  ]);
+  while (!cpu.halted) cpu.run();
+  check('un blocco che riscrive sé stesso esegue il codice nuovo', cpu.get8(3) === 0x2a,
+    hex(cpu.get8(3), 2));
+
+  // E lo stesso da fuori: un programma caricato sopra un altro è quello che fa
+  // il DOS tutte le volte, e chi lo carica è il DMA del dischetto, che il
+  // processore non lo vede nemmeno.
+  const loop = realMode([
+    0xb8, ...dh(0x0001), // mov ax, 1
+    HLT,
+  ]);
+  while (!loop.cpu.halted) loop.cpu.run();
+  check('e un blocco già tradotto gira', loop.cpu.get16(EAX) === 1);
+  const before = loop.cpu.blocks.compiled;
+  loop.bus.write8(0x10001, 0x99); // mov ax, 0099h
+  loop.cpu.halted = false;
+  loop.cpu.eip = 0;
+  while (!loop.cpu.halted) loop.cpu.run();
+  check('ma se qualcun altro gli scrive sopra, si traduce daccapo',
+    loop.cpu.get16(EAX) === 0x0099 && loop.cpu.blocks.compiled > before,
+    hex(loop.cpu.get16(EAX), 4));
+}
+
+{
+  // La finestra delle interruzioni. `sti` le riapre solo dopo l'istruzione
+  // *seguente*, e quella finestra di un'istruzione è quella in cui il firmware
+  // di Bochs aspetta un tasto. Dentro un blocco non la vedrebbe nessuno:
+  // quando c'è un rinvio in corso, il processore torna a un'istruzione per
+  // volta.
+  const { cpu } = realMode([
+    0xfa, // cli
+    0xfb, // sti
+    0x90, // nop
+    0x90, // nop
+    HLT,
+  ]);
+  cpu.run(); // cli
+  cpu.run(); // sti
+  check('dopo uno sti il rinvio è acceso', cpu.stiDelay === 1 && cpu.eip === 2, hex(cpu.eip));
+  const before = cpu.instructions;
+  cpu.run();
+  check('e il passo dopo è un\'istruzione sola, non un blocco',
+    cpu.instructions === before + 1 && cpu.stiDelay === 0, `${cpu.instructions - before} istruzioni`);
 }
 
 section('Il bus PCI');
