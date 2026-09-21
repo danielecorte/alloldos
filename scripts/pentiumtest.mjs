@@ -1595,6 +1595,17 @@ section('Il ventunesimo bit');
   check('e allora un mega più in là si riavvolge, come sull\'8086', pc.read8(0x100010) === 0xaa);
   pc.outb(0x92, 0x02);
   check('la porta 92h lo riapre, che è il modo veloce', pc.a20 === true && pc.read8(0x100010) === 0xbb);
+
+  // F0h-FFh sono impulsi sulla porta di uscita, uno per ogni bit basso a zero:
+  // solo quello sul bit 0 è il reset. HIMEMX scrive FFh — nessun impulso — per
+  // aspettare che l'A20 si assesti, e un controllore che lì riavviasse la
+  // macchina la riavvierebbe a ogni passaggio di Windows in modo protetto.
+  let resets = 0;
+  const kbc = new KBC8042({ onReset: () => resets++ });
+  kbc.write(0x64, 0xff);
+  check('FFh sul controllore non riavvia niente', resets === 0);
+  kbc.write(0x64, 0xfe);
+  check('FEh sì, perché pulsa il bit 0', resets === 1);
 }
 
 section('L\'orologio che non si spegne');
@@ -1620,6 +1631,50 @@ section('L\'orologio che non si spegne');
   check('e in decimale codificato in binario se glielo si chiede', read(0x04) === 0x09 && read(0x08) === 0x08);
   check('il bit «sto aggiornando» resta spento, perché l\'ora non si fa a metà',
     (read(0x0a) & 0x80) === 0);
+
+  check('si parte dal dischetto, poi dal CD, poi dal disco fisso',
+    read(0x3d) === 0x31 && (read(0x38) >> 4) === 2);
+
+  // L'interruzione periodica: il BIOS la mette a 1024 battiti al secondo e la
+  // accende per misurare le attese brevi di INT 15h AH=86h. Senza, un driver
+  // che chiede di aspettare un millisecondo aspetta per sempre — ed è così che
+  // il CD di Windows 98 si fermava, dentro un driver SCSI.
+  let line = false;
+  const rtc = new CMOS({ onInterrupt: (active) => { line = active; } });
+  rtc.write(0x70, 0x0a);
+  rtc.write(0x71, 0x26); // 1024 al secondo
+  check('a 1024 battiti al secondo il periodo è di 32 colpi di quarzo', rtc.period === 32);
+  rtc.advance(64);
+  check('spenta nel registro B batte lo stesso, ma senza chiamare', !line && (rtc.bytes[0x0c] & 0xc0) === 0x40);
+  rtc.write(0x70, 0x0c);
+  rtc.read(0x71);
+  rtc.write(0x70, 0x0b);
+  rtc.write(0x71, 0x42); // PIE
+  rtc.advance(31);
+  check('accesa, prima della fine del periodo il filo resta basso', !line);
+  rtc.advance(1);
+  check('e alla fine si alza, con IRQF e PF nel registro C', line && (rtc.bytes[0x0c] & 0xc0) === 0xc0);
+  rtc.write(0x70, 0x0c);
+  check('leggere il registro C lo azzera e abbassa il filo', rtc.read(0x71) === 0xc0 && !line && rtc.bytes[0x0c] === 0);
+}
+
+{
+  // E sulla scheda: il tempo che passa fa battere l'IRQ 8, anche col
+  // processore fermo in HLT ad aspettarlo.
+  const pc = mainboard();
+  pc.outb(0xa0, 0x11);
+  pc.outb(0xa1, 0x70);
+  pc.outb(0xa1, 0x02);
+  pc.outb(0xa1, 0x01);
+  pc.outb(0xa1, 0x00);
+  pc.outb(0x70, 0x0a);
+  pc.outb(0x71, 0x26);
+  pc.outb(0x70, 0x0b);
+  pc.outb(0x71, 0x42);
+  pc.cpu.halted = true;
+  pc.cpu.if_ = 0;
+  pc.runCycles(Math.ceil(pc.clock / 1000));
+  check('in un millesimo di secondo l\'orologio chiama sull\'IRQ 8', (pc.pics.slave.irr & 0x01) !== 0);
 }
 
 section('Le due catene di interruzioni');
@@ -1658,6 +1713,47 @@ section('Le due catene di interruzioni');
   pc.pics.pulse(0);
   check('e una riga mascherata non arriva', pc.pics.acknowledge() === -1);
   pc.pics.master.write(0x21, 0x00);
+  pc.pics.acknowledge();
+  pc.pics.master.write(0x20, 0x20);
+
+  // Una riga alta che arriva mentre il secondo chip la tiene mascherata resta
+  // in attesa, e quando la maschera si apre deve arrivare: è il lettore di CD
+  // che risponde a OAKCDROM prima che il driver abbia smascherato l'IRQ 15.
+  pc.outb(0xa1, 0x80);
+  pc.pics.setLine(15, true);
+  check('l\'IRQ 15 mascherato non passa', pc.pics.acknowledge() === -1);
+  pc.outb(0xa1, 0x00);
+  const late = pc.pics.acknowledge();
+  check('e smascherato arriva, come 77h', late === 0x77, hex(late, 2));
+  pc.pics.setLine(15, false);
+  pc.outb(0xa0, 0x20);
+  pc.outb(0x20, 0x20);
+
+  // E due righe del secondo chip una dietro l'altra: la seconda aspetta l'EOI
+  // della prima, e dopo quell'EOI deve risalire la catena.
+  pc.pics.setLine(14, true);
+  pc.pics.setLine(15, true);
+  check('prima la 14', pc.pics.acknowledge() === 0x76);
+  pc.outb(0xa0, 0x20);
+  pc.outb(0x20, 0x20);
+  const next = pc.pics.acknowledge();
+  check('e dopo i suoi EOI la 15', next === 0x77, hex(next, 2));
+}
+
+section('Il tempo passa anche da fermi');
+
+{
+  // Il TSC è un orologio: conta i cicli anche quando il processore è in HLT.
+  // SeaBIOS ci misura i suoi timeout aspettando con HLT, e un TSC che si ferma
+  // col processore li fa durare per sempre — il CD di Windows 98 si piantava
+  // così, dentro un driver SCSI che chiedeva al BIOS un disco che non c'è.
+  const pc = mainboard();
+  pc.cpu.halted = true;
+  pc.cpu.if_ = 0;
+  const before = pc.cpu.tsc;
+  const ran = pc.runCycles(1_000_000);
+  check('un milione di cicli in HLT sono un milione di cicli di TSC',
+    pc.cpu.tsc - before >= ran && ran >= 1_000_000, `${pc.cpu.tsc - before} su ${ran}`);
 
   // E l'orologio: il contatore 0 programmato come lo programma ogni BIOS — onda
   // quadra, divisore 65536 — batte 18,2 volte al secondo perché 1.193.182 diviso
@@ -2040,12 +2136,20 @@ section('Il lettore di CD');
     const files = FAT16.of(disk.data);
     const text = (name) => new TextDecoder().decode(files.read(name));
     check('il driver del CD finisce nel CONFIG.SYS', first.changed && /UDVD2\.SYS \/D:CDROM001/.test(text('CONFIG.SYS')));
-    check('e prima di tutto HIMEMX, che gli dà la memoria estesa', /^DEVICE=C:\\FDOS\\BIN\\HIMEMX\.EXE\r\n/.test(text('CONFIG.SYS')));
+    check('e prima di tutto HIMEMX, che gli dà la memoria estesa, col metodo per l\'A20',
+      /^DEVICE=C:\\FDOS\\BIN\\HIMEMX\.EXE \/METHOD:KBC\r\n/.test(text('CONFIG.SYS')));
     check('e SHSUCDX nell\'AUTOEXEC.BAT dopo il PATH', /path[^\n]*\n[^\n]*shsucdx \/D:CDROM001/i.test(text('AUTOEXEC.BAT')));
     check('una volta sola, anche a chiederlo due volte', !again.changed);
     setCDROM(disk.data, false);
     check('e si tolgono, lasciando il resto com\'era',
       !/udvd2|shsucdx|himemx/i.test(text('CONFIG.SYS') + text('AUTOEXEC.BAT')));
+
+    // Un disco salvato quando la riga non diceva il metodo: HIMEMX lì trova
+    // l'A20 aperto, lo crede aperto per sempre, e Windows non parte.
+    files.writeFile(null, 'CONFIG.SYS', new TextEncoder().encode('DEVICE=C:\\FDOS\\BIN\\HIMEMX.EXE\r\nFILES=20\r\n'));
+    setCDROM(disk.data, true);
+    check('la riga vecchia di HIMEMX si rifà col metodo, senza raddoppiare',
+      text('CONFIG.SYS').match(/HIMEMX/g).length === 1 && /HIMEMX\.EXE \/METHOD:KBC\r\nFILES=20/.test(text('CONFIG.SYS')));
   }
 }
 

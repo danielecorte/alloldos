@@ -16,6 +16,9 @@
 // stessa cosa che faceva la batteria, e chi accende la macchina si aspetta che il
 // DOS sappia che giorno è.
 
+/** Il quarzo dell'orologio: 32.768 colpi al secondo, due alla quindicesima. */
+export const RTC_CLOCK = 32768;
+
 /** Le due porte, e i registri che contano. */
 export const CMOS_INDEX = 0x70;
 export const CMOS_DATA = 0x71;
@@ -38,14 +41,71 @@ export class CMOS {
    * @param {object} [options]
    * @param {number} [options.ram] quanti byte di memoria ha la macchina
    * @param {()=>Date} [options.now] che ora è
+   * @param {(active:boolean)=>void} [options.onInterrupt] il filo dell'IRQ 8
    */
-  constructor({ ram = 32 * 1024 * 1024, now = () => new Date() } = {}) {
+  constructor({ ram = 32 * 1024 * 1024, now = () => new Date(), onInterrupt } = {}) {
     this.now = now;
+    this.onInterrupt = onInterrupt;
     this.bytes = new Uint8Array(128);
     this.index = 0;
     /** Il bit alto della porta dell'indice, che è l'interruttore delle NMI. */
     this.nmiDisabled = true;
+    /** I colpi di quarzo passati dall'ultimo battito dell'interruzione periodica. */
+    this.phase = 0;
     this.describe(ram);
+  }
+
+  /**
+   * Il piedino di reset del chip, che è attaccato a quello della scheda: spegne
+   * le interruzioni e i loro flag, e lascia stare l'ora e la memoria — quelle
+   * le tiene la batteria.
+   */
+  reset() {
+    this.bytes[REG_STATUS_B] &= ~0x70;
+    this.bytes[REG_STATUS_C] = 0;
+    this.phase = 0;
+    this.onInterrupt?.(false);
+  }
+
+  /**
+   * Ogni quanti colpi di quarzo batte l'interruzione periodica, o 0 se è spenta.
+   *
+   * La frequenza sta nei quattro bit bassi del registro A: da 3 in su è il
+   * quarzo diviso per due alla (n − 1), da 8192 al secondo in giù fino a 2; 1 e
+   * 2 per un incidente del chip valgono 256 e 128. Il BIOS la mette a 6, 1024
+   * battiti al secondo, e la accende quando qualcuno gli chiede di aspettare un
+   * tempo preciso — INT 15h AH=86h — o di avvisarlo quando è passato.
+   */
+  get period() {
+    const rate = this.bytes[REG_STATUS_A] & 0x0f;
+    if (rate === 0) return 0;
+    return rate <= 2 ? 1 << (rate + 6) : 1 << (rate - 1);
+  }
+
+  /**
+   * Fa passare il tempo: tanti colpi di quarzo. Ogni volta che si chiude un
+   * periodo si accende il flag PF nel registro C, e se il registro B lo chiede
+   * anche IRQF e il filo dell'interruzione, che resta alto finché qualcuno non
+   * legge il registro C.
+   */
+  advance(ticks) {
+    const period = this.period;
+    if (!period) return;
+    this.phase += ticks;
+    if (this.phase < period) return;
+    this.phase %= period;
+    this.bytes[REG_STATUS_C] |= 0x40;
+    if (this.bytes[REG_STATUS_B] & 0x40) {
+      this.bytes[REG_STATUS_C] |= 0x80;
+      this.onInterrupt?.(true);
+    }
+  }
+
+  /** Quanti colpi di quarzo mancano al prossimo battito che chiama, o Infinity. */
+  get ticksToInterrupt() {
+    const period = this.period;
+    if (!period || !(this.bytes[REG_STATUS_B] & 0x40)) return Infinity;
+    return period - this.phase;
   }
 
   /**
@@ -86,13 +146,16 @@ export class CMOS {
     this.bytes[0x12] = 0xf0;
     this.bytes[0x19] = 47;
     this.bytes[0x14] = 0x05; // lettore presente, schermo VGA
-    // Da dove provare a partire, in ordine. Il byte tiene due scelte in due mezzi
-    // byte — 1 è il dischetto, 2 il disco fisso, 3 il CD — e il primo tentativo
-    // sta in quello *basso*. Dischetto e poi disco fisso è l'ordine con cui si
-    // accendeva un PC: chi voleva partire da un altro sistema lo infilava in A:,
-    // e se A: era vuoto si andava avanti senza chiedere.
-    this.bytes[0x38] = 0x00;
-    this.bytes[0x3d] = 0x21;
+    // Da dove provare a partire, in ordine. Il byte 3Dh tiene due scelte in due
+    // mezzi byte — 1 è il dischetto, 2 il disco fisso, 3 il CD — e il primo
+    // tentativo sta in quello *basso*; la terza scelta sta nella metà alta di
+    // 38h. Dischetto, CD, disco fisso: è l'ordine in cui si metteva il setup di
+    // un BIOS del 1998 per installare un sistema — chi voleva partire da un
+    // altro sistema lo infilava in A: o nel lettore, e se erano vuoti si andava
+    // avanti senza chiedere. Il CD di Windows 98 ci conta: parte, e chiede se
+    // avviare lui o il disco fisso. Lo leggono sia SeaBIOS sia il BIOS di Bochs.
+    this.bytes[0x38] = 0x20;
+    this.bytes[0x3d] = 0x31;
     this.bytes[0x5f] = 0x00; // un processore solo
   }
 
@@ -130,6 +193,7 @@ export class CMOS {
     if (at === REG_STATUS_C) {
       const value = this.bytes[REG_STATUS_C];
       this.bytes[REG_STATUS_C] = 0; // leggendolo si azzera, ed è così che si ringrazia
+      this.onInterrupt?.(false);
       return value;
     }
     return this.bytes[at];

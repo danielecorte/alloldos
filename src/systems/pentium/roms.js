@@ -35,7 +35,12 @@ export const BIOS_SPEC = {
   file: 'seabios.bin',
   sizes: [65536, 131072, 262144],
   label: 'SeaBIOS',
-  source: `${QEMU_BIOS}/bios.bin`,
+  // Quello da 256 KB, che è quello che QEMU usa di suo. Il `bios.bin` da 128 KB
+  // accanto è tenuto per le macchine vecchie di QEMU, e per starci dentro è
+  // compilato senza qualche pezzo — fra cui il **PCI BIOS**, le chiamate
+  // dell'INT 1Ah con cui un programma in real mode trova le schede PCI. I driver
+  // dei CD per DOS le usano, e il CD di Windows 98 senza non vede il lettore.
+  source: `${QEMU_BIOS}/bios-256k.bin`,
 };
 
 /**

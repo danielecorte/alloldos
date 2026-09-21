@@ -29,7 +29,7 @@
 import { CPU586, CS, CR0_PE } from './cpu586.js';
 import { PCIBus, PCI_ADDRESS } from './pci.js';
 import { HostBridge, ISABridge, IDEFunction } from './i440fx.js';
-import { CMOS, CMOS_INDEX } from './cmos.js';
+import { CMOS, CMOS_INDEX, RTC_CLOCK } from './cmos.js';
 import { KBC8042, KBC_DATA } from './kbc.js';
 import { VGA } from './vga.js';
 import { FirmwareConfig, FWCFG_SELECTOR, FWCFG_DATA } from './fwcfg.js';
@@ -141,8 +141,18 @@ class InterruptChain {
   }
 
   write(port, value) {
-    if (port < 0xa0) this.master.write(port, value);
-    else this.slave.write(port, value);
+    if (port < 0xa0) {
+      this.master.write(port, value);
+      return;
+    }
+    this.slave.write(port, value);
+    // Il filo verso il primo chip dipende anche da quello che si scrive qui: una
+    // richiesta arrivata mentre la riga era mascherata resta in attesa, e quando
+    // la maschera si apre il secondo chip alza il filo. È quello che fa
+    // OAKCDROM, il driver del CD di Windows 98: manda il comando al lettore, e
+    // l'IRQ 15 lo smaschera solo dopo. E lo stesso dopo un EOI, se dietro
+    // quella appena servita ce n'era un'altra in fila.
+    this.master.setLine(2, this.slave.request() >= 0);
   }
 }
 
@@ -200,7 +210,11 @@ export class Pentium {
       onChannel0: () => this.pics.pulse(0),
       onChannel1: (pulses) => this.dma.refresh(pulses),
     });
-    this.cmos = new CMOS({ ram: this.ramSize, now: options.now });
+    this.cmos = new CMOS({
+      ram: this.ramSize,
+      now: options.now,
+      onInterrupt: (active) => this.pics.setLine(8, active),
+    });
     this.kbc = new KBC8042({
       onKeyboardInterrupt: (active) => this.pics.setLine(1, active),
       onMouseInterrupt: (active) => this.pics.setLine(12, active),
@@ -279,6 +293,7 @@ export class Pentium {
     this.synced = 0;
     this.nextSync = SYNC_INTERVAL;
     this.pitRemainder = 0;
+    this.rtcRemainder = 0;
     this.pendingReset = false;
 
     this.ram.fill(0);
@@ -287,6 +302,7 @@ export class Pentium {
     this.dma.reset();
     this.dma16.reset();
     this.kbc.reset();
+    this.cmos.reset();
     this.video?.reset();
     this.floppy.reset();
     this.disks.reset();
@@ -643,6 +659,10 @@ export class Pentium {
     const ticks = Math.floor(this.pitRemainder / this.clock);
     this.pitRemainder -= ticks * this.clock;
     if (ticks) this.pit.advance(ticks);
+    this.rtcRemainder += delta * RTC_CLOCK;
+    const rtcTicks = Math.floor(this.rtcRemainder / this.clock);
+    this.rtcRemainder -= rtcTicks * this.clock;
+    if (rtcTicks) this.cmos.advance(rtcTicks);
     this.video?.advance(delta);
     // L'altoparlante va nello stesso suono della scheda: il bit dei dati della
     // porta 61h in AND con l'uscita del contatore 2.
@@ -682,8 +702,15 @@ export class Pentium {
   runCycles(count) {
     const end = this.cycles + count;
     while (this.cycles < end) {
-      if (this.cpu.halted) this.cycles = Math.min(end, this.idleUntil());
-      else this.cycles += this.cpu.run();
+      if (this.cpu.halted) {
+        // Il contatore dei cicli del Pentium conta anche quelli passati fermo:
+        // è un orologio, non un conto delle istruzioni. SeaBIOS ci misura i suoi
+        // timeout, e fra un'occhiata e l'altra aspetta con HLT — se il TSC si
+        // fermasse con il processore, un timeout così non scadrebbe mai.
+        const until = Math.min(end, this.idleUntil());
+        this.cpu.tsc += until - this.cycles;
+        this.cycles = until;
+      } else this.cycles += this.cpu.run();
       // Le interruzioni si guardano fra un'istruzione e l'altra, come le guarda
       // il processore, e non ogni tanto. Non è un dettaglio di precisione: il
       // firmware, mentre aspetta un disco, apre le interruzioni per **tre
@@ -738,7 +765,11 @@ export class Pentium {
     if (!channel.running || !channel.gate) return this.nextSync;
     // Quanti cicli di processore stanno nei colpi di quarzo che restano.
     const ticks = Math.max(1, channel.count);
-    const cycles = Math.ceil((ticks * this.clock) / PIT_CLOCK);
+    let cycles = Math.ceil((ticks * this.clock) / PIT_CLOCK);
+    // E l'orologio del CMOS, se sta battendo la sua interruzione periodica: è
+    // su quella che il BIOS misura le attese brevi.
+    const rtc = this.cmos.ticksToInterrupt;
+    if (rtc !== Infinity) cycles = Math.min(cycles, Math.ceil((rtc * this.clock) / RTC_CLOCK));
     return Math.max(this.nextSync, this.cycles + cycles);
   }
 
@@ -754,6 +785,7 @@ export class Pentium {
     this.dma.reset();
     this.dma16.reset();
     this.kbc.reset();
+    this.cmos.reset();
     this.video.reset();
     this.floppy.reset();
     this.disks.reset();

@@ -552,7 +552,7 @@ class AboutPage {
       <h3 class="about__heading">Dove trovare le ROM</h3>
       <p>Sono due file, e sono entrambi <b>software libero</b>:</p>
       <ul class="about__list">
-        <li><a class="about__link" href="${SEABIOS_SPEC.source}" target="_blank" rel="noopener noreferrer">bios.bin</a>:
+        <li><a class="about__link" href="${SEABIOS_SPEC.source}" target="_blank" rel="noopener noreferrer">bios-256k.bin</a>:
         <b>SeaBIOS</b> (LGPLv3), il BIOS di sistema — quello che accende ogni
         macchina virtuale di
         <a class="about__link" href="${SEABIOS_URL}" target="_blank" rel="noopener noreferrer">QEMU</a>

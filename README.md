@@ -151,7 +151,7 @@ vuole, `apt install bcc bin86`.
 è libero ma viaggia dentro QEMU invece che su una pagina di download. SeaBIOS
 (LGPLv3) e la sua SeaVGABIOS sono quello che accende ogni macchina virtuale di
 QEMU, e i due file compilati stanno nel repository di QEMU:
-[`bios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/bios.bin)
+[`bios-256k.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/bios-256k.bin)
 e [`vgabios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/vgabios.bin),
 alla versione 9.0.0. `npm run fetch-roms` li scarica in `roms/pentium/`.
 
@@ -1056,10 +1056,18 @@ ROM sulla scheda.
 
 Il progetto pubblica i sorgenti e non i binari; i binari compilati stanno nel
 repository di QEMU, che se li porta dietro, e da lì si prendono con due link
-diretti: [`bios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/bios.bin),
-centoventotto KB, e [`vgabios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/vgabios.bin),
+diretti: [`bios-256k.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/bios-256k.bin),
+duecentocinquantasei KB, e [`vgabios.bin`](https://raw.githubusercontent.com/qemu/qemu/v9.0.0/pc-bios/vgabios.bin),
 la variante ISA. Sempre la versione 9.0.0 — SeaBIOS 1.16.3 — e
 `npm run fetch-roms` li mette in `roms/pentium/`.
+
+Quello da 256 KB, e non il `bios.bin` da 128 che gli sta accanto: quello QEMU lo
+tiene per le sue macchine vecchie, e per farcelo stare è compilato senza qualche
+pezzo. Uno dei pezzi è il **PCI BIOS** — le chiamate dell'INT 1Ah con cui un
+programma in real mode trova le schede sul bus — e senza quello i driver del CD
+del DOS di Windows 98 non trovano il lettore. Se in `roms/pentium/` c'è ancora il file
+da 128 KB, `npm run fetch-roms` lo sostituisce da sé; sul sito, basta
+trascinare quello nuovo sulla finestra.
 
 ### Due chip invece di venti
 
@@ -1235,8 +1243,28 @@ e HIMEMX vuole un 386 — nello stesso modo in cui si sceglie la tastiera
 (`pc/cdrom.js`). Se nel `CONFIG.SYS` c'è già un gestore della memoria, HIMEMX
 non si aggiunge. Il CD è **D:**.
 
-Il firmware lo vede anche lui, e SeaBIOS prova il CD prima del disco fisso: un CD
-che si avvia parte, uno che non si avvia viene saltato.
+HIMEMX si carica con **`/METHOD:KBC`**. Da solo guarda se l'A20 è già aperto, e
+se lo è conclude che lo resterà per sempre e smette di muoverlo: il BIOS dell'AT
+lo richiudeva prima di avviare il DOS, SeaBIOS e il BIOS di Bochs no. Il DOS
+extender del modo standard di Windows — quello di Windows 3.1, e quello con cui
+gira il programma d'installazione di Windows 98 — con un A20 che non si chiude
+non parte, e se la prende con HIMEM.SYS: *Cannot start Windows in standard
+mode*. Col metodo detto esplicitamente, HIMEMX usa il controllore della
+tastiera come fa HIMEM.SYS di Microsoft, e Windows parte.
+
+Il firmware lo vede anche lui: la sequenza d'avvio scritta nel CMOS è dischetto,
+CD, disco fisso, e la leggono sia SeaBIOS sia il BIOS di Bochs. Un CD che si
+avvia parte, uno che non si avvia viene saltato. Windows 98 va installato così,
+dal suo CD: il setup lanciato da FreeDOS si ferma dicendo che servono sedici
+mega, perché la memoria la chiede al DOS — a una parola della *List of Lists*
+che MS-DOS riempie all'avvio e FreeDOS lascia a zero. Dal CD parte il DOS di
+Windows 98, che per arrivare al setup ha avuto bisogno di tre cose che una
+macchina vera fa da sé: un 8259 che consegna un'interruzione arrivata mentre era
+mascherata appena la si smaschera (il driver del lettore, OAKCDROM, smaschera
+l'IRQ 15 solo dopo aver mandato il comando); il **PCI BIOS**, che i driver SCSI
+del dischetto interrogano; e l'interruzione periodica dell'orologio del CMOS,
+con cui il BIOS misura le attese brevi di INT 15h AH=86h — senza, uno di quei
+driver aspettava per sempre.
 
 ### Dove si è arrivati
 

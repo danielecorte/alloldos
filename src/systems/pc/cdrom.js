@@ -34,8 +34,18 @@ const AUTOEXEC = 'AUTOEXEC.BAT';
 const DIR = 'FDOS\\BIN';
 
 const DRIVER_LINE = /^\s*device(?:high)?\s*=\s*\S*udvd2\.sys\b/i;
-/** La riga di HIMEMX che mettiamo noi: solo quella si toglie. */
-const XMS_OURS = `DEVICE=C:\\${DIR}\\HIMEMX.EXE`;
+/**
+ * La riga di HIMEMX che mettiamo noi: solo quella si toglie. Il metodo per l'A20
+ * glielo si dice. Da solo HIMEMX guarda se l'A20 è già aperto, e se lo è conclude
+ * che è aperto per sempre e non lo muove più: il BIOS dell'AT lo richiudeva prima
+ * di avviare il DOS, SeaBIOS e il BIOS di Bochs no. E il modo standard di Windows
+ * — quello di Windows 3.1 e del programma d'installazione di Windows 98 — con un
+ * A20 che non si chiude non parte, e dà la colpa a HIMEM.SYS. Il controllore
+ * della tastiera è il metodo che sceglie HIMEM.SYS di Microsoft su queste schede.
+ */
+const XMS_OURS = `DEVICE=C:\\${DIR}\\HIMEMX.EXE /METHOD:KBC`;
+/** Quella che mettevamo prima, senza il metodo: su un disco salvato allora c'è ancora. */
+const XMS_OURS_BEFORE = `DEVICE=C:\\${DIR}\\HIMEMX.EXE`;
 /** Un gestore della memoria estesa che c'è già, messo da qualcun altro. */
 const XMS_LINE = /^\s*device(?:high)?\s*=\s*\S*(?:himem\w*|jemmex|qemm\w*|xmgr)\.(?:sys|exe)\b/i;
 const EXTENSION_LINE = /^\s*@?(?:[a-z]:)?(?:\S*\\)?shsucdx(?:\.com)?\b/i;
@@ -79,7 +89,8 @@ export function setCDROM(image, on) {
   }
 
   const config = readLines(volume, CONFIG);
-  const newConfig = config.filter((line) => !DRIVER_LINE.test(line) && line.trim().toUpperCase() !== XMS_OURS);
+  const ours = (line) => [XMS_OURS, XMS_OURS_BEFORE].includes(line.trim().toUpperCase());
+  const newConfig = config.filter((line) => !DRIVER_LINE.test(line) && !ours(line));
   if (on) {
     if (!newConfig.some((line) => XMS_LINE.test(line))) newConfig.unshift(XMS_OURS);
     newConfig.push(`DEVICE=C:\\${DIR}\\UDVD2.SYS /D:${CD_DEVICE}`);

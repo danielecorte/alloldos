@@ -48,7 +48,7 @@ const PROFILE = {
     compilati stanno nel repository di QEMU: <b>scaricali dai due link e
     trascinali sulla finestra</b>, e restano salvati in questo browser.</p>
     <ul>
-      <li>${link(roms.BIOS_SPEC.source, 'bios.bin')} — il BIOS di sistema, 128 KB, obbligatorio</li>
+      <li>${link(roms.BIOS_SPEC.source, 'bios-256k.bin')} — il BIOS di sistema, 256 KB, obbligatorio</li>
       <li>${link(roms.VIDEO_SPEC.source, 'vgabios.bin')} — SeaVGABIOS, il BIOS della
       scheda video: senza la macchina parte ma lo schermo resta nero</li>
     </ul>

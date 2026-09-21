@@ -945,7 +945,7 @@ const pentium = await (await pentiumEntry.load()).boot(new StubElement('main'), 
 if (pentium.machine === null) {
   const panel = pentium.overlay.children[0];
   const text = panel ? [panel.innerHTML, ...panel.children.map((n) => n.innerHTML || n.textContent)].join(' ') : '';
-  check('the Pentium asks for SeaBIOS, with direct links to the files', text.includes('pc-bios/bios.bin'));
+  check('the Pentium asks for SeaBIOS, with direct links to the files', text.includes('pc-bios/bios-256k.bin'));
 } else {
   check('the Pentium booted, with a Pentium in it', pentium.machine.cpu.model === 586);
   let prompt = false;

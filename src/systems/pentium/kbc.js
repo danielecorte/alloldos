@@ -214,7 +214,11 @@ export class KBC8042 {
         this.hooks.onReset?.();
         return;
       default:
-        if (value >= 0xf0 && value <= 0xff) this.hooks.onReset?.();
+        // F0h-FFh fanno pulsare per un attimo i piedini della porta di uscita
+        // che hanno lo zero nei quattro bit bassi — e quello del bit 0 è il
+        // reset. FFh non ne tocca nessuno: è l'attesa che HIMEMX mette dopo
+        // aver mosso l'A20, e riavviare lì vorrebbe dire riavviare Windows.
+        if (value >= 0xf0 && !(value & 0x01)) this.hooks.onReset?.();
         return;
     }
   }

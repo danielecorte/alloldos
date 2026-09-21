@@ -364,8 +364,14 @@ for (const [spec, accept] of [[PENTIUM_BIOS, isSystemBIOS], [PENTIUM_VIDEO, isOp
   if (!process.argv.includes('--force')) {
     try {
       await access(target);
-      console.log(`\n· ${spec.file} already present, skipping (use --force to refetch)`);
-      continue;
+      // Il bios.bin da 128 KB che si scaricava prima non ha il PCI BIOS: quello
+      // si rimpiazza anche senza --force.
+      const stale = spec === PENTIUM_BIOS && (await readFile(target)).length !== 262144;
+      if (!stale) {
+        console.log(`\n· ${spec.file} already present, skipping (use --force to refetch)`);
+        continue;
+      }
+      console.log(`\n· ${spec.file} is the old 128 KB SeaBIOS, without the PCI BIOS: replacing it`);
     } catch {
       /* not there yet, download it */
     }
