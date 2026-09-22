@@ -1892,7 +1892,20 @@ export class CPU586 {
       this.interrupt(error.vector, { code: error.code });
     } catch (nested) {
       if (!(nested instanceof Fault)) throw nested;
-      this.interrupt(DOUBLE_FAULT, { code: 0 });
+      try {
+        this.interrupt(DOUBLE_FAULT, { code: 0 });
+      } catch (third) {
+        if (!(third instanceof Fault)) throw third;
+        // Nemmeno il double fault si riesce a consegnare: è il triple fault, e
+        // la macchina si spegne e riparte. Succede per davvero, e non per
+        // sbaglio: azzerare il limite dell'IDT e provocare un'eccezione è da
+        // sempre il modo più svelto di riavviare un PC dal modo protetto, ed è
+        // così che Windows 98 si riavvia in mezzo alla sua installazione.
+        this.halted = true;
+        this.tripleFault = true;
+        this.faultDepth = 0;
+        return 1;
+      }
     }
     this.faultDepth = 0;
     return 30;
@@ -2051,8 +2064,14 @@ export class CPU586 {
       return 4;
     }
     if (this.counter === 0) return 2;
-    this.counter = this.counter - 1;
+    // Prima l'elemento, poi il contatore. Se l'elemento prende un page fault,
+    // l'istruzione ricomincia con ECX, ESI ed EDI tutti e tre dove erano: è
+    // quello che fa il processore, ed è quello su cui conta ogni sistema che
+    // copia verso una pagina non ancora mappata — il kernel di Linux, che
+    // riempie così i buffer appena allocati dei suoi programmi. Contare prima
+    // voleva dire saltare un elemento a ogni fault, e spostare tutto il resto.
     callback();
+    this.counter = this.counter - 1;
     let again = this.counter !== 0;
     if (again && checkZero) again = this.repeat === 0xf3 ? this.zf === 1 : this.zf === 0;
     if (again) this.eip = this.startEIP;

@@ -756,6 +756,58 @@ section('La paginazione');
 }
 
 {
+  // Un REP MOVSD che a metà strada trova una pagina che non c'è. È come il
+  // kernel di Linux riempie il buffer appena allocato di un programma: la
+  // pagina arriva col primo fault, e la copia deve ripartire esattamente da
+  // dove si era fermata — ECX, ESI ed EDI ancora sull'elemento che non è
+  // riuscito. Contando prima di copiare, un elemento spariva a ogni fault e
+  // tutto il resto scivolava indietro di quattro byte: Ubuntu 4.10 leggeva i
+  // suoi moduli con i nomi dei simboli fatti di spazzatura.
+  const PD = 0x20000;
+  const PT0 = 0x21000;
+  const PT1 = 0x22000;
+  const SOURCE = 0x40000;
+  const { cpu, bus } = crossOver(
+    [
+      0xb8, ...dw(PD),
+      0x0f, 0x22, 0xd8,
+      0x0f, 0x20, 0xc0,
+      0x0d, ...dw(0x80000000),
+      0x0f, 0x22, 0xc0,
+      0xbe, ...dw(SOURCE), // mov esi, 40000h
+      0xbf, ...dw(0x3ffff8), // mov edi, 3ffff8h: due parole doppie prima del buco
+      0xb9, ...dw(4), // mov ecx, 4
+      0xfc, // cld
+      0xf3, 0xa5, // rep movsd
+      HLT,
+    ],
+    {
+      gates: [[PAGE_FAULT, gate(HANDLER_AT)]],
+      handler: [
+        0x50, // push eax
+        0xb8, ...dw(PT1 | 3),
+        0xa3, ...dw(PD + 4), // la tabella che mancava
+        0x58, // pop eax
+        0x83, 0xc4, 0x04, // add esp, 4: il codice d'errore
+        0xcf, // iret
+      ],
+    },
+  );
+  for (let i = 0; i < 1024; i++) write32(bus, PT0 + i * 4, (i * 0x1000) | 3);
+  write32(bus, PT1, 0x30000 | 3);
+  write32(bus, PD, PT0 | 3);
+  for (let i = 0; i < 4; i++) write32(bus, SOURCE + i * 4, 0x11111111 * (i + 1));
+
+  run(cpu);
+  check('REP MOVSD attraverso un page fault: la copia riparte dall\'elemento mancato',
+    read32(bus, 0x30000) === 0x33333333 && read32(bus, 0x30004) === 0x44444444,
+    `${hex(read32(bus, 0x30000))} ${hex(read32(bus, 0x30004))}`);
+  check('e finisce con ECX a zero e i due indici in fondo',
+    cpu.get32(ECX) === 0 && cpu.get32(ESI) === SOURCE + 16 && cpu.get32(EDI) === 0x400008,
+    `ecx=${hex(cpu.get32(ECX))} esi=${hex(cpu.get32(ESI))} edi=${hex(cpu.get32(EDI))}`);
+}
+
+{
   // Le pagine da quattro mega, che il Pentium aggiunge: una voce di directory e
   // niente tabella sotto. È come ogni sistema operativo mappa se stesso, perché
   // costa una voce invece di mille.
@@ -1091,6 +1143,23 @@ section('Le interruzioni in modo protetto');
   check('duecentocinquantasei byte copiati quattro per volta', same);
   check('e il contatore è a zero', cpu.get32(ECX) === 0);
   check('un giro per passo, perché in mezzo si deve poter entrare', steps > 64, `${steps} passi`);
+}
+
+{
+  // Il triple fault, cioè il riavvio. Un'IDT lunga zero: la prima eccezione non
+  // si può consegnare, il #GP che ne viene nemmeno, e il double fault neanche.
+  // Tre cadute e il processore si arrende — che per un PC vuol dire spegnersi e
+  // riaccendersi, ed è il modo in cui Windows 98 si riavvia da solo in mezzo
+  // alla propria installazione. Qui la macchina deve *spegnersi*, non portarsi
+  // dietro l'eccezione fuori dall'emulatore.
+  const { cpu, bus } = crossOver([
+    0x0f, 0x01, 0x1d, ...dw(CODE_AT + 0x110), // lidt [CODE_AT+110h]
+    0xcd, 0x03, // int 3, che non ha più nessuna porta dove andare
+    HLT,
+  ]);
+  bus.memory.set(Uint8Array.from([...dh(0), ...dw(IDT_AT)]), CODE_AT + 0x110);
+  run(cpu);
+  check('tre eccezioni una dentro l\'altra spengono la macchina', cpu.halted && cpu.tripleFault);
 }
 
 

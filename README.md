@@ -1266,6 +1266,37 @@ del dischetto interrogano; e l'interruzione periodica dell'orologio del CMOS,
 con cui il BIOS misura le attese brevi di INT 15h AH=86h — senza, uno di quei
 driver aspettava per sempre.
 
+### Le due cose che un'installazione vera ha trovato
+
+Installare un sistema operativo è la prova più severa che si possa fare a un
+processore emulato: dura un'ora, tocca tutto, e non perdona. Windows 98 e Ubuntu
+4.10 sono caduti in due punti diversi, e nessuna prova scritta a tavolino ci era
+arrivata.
+
+**Il contatore di REP si scala dopo l'elemento, non prima.** `rep movsd` copia
+una parola doppia e poi toglie uno da ECX. Finché la copia riesce i due ordini
+sono lo stesso ordine; ma se la scrittura prende un *page fault* — se la pagina
+di arrivo non c'è ancora — l'istruzione ricomincia da capo, e ricominciava con
+ECX già scalato e gli indici fermi: **un elemento perso a ogni fault**, e tutto
+il resto della copia scivolato indietro di quattro byte. Non è il caso raro, è
+quello di tutti i giorni: il kernel di Linux riempie così i buffer appena
+allocati dei programmi, e la pagina gliela dà il primo fault. Ubuntu 4.10
+partiva, montava il suo disco di memoria, e poi si fermava caricando i moduli
+con i nomi dei simboli fatti di spazzatura — `unix: Unknown symbol km` — perché
+il modulo era arrivato in memoria con un buco ogni pagina.
+
+**Tre eccezioni una dentro l'altra spengono la macchina.** Un'eccezione che non
+si riesce a consegnare ne fa un'altra, e la seconda diventa il *double fault*; se
+non si riesce a consegnare nemmeno quello, il processore si arrende. Su un PC
+arrendersi vuol dire una cosa sola: **riaccendersi**. Azzerare il limite della
+IDT e provocare apposta un'eccezione è da sempre il modo più svelto di tornare
+al modo reale, ed è così che il setup di Windows 98 riavvia la macchina a metà
+dell'installazione, quando ha finito di copiare i file. Qui la terza eccezione
+usciva dall'emulatore invece di spegnere la macchina: nella pagina il giro dei
+fotogrammi moriva lì, con l'ultimo quadro disegnato — uno schermo quasi vuoto
+con un cursore — che restava sullo schermo a somigliare a un PC che non
+riparte.
+
 ### Dove si è arrivati
 
 `npm test` accende la macchina con SeaBIOS dentro e guarda cosa succede. Il
