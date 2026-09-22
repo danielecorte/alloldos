@@ -2285,6 +2285,14 @@ export class CPU586 {
         // ARPL: abbassa il privilegio richiesto di un selettore a quello di chi
         // lo ha passato. Serviva ai sistemi operativi per non farsi ingannare da
         // un puntatore arrivato da un programma.
+        //
+        // Nel modo reale e nel virtuale 8086 i selettori non esistono, e ARPL
+        // è un opcode non valido. Windows 3.1 in modo 386 avanzato ci conta:
+        // per richiamare il suo gestore da una macchina virtuale del DOS le
+        // fa tornare a un byte 63h trovato nella ROM del BIOS, e l'eccezione che
+        // ne esce è il campanello. Eseguito come istruzione, il programma
+        // tirava dritto nella ROM e Windows tornava al DOS senza una parola.
+        if (!this.protectedMode || this.vm) throw new Fault(INVALID_OPCODE);
         this.modrm();
         const value = this.readRM(2);
         const from = this.get16(this.reg) & 3;
