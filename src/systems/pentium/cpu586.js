@@ -139,6 +139,13 @@ for (let i = 0; i < 256; i++) {
  * stessa: uno, due o quattro byte. Sono array e non oggetti perché qui si passa
  * milioni di volte al secondo, e un indice costa meno di una proprietà.
  */
+/**
+ * Quanti elementi di un'istruzione di stringa ripetuta si fanno prima di
+ * tornare a guardare le interruzioni: un paio di migliaia di cicli al massimo,
+ * che a sessantasei megahertz sono una trentina di microsecondi.
+ */
+const REPEAT_BATCH = 1024;
+
 const MASK = [0, 0xff, 0xffff, 0, 0xffffffff];
 const SIGN = [0, 0x80, 0x8000, 0, 0x80000000];
 
@@ -2050,13 +2057,17 @@ export class CPU586 {
   }
 
   /**
-   * Un'istruzione di stringa, una volta sola — e se c'è un prefisso di
-   * ripetizione si rimette indietro EIP invece di girare qui dentro.
+   * Un'istruzione di stringa, e se c'è un prefisso di ripetizione un pezzo
+   * della ripetizione — al massimo `REPEAT_BATCH` elementi — dopo il quale si
+   * rimette indietro EIP invece di girare qui dentro fino in fondo.
    *
-   * Non è pigrizia: è l'unico modo di restare interrompibili. Un REP MOVSD che
-   * sposta un mega in un colpo terrebbe fuori l'interrupt del timer per tutto il
-   * tempo. L'hardware fa esattamente questo, e infatti un interrupt in mezzo a
-   * un REP torna sull'istruzione, prefissi compresi.
+   * Il pezzo è per restare interrompibili. Un REP MOVSD che sposta un mega in un
+   * colpo terrebbe fuori l'interrupt del timer per tutto il tempo. L'hardware
+   * fa esattamente questo, e infatti un interrupt in mezzo a un REP torna
+   * sull'istruzione, prefissi compresi. Ma un elemento per volta voleva dire
+   * rileggere e ridecodificare l'istruzione a ogni parola: un settore del
+   * disco letto con REP INSW erano duecentocinquantasei istruzioni, e una
+   * copia dal CD al disco passava lì dentro quasi tutto il suo tempo.
    */
   repeatable(callback, checkZero = false) {
     if (!this.repeat) {
@@ -2070,12 +2081,19 @@ export class CPU586 {
     // copia verso una pagina non ancora mappata — il kernel di Linux, che
     // riempie così i buffer appena allocati dei suoi programmi. Contare prima
     // voleva dire saltare un elemento a ogni fault, e spostare tutto il resto.
-    callback();
-    this.counter = this.counter - 1;
-    let again = this.counter !== 0;
-    if (again && checkZero) again = this.repeat === 0xf3 ? this.zf === 1 : this.zf === 0;
-    if (again) this.eip = this.startEIP;
-    return 2;
+    // Con più elementi per giro vale lo stesso: il fault arriva a metà di uno,
+    // e quelli prima sono già contati.
+    let done = 0;
+    for (;;) {
+      callback();
+      this.counter = this.counter - 1;
+      done++;
+      if (this.counter === 0) return 2 * done;
+      if (checkZero && (this.repeat === 0xf3 ? this.zf !== 1 : this.zf !== 0)) return 2 * done;
+      if (done === REPEAT_BATCH) break;
+    }
+    this.eip = this.startEIP;
+    return 2 * done;
   }
 
   // ------------------------------------------------------------- le porte

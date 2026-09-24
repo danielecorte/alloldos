@@ -57,7 +57,7 @@ FreeDOS installato sopra, l'unica immagine di disco che viaggia con alloldos —
 processore non si trova da nessuna parte: `npm run build-vgabios` lo rifà.
 
 Nessuna dipendenza, nessun passo di build: sono moduli ES serviti così come
-sono. `npm test` esegue otto prove a schermo spento: la prima accende il C64,
+sono. `npm test` esegue nove prove a schermo spento: la prima accende il C64,
 verifica che arrivi al prompt `READY.` e ci fa girare un programma; la seconda
 preme i tasti attraverso lo stesso codice che usa il browser e rilegge dallo
 schermo i caratteri arrivati davvero al BASIC; la terza registra un nastro e lo
@@ -74,7 +74,11 @@ FreeDOS dal disco fisso: si batte `dir` sulla tastiera, ci si scrive sopra un
 file e lo si ritrova dopo aver spento e riacceso. E dal dischetto, dove la prova
 si ferma appena il kernel si è caricato per intero. Alla fine, sulla stessa
 scheda, ci monta un 386 con il BIOS di Bochs e lo porta fino al prompt, contando
-le istruzioni che un 386 non avrebbe saputo eseguire: devono essere zero.
+le istruzioni che un 386 non avrebbe saputo eseguire: devono essere zero. La
+nona è la rete: la scheda del Pentium pilotata registro per registro, e il
+router di `npm start` con dall'altra parte una macchina finta che chiede
+l'indirizzo, fa un ping e scarica duecento KB da un server vero perdendone un
+pezzo per strada.
 
 Se in cartella c'è un `.tap`, l'ultima prova ci carica dentro anche quello e poi
 **ci gioca**: tiene premuta una direzione e guarda dove finisce il personaggio.
@@ -1320,6 +1324,38 @@ desktop: la seconda metà dell'installazione vuole quasi un altro giga, e sul
 disco da uno si ferma con `No space left on device`. Il sistema resta avviabile
 e ci si entra, ma senza la parte grafica.
 
+### La rete
+
+Nello slot 3 del PCI c'è una **NE2000**, nella versione PCI di Realtek, la
+**RTL8029**. È la scheda più copiata della sua epoca, e per questo quella che
+tutti sanno pilotare: Windows 98 e Linux hanno il driver di serie, e sotto il
+DOS la pilota il packet driver della NE2000. SeaBIOS la trova da sé, le dà una
+finestra di porte (C000h) e l'IRQ 11, e mette quella riga dell'8259 a
+**livello** invece che sul fronte — i fili del PCI sono condivisi, e una scheda
+tiene il suo alto finché il driver non l'ha servita.
+
+Il cavo arriva fino a `npm start`. Un browser non può mandare pacchetti
+ethernet, quindi ogni pacchetto viaggia in un messaggio WebSocket fino al
+server, e lì c'è una rete piccola e sempre uguale, quella che QEMU chiama *user
+networking*:
+
+| indirizzo   | chi è |
+|-------------|-------|
+| 10.0.2.15   | la macchina, che lo riceve col DHCP |
+| 10.0.2.2    | il router, che è anche questo computer: `10.0.2.2:8080` è alloldos stesso |
+| 10.0.2.3    | il DNS, che gira le domande a quello del sistema |
+
+Il router non instrada pacchetti: ogni connessione TCP la termina lui e ne apre
+una vera verso la stessa destinazione, e lo stesso fa con l'UDP. Il ping
+risponde solo per il router: per mandarne uno vero fuori servirebbe root.
+
+Chi ha in mano quel cavo apre connessioni da questo computer, quindi il server
+lo dà solo alle pagine servite da lui stesso e solo ai browser sulla stessa
+macchina. La pagina pubblicata su GitHub è fatta solo di file, e lì la scheda
+c'è ma il cavo è staccato: il sistema operativo vede una scheda senza rete. Il
+386 la scheda non ce l'ha: il BIOS di Bochs non assegna le schede PCI, e
+sarebbe rimasta spenta.
+
 ### Dove si è arrivati
 
 `npm test` accende la macchina con SeaBIOS dentro e guarda cosa succede. Il
@@ -1612,6 +1648,20 @@ aspettava. È il motivo per cui questa cosa si è potuta accendere tutta insieme
 senza riscrivere trecento opcode — e girando Windows 3.1, oggi, le istruzioni
 che passano di lì sono **due su mille**.
 
+Due cose le ha trovate una copia dal CD al disco fisso, che era lentissima:
+
+- **un REP faceva un elemento per volta.** Dopo ogni parola l'istruzione si
+  rimetteva all'inizio, per restare interrompibile, e veniva letta e decodificata
+  di nuovo: un settore letto con `REP INSW` erano duecentocinquantasei
+  istruzioni. Adesso ogni giro fa fino a 1024 elementi e poi torna a guardare
+  le interruzioni, che è una trentina di microsecondi;
+- **ogni scrittura in una pagina con del codice scorreva tutti i suoi blocchi**,
+  anche quando non ne toccava nessuno — e il DOS tiene i buffer nelle stesse
+  pagine del suo codice. Adesso ogni pagina sa quali dei suoi byte sono coperti
+  da un blocco, e una scrittura fuori da quelli esce subito.
+
+Otto mega copiati da `D:` a `C:` sotto FreeDOS: 8,4 secondi prima, 4,7 dopo.
+
 ### Cosa manca
 
 La velocità è ancora la cosa che manca, ma di un'altra misura: il 386 dichiara
@@ -1722,6 +1772,8 @@ src/systems/pentium/  il PC del 1995
   vga.js              la VGA: quattro piani, modo testo e grafica
   fwcfg.js            il canale da cui il firmware chiede com'è la macchina
   ide.js              i due canali IDE: i registri, l'LBA, i settori a parole, e il CD ATAPI
+  ne2000.js           la scheda di rete: il DP8390 con la sua memoria, sul PCI come RTL8029
+  network.js          il cavo: un WebSocket verso il router di npm start
   roms.js             dove trovare SeaBIOS e la sua ROM video
   fpu.js              il 387: la pila di otto registri e gli ottanta bit
   session.js          la pagina della scheda: canvas, dischi, tastiera, mouse, suono

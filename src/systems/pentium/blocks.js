@@ -409,8 +409,19 @@ export class Blocks {
     this.cpu = cpu;
     /** @type {Map<number,object>} dall'indirizzo fisico al blocco */
     this.blocks = new Map();
-    /** @type {Map<number,object[]>} dalla pagina fisica ai blocchi che ci stanno */
+    /**
+     * Dalla pagina fisica ai blocchi che ci stanno, e a quali dei suoi 4096 byte
+     * sono coperti da uno di loro.
+     * @type {Map<number,{list:object[], covered:Uint8Array}>}
+     */
     this.pages = new Map();
+    /**
+     * L'ultima pagina chiesta da `invalidate`, e la sua voce. Chi scrive in una
+     * pagina di solito ci scrive ancora: un buffer si riempie una parola dopo
+     * l'altra, e la risposta è quasi sempre quella di un attimo prima.
+     */
+    this.lastPage = -1;
+    this.lastEntry = undefined;
     /**
      * Un byte per pagina fisica: se in quella pagina c'è del codice tradotto.
      * È la mappa che ogni scrittura in memoria guarda, ed è per questo che è un
@@ -436,6 +447,7 @@ export class Blocks {
 
   /** Butta via tutto: lo si fa quando cambia quello che c'è a un indirizzo. */
   clear() {
+    this.forget();
     for (const page of this.pages.keys()) this.flags[page] = 0;
     this.blocks.clear();
     this.pages.clear();
@@ -463,11 +475,34 @@ export class Blocks {
    */
   invalidate(phys, size = 1) {
     const page = phys >>> 12;
-    const list = this.pages.get(page);
-    if (list === undefined) {
+    let entry;
+    if (page === this.lastPage) entry = this.lastEntry;
+    else {
+      entry = this.pages.get(page);
+      this.lastPage = page;
+      this.lastEntry = entry;
+    }
+    if (entry === undefined) {
       this.flags[page] = 0;
       return;
     }
+    // Prima la domanda che costa poco: i byte scritti sono di un blocco? Il
+    // DOS tiene i suoi buffer nelle stesse pagine del suo codice, e una copia
+    // dal CD ci scrive dentro mezzo mega al secondo, una parola per volta:
+    // scorrere la lista dei blocchi a ogni parola era un quarto di tutto il
+    // tempo della macchina.
+    const covered = entry.covered;
+    const from = phys & 0xfff;
+    const to = Math.min(from + size, 0x1000);
+    let hit = false;
+    for (let i = from; i < to; i++) {
+      if (covered[i]) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) return;
+    const list = entry.list;
     const end = phys + size;
     let kept = null;
     let dropped = 0;
@@ -495,7 +530,27 @@ export class Blocks {
     if (kept === null) {
       this.pages.delete(page);
       this.flags[page] = 0;
-    } else this.pages.set(page, kept);
+      this.forget();
+    } else this.setPage(page, kept);
+  }
+
+  /** La cache di `invalidate` non vale più: una pagina è cambiata. */
+  forget() {
+    this.lastPage = -1;
+    this.lastEntry = undefined;
+  }
+
+  /** La lista dei blocchi di una pagina, e la mappa dei byte che coprono rifatta da capo. */
+  setPage(page, list) {
+    const covered = new Uint8Array(0x1000);
+    for (const block of list) this.cover(covered, page, block);
+    this.pages.set(page, { list, covered });
+    this.forget();
+  }
+
+  cover(covered, page, block) {
+    const base = page * 0x1000;
+    covered.fill(1, block.phys - base, Math.min(block.end - base, 0x1000));
   }
 
   /**
@@ -623,17 +678,19 @@ export class Blocks {
     // della sua pagina, o resterebbe lì a farsi cercare per sempre.
     const before = this.blocks.get(phys);
     if (before !== undefined) {
-      const list = this.pages.get(page);
-      if (list !== undefined) this.pages.set(page, list.filter((one) => one !== before));
+      const entry = this.pages.get(page);
+      if (entry !== undefined) this.setPage(page, entry.list.filter((one) => one !== before));
     }
     this.blocks.set(phys, block);
-    let list = this.pages.get(page);
-    if (list === undefined) {
-      list = [];
-      this.pages.set(page, list);
+    let entry = this.pages.get(page);
+    if (entry === undefined) {
+      entry = { list: [], covered: new Uint8Array(0x1000) };
+      this.pages.set(page, entry);
+      this.forget();
     }
     this.flags[page] = 1;
-    list.push(block);
+    entry.list.push(block);
+    this.cover(entry.covered, page, block);
     return block;
   }
 }

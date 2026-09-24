@@ -1142,7 +1142,33 @@ section('Le interruzioni in modo protetto');
   for (let i = 0; i < 256; i++) if (bus.memory[0x60000 + i] !== ((i * 3) & 0xff)) same = false;
   check('duecentocinquantasei byte copiati quattro per volta', same);
   check('e il contatore è a zero', cpu.get32(ECX) === 0);
-  check('un giro per passo, perché in mezzo si deve poter entrare', steps > 64, `${steps} passi`);
+  check('sessantaquattro giri stanno in un passo solo', steps < 64, `${steps} passi`);
+}
+
+{
+  // Ma una copia lunga torna sull'istruzione ogni tanto, perché in mezzo si
+  // deve poter entrare: tremila giri, a pezzi da 1024.
+  const { cpu, bus } = crossOver([
+    0xbe, ...dw(0x50000), // mov esi, 50000h
+    0xbf, ...dw(0x60000), // mov edi, 60000h
+    0xb9, ...dw(3000), // mov ecx, 3000
+    0xfc, // cld
+    0xf3, 0xa5, // rep movsd
+    HLT,
+  ]);
+  for (let i = 0; i < 12000; i++) bus.memory[0x50000 + i] = (i * 7) & 0xff;
+  let pieces = 0;
+  let copying = 0;
+  while (!cpu.halted && pieces < 100) {
+    const before = cpu.get32(ECX);
+    cpu.step();
+    if (cpu.get32(ECX) < before) copying++;
+    pieces++;
+  }
+  let same = true;
+  for (let i = 0; i < 12000; i++) if (bus.memory[0x60000 + i] !== ((i * 7) & 0xff)) same = false;
+  check('una copia lunga arriva in fondo', same && cpu.get32(ECX) === 0);
+  check('tornando sull\'istruzione fra un pezzo e l\'altro', copying === 3, `${copying} passi di copia`);
 }
 
 {
