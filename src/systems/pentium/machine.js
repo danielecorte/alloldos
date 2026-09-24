@@ -39,6 +39,7 @@ import { FDC765 } from '../pc/fdc.js';
 import { PIT8253, PIT_CLOCK } from '../pc/pit.js';
 import { DMA8237 } from '../pc/dma.js';
 import { SoundBlaster, SB_IRQ } from '../pc/soundblaster.js';
+import { NE2000, RTL8029, DATA_PORT } from './ne2000.js';
 
 /**
  * Il primo Pentium, sessantasei milioni di cicli al secondo. Non è la velocità a
@@ -68,6 +69,9 @@ export const UPPER_END = 0x100000;
 /** Dove si affacciano le ROM delle schede: sedici pezzi da sedici KB. */
 export const CARD_ROM_BASE = 0xc0000;
 export const CARD_ROM_SIZE = 0x20000;
+
+/** Lo slot PCI della scheda di rete: il 3, come su QEMU. */
+const NIC_SLOT = 3;
 
 /** Quanti cicli passano al massimo fra due allineamenti dei chip. */
 const SYNC_INTERVAL = 128;
@@ -171,6 +175,7 @@ export class Pentium {
    * @param {()=>Date} [options.now]
    * @param {number} [options.clock] quanti cicli al secondo dichiara il processore
    * @param {386|486|586} [options.model] che processore c'è sulla scheda
+   * @param {boolean} [options.network] se c'è la scheda di rete nel terzo slot PCI
    */
   constructor(bios, options = {}) {
     this.biosImage = bios;
@@ -210,6 +215,21 @@ export class Pentium {
     this.bridge = this.pci.add(0, 0, new HostBridge((region, read, write) => this.remap(region, read, write)));
     this.isa = this.pci.add(1, 0, new ISABridge());
     this.ide = this.pci.add(1, 1, new IDEFunction());
+
+    /**
+     * La scheda di rete, nello slot 3 del PCI. Il filo A di quello slot arriva al
+     * ponte sud come PIRQC, e da lì va sulla riga che il BIOS ha scelto — SeaBIOS
+     * sceglie la 11. La scheda non sa niente di tutto questo: alza il suo filo.
+     */
+    if (options.network ?? true) {
+      this.nicPCI = this.pci.add(NIC_SLOT, 0, new RTL8029());
+      this.nic = new NE2000({ setIRQ: (active) => this.pciInterrupt(NIC_SLOT, 1, active) });
+    } else {
+      this.nicPCI = null;
+      this.nic = null;
+    }
+    /** Su che riga dell'8259 è finito, per ogni slot, il filo che è alzato adesso. */
+    this.pciLines = new Map();
 
     this.pics = new InterruptChain();
     this.pit = new PIT8253({
@@ -314,6 +334,8 @@ export class Pentium {
     this.disks.reset();
     this.describeDisks();
     this.sound.reset();
+    this.nic?.reset();
+    this.elcr = [0, 0];
     this.a20 = true;
     // I PAM tornano come li trova l'accensione: la ROM risponde a tutta la
     // memoria alta, e la RAM che c'è sotto non la vede nessuno.
@@ -394,6 +416,30 @@ export class Pentium {
     // Allo stesso indirizzo fisico adesso risponde un altro pezzo di silicio:
     // il codice tradotto di lì non è più quello che c'è.
     this.cpu?.blocks.clear();
+    // Il segmento del BIOS che diventa di sola lettura è l'ultima cosa che fa
+    // SeaBIOS prima di avviare: le sue tabelle sono scritte.
+    if (region.base === 0xf0000 && read && !write) this.dropMPTable();
+  }
+
+  /**
+   * Toglie la tabella MP che SeaBIOS lascia nel suo segmento.
+   *
+   * La tabella MP descrive una macchina con gli APIC: un controllore locale in
+   * ogni processore e un IO-APIC a FEC00000 che smista le interruzioni. SeaBIOS
+   * la scrive sempre, perché su QEMU l'IO-APIC c'è sempre; su questa scheda non
+   * c'è nessuno dei due, e la tabella lo ammette a metà — il processore è
+   * dichiarato «non abilitato», l'IO-APIC no. Linux 2.6 la scarta come
+   * sbagliata ma si tiene le righe delle interruzioni, e alla scheda di rete dà
+   * l'IRQ 0. Senza tabella MP un sistema operativo fa come su una scheda del
+   * 1995 con un processore solo: guarda la tabella $PIR, che resta, e il ponte
+   * sud.
+   */
+  dropMPTable() {
+    for (let at = 0xf0000; at < 0x100000; at += 16) {
+      if (this.ram[at] === 0x5f && this.ram[at + 1] === 0x4d && this.ram[at + 2] === 0x50 && this.ram[at + 3] === 0x5f) {
+        this.ram.fill(0, at, at + 16);
+      }
+    }
   }
 
   setA20(open) {
@@ -510,7 +556,8 @@ export class Pentium {
     if (port >= PCI_ADDRESS && port < PCI_ADDRESS + 8) return this.pci.read(port);
     if (port === FWCFG_SELECTOR || port === FWCFG_DATA) return this.fwcfg.read(port);
     if (port === 0xcf9) return this.resetControl ?? 0;
-    if (port === 0x4d0 || port === 0x4d1) return this.elcr?.[port & 1] ?? 0;
+    if (port === 0x4d0 || port === 0x4d1) return this.elcr[port & 1];
+    if (this.nicPCI?.claims(port)) return this.nic.read(port - this.nicPCI.bar(0));
     return 0xff;
   }
 
@@ -561,10 +608,15 @@ export class Pentium {
       return undefined;
     }
     if (port === 0x4d0 || port === 0x4d1) {
-      this.elcr ??= [0, 0];
-      this.elcr[port & 1] = value;
+      // Quali righe scattano sul livello invece che sul fronte. Il timer, la
+      // tastiera, la cascata, l'orologio e il coprocessore non possono: i loro
+      // bit non si lasciano scrivere.
+      const writable = port === 0x4d0 ? 0xf8 : 0xde;
+      this.elcr[port & 1] = value & writable;
+      (port === 0x4d0 ? this.pics.master : this.pics.slave).level = value & writable;
       return undefined;
     }
+    if (this.nicPCI?.claims(port)) return this.nic.write(port - this.nicPCI.bar(0), value);
     return undefined;
   }
 
@@ -582,6 +634,7 @@ export class Pentium {
       this.catchUp();
       return this.disks.readData(port, 2);
     }
+    if (this.isNICData(port)) return this.nic.readData(2);
     return this.inb(port) | (this.inb(port + 1) << 8);
   }
 
@@ -592,6 +645,7 @@ export class Pentium {
       this.disks.writeData(port, value & 0xffff, 2);
       return;
     }
+    if (this.isNICData(port)) return this.nic.writeData(value & 0xffff, 2);
     this.outb(port, value & 0xff);
     this.outb(port + 1, (value >> 8) & 0xff);
   }
@@ -608,6 +662,7 @@ export class Pentium {
   ind(port) {
     port &= 0xffff;
     if (this.disks.isData(port)) return (this.inw(port) | (this.inw(port) << 16)) >>> 0;
+    if (this.isNICData(port)) return this.nic.readData(4);
     return (this.inw(port) | (this.inw(port + 2) << 16)) >>> 0;
   }
 
@@ -618,8 +673,39 @@ export class Pentium {
       this.outw(port, (value >>> 16) & 0xffff);
       return;
     }
+    if (this.isNICData(port)) return this.nic.writeData(value >>> 0, 4);
     this.outw(port, value & 0xffff);
     this.outw(port + 2, (value >>> 16) & 0xffff);
+  }
+
+  /**
+   * La porta dei dati della scheda di rete, che come quella del disco è una
+   * finestra su una fila: una parola letta da lì sono due byte della memoria
+   * della scheda, uno dopo l'altro, e non due porte vicine.
+   */
+  isNICData(port) {
+    if (!this.nicPCI?.claims(port)) return false;
+    const offset = port - this.nicPCI.bar(0);
+    return offset >= DATA_PORT && offset < DATA_PORT + 8;
+  }
+
+  /**
+   * Un filo di interruzione del PCI, da una scheda nello slot `device`.
+   *
+   * I fili del PCI sono quattro e girano: il filo A dello slot 1 è il PIRQA, lo
+   * stesso filo A dello slot 2 è il PIRQB, e così via. Poi il ponte sud manda
+   * ogni PIRQ sulla riga dell'8259 scritta nei suoi registri 60h-63h, che ha
+   * riempito il BIOS; il bit alto acceso vuol dire «da nessuna parte».
+   */
+  pciInterrupt(device, pin, active) {
+    const pirq = (pin - 1 + device - 1) & 3;
+    const route = this.isa.config[0x60 + pirq];
+    const irq = active && !(route & 0x80) ? route & 0x0f : -1;
+    const was = this.pciLines.get(device) ?? -1;
+    if (was === irq) return;
+    if (was >= 0) this.pics.setLine(was, false);
+    if (irq >= 0) this.pics.setLine(irq, true);
+    this.pciLines.set(device, irq);
   }
 
   /**
@@ -795,6 +881,8 @@ export class Pentium {
     this.video.reset();
     this.floppy.reset();
     this.disks.reset();
+    this.nic?.reset();
+    this.elcr = [0, 0];
     this.a20 = true;
     for (const page of this.shadow) {
       page.read = false;

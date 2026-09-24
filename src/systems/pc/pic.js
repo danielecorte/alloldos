@@ -41,6 +41,15 @@ export class PIC8259 {
     /** Lo stato delle righe fisiche: il chip scatta sul fronte, non sul livello. */
     this.lines = 0;
 
+    /**
+     * Le righe che invece scattano sul livello. Sull'XT non ce n'è nessuna; sul
+     * ponte sud del PCI le sceglie il BIOS, con le porte 4D0h e 4D1h, per le
+     * interruzioni delle schede PCI: sono fili condivisi, e una scheda tiene il
+     * suo alto finché il driver non l'ha servita. Una richiesta così non si
+     * perde se arriva mentre la precedente è ancora in servizio.
+     */
+    this.level = 0;
+
     /** A che punto è la sequenza di inizializzazione (ICW1, ICW2, ICW4). */
     this.initStep = 0;
     this.needICW4 = false;
@@ -63,7 +72,15 @@ export class PIC8259 {
       this.irr |= bit;
     } else {
       this.lines &= ~bit;
+      // Sul livello la richiesta è il filo: se il filo scende, non c'è più.
+      if (this.level & bit) this.irr &= ~bit;
     }
+  }
+
+  /** La fine di un servizio: una riga a livello ancora alta chiede di nuovo. */
+  endOfInterrupt(bit) {
+    this.isr &= ~bit;
+    if (this.level & this.lines & bit) this.irr |= bit;
   }
 
   /** Un impulso: alza e riabbassa, che è quello che fa quasi ogni periferica. */
@@ -145,12 +162,12 @@ export class PIC8259 {
       for (let irq = 0; irq < 8; irq++) {
         const bit = 1 << irq;
         if (this.isr & bit) {
-          this.isr &= ~bit;
+          this.endOfInterrupt(bit);
           return;
         }
       }
       return;
     }
-    if (command === 3) this.isr &= ~(1 << (value & 7)); // EOI specifico
+    if (command === 3) this.endOfInterrupt(1 << (value & 7)); // EOI specifico
   }
 }

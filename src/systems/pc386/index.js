@@ -33,6 +33,9 @@ export function build386(bios, { video = null, disk = null, floppy = null, cd = 
     model: 386,
     clock: CLOCK,
     ram: RAM,
+    // La scheda di rete del Pentium è una scheda PCI, e il BIOS di Bochs non
+    // assegna le schede PCI: sul 386 resterebbe spenta, e non la si monta.
+    network: false,
     cards: video ? [{ base: roms.VIDEO_ROM_BASE, bytes: video }] : [],
     disk,
     floppy,

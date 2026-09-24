@@ -31,6 +31,7 @@ import {
 import { setCDROM } from '../pc/cdrom.js';
 import { AudioOutput } from '../zx/audio.js';
 import { LoadProgress } from '../pc/progress.js';
+import { NetworkLink } from './network.js';
 
 const MAX_CATCHUP_FRAMES = 4;
 
@@ -73,6 +74,9 @@ export class BoardSession {
     this.savedFloppyWrites = 0;
     /** Il mouse: quanto si è mosso dall'ultimo pacchetto, e i tasti. */
     this.mouse = { dx: 0, dy: 0, buttons: 0, sent: 0 };
+    /** Il cavo di rete, se la macchina ha una scheda in cui infilarlo. */
+    this.network = null;
+    this.lastPackets = 0;
     this.pending = [];
     this.build();
   }
@@ -235,6 +239,7 @@ export class BoardSession {
     this.tuneSound();
     this.savedDiskWrites = 0;
     await this.mountPending();
+    this.plugNetwork();
 
     this.overlay.replaceChildren();
     this.root.focus();
@@ -277,6 +282,7 @@ export class BoardSession {
     if (frames === 0) return;
     for (let i = 0; i < frames; i++) {
       this.sendMouse();
+      this.network?.pump(this.machine.nic);
       this.machine.runFrame();
     }
     this.playSound();
@@ -325,8 +331,28 @@ export class BoardSession {
 
   // ------------------------------------------------------------------ dischi
 
+  /**
+   * Il cavo nella scheda di rete, e una riga in più sotto i dischi per dire se
+   * dall'altra parte c'è qualcuno. Il 386 la scheda non ce l'ha.
+   */
+  plugNetwork() {
+    if (this.network || !this.machine.nic) return;
+    this.netRow = this.driveRow('Rete:', 'cavo staccato — serve npm start');
+    this.drives.append(this.netRow.row);
+    this.network = new NetworkLink((connected) => {
+      this.netRow.text.textContent = connected
+        ? 'collegata — 10.0.2.15 col DHCP, router 10.0.2.2'
+        : 'cavo staccato — il server si è spento';
+    });
+  }
+
   updateDrives() {
     if (!this.machine) return;
+    if (this.netRow) {
+      const packets = this.machine.nic?.packets ?? 0;
+      this.netRow.light.classList.toggle('pc__light--on', packets !== this.lastPackets);
+      this.lastPackets = packets;
+    }
     const drive = this.machine.floppy.drives[0];
     this.floppyRow.light.classList.toggle('pc__light--on', this.machine.floppy.motorOn);
     this.floppyRow.text.textContent = drive.medium
@@ -793,6 +819,7 @@ export class BoardSession {
     if (this.pointerCaptured) document.exitPointerLock?.();
     for (const [target, type, handler] of this.listeners ?? []) target.removeEventListener(type, handler);
     this.sound?.close();
+    this.network?.close();
     this.root.remove();
   }
 }
