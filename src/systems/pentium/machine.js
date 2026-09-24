@@ -10,7 +10,7 @@
 // Quello che cambia sono tre cose, e sono quelle che rendono questa una macchina
 // diversa e non un 286 più veloce:
 //
-//  - **la memoria è tanta**. Trentadue mega invece di uno, e il processore li
+//  - **la memoria è tanta**. Sessantaquattro mega invece di uno, e il processore li
 //    indirizza tutti senza segmenti. Ma il megabyte in fondo è ancora fatto come
 //    nel 1981, buchi compresi, perché lì dentro gira il DOS.
 //  - **la mappa non è più fissa**. I PAM del ponte nord decidono, per ogni pezzo
@@ -49,8 +49,14 @@ import { SoundBlaster, SB_IRQ } from '../pc/soundblaster.js';
  */
 export const CPU_CLOCK = 66000000;
 
-/** Quanta memoria: trentadue mega, che nel 1995 era una macchina da lavoro. */
-export const RAM_SIZE = 32 * 1024 * 1024;
+/**
+ * Quanta memoria: sessantaquattro mega, che nel 1997 era una macchina da lavoro.
+ * Erano trentadue, e Windows 98 ci stava; l'installatore di Ubuntu 4.10 no: sotto
+ * i quarantacinque mega entra nel suo «low memory mode», e a metà del caricamento
+ * dei componenti il kernel resta senza memoria, uccide debconf, e l'installatore
+ * ricomincia da capo — per sempre. Su una macchina vera sarebbe andata uguale.
+ */
+export const RAM_SIZE = 64 * 1024 * 1024;
 
 /** I 640 KB, la finestra della scheda video, e la memoria alta. */
 export const LOW_RAM = 0xa0000;

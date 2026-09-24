@@ -1035,8 +1035,8 @@ delle tastiere.
 Fra lei e il 286 di sopra ci sono sette anni e due cose che cambiano tutto:
 
 - **la misura.** Registri e indirizzi lunghi trentadue bit, e la fine del
-  mestiere di spezzare la memoria in blocchi da 64 KB. Trentadue mega invece di
-  uno, indirizzati tutti di seguito.
+  mestiere di spezzare la memoria in blocchi da 64 KB. Sessantaquattro mega invece
+  di uno, indirizzati tutti di seguito.
 - **il processore che si difende.** C'è un modo protetto vero, con una tabella di
   descrittori che dice dove comincia e dove finisce ogni segmento e chi ha il
   diritto di toccarlo, e c'è la **paginazione**, che mette fra l'indirizzo che il
@@ -1297,6 +1297,29 @@ fotogrammi moriva lì, con l'ultimo quadro disegnato — uno schermo quasi vuoto
 con un cursore — che restava sullo schermo a somigliare a un PC che non
 riparte.
 
+### Le ventole che non ci sono, e la memoria che mancava
+
+Appena partito, l'installatore di Ubuntu 4.10 prova a caricare i moduli ACPI
+della ventola e delle zone termiche — «per evitare che la macchina si
+surriscaldi», dice lo script che lo fa — e sullo schermo restano tre righe
+allarmanti: `FATAL: Error inserting fan … No such device`, e lo stesso per
+`processor` e `thermal`. Non vogliono dire niente: un 440FX con il PIIX3 non ha
+ACPI, come non l'aveva nessuna scheda del 1995, e lo script lo sa e va avanti
+comunque. A fermarsi era un'altra cosa, che quelle righe coprivano. Sotto i
+quarantacinque mega l'installatore entra nel suo modo per le macchine con poca
+memoria, e con trentadue, a metà del caricamento dei componenti, il kernel resta
+senza: uccide debconf, l'installatore riparte, rimostra l'avviso della memoria
+bassa, ricarica i componenti, e lì si ferma di nuovo — per sempre. Non era un
+guasto dell'emulatore, era la verità: una macchina vera con trentadue mega
+avrebbe fatto lo stesso. Il Pentium adesso ne ha sessantaquattro.
+
+Con sessantaquattro mega l'installatore passa al framebuffer, parla in grafica a
+640×480, partiziona il disco, installa il sistema base e GRUB, e la macchina
+riparte dal disco fisso fino al `login:` di Ubuntu. Quello che non ci sta è il
+desktop: la seconda metà dell'installazione vuole quasi un altro giga, e sul
+disco da uno si ferma con `No space left on device`. Il sistema resta avviabile
+e ci si entra, ma senza la parte grafica.
+
 ### Dove si è arrivati
 
 `npm test` accende la macchina con SeaBIOS dentro e guarda cosa succede. Il
@@ -1307,7 +1330,7 @@ firmware, che di questo emulatore non sa niente:
 - passa al modo protetto, trova il ponte nord sul PCI, apre i PAM, **si copia in
   RAM e continua a girare da lì**, e poi richiude la porta dietro di sé perché
   nessuno ci scriva sopra;
-- legge dall'orologio quanta memoria c'è e si sposta in cima ai trentadue mega;
+- legge dall'orologio quanta memoria c'è e si sposta in cima ai sessantaquattro mega;
 - si fa passare la ROM della scheda video dal canale di configurazione, la
   esegue, e quella mette la VGA nel modo testo a 80 colonne — e da quel momento
   c'è uno schermo su cui leggere;

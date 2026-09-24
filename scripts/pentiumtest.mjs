@@ -1704,6 +1704,16 @@ section('L\'orologio che non si spegne');
   check('si parte dal dischetto, poi dal CD, poi dal disco fisso',
     read(0x3d) === 0x31 && (read(0x38) >> 4) === 2);
 
+  // Sotto i quarantacinque mega l'installatore di Ubuntu 4.10 va nel suo modo
+  // per le macchine povere, e con trentadue il kernel resta senza memoria a metà
+  // dei componenti: uccide debconf e l'installatore ricomincia, all'infinito.
+  const board = new CMOS({ ram: RAM_SIZE });
+  board.write(0x70, 0x34);
+  const low = board.read(0x71);
+  board.write(0x70, 0x35);
+  const above16 = (((board.read(0x71) << 8) | low) * 64) / 1024;
+  check('il Pentium ha la memoria che chiede l\'installatore di Ubuntu', 16 + above16 >= 45, `${16 + above16} MB`);
+
   // L'interruzione periodica: il BIOS la mette a 1024 battiti al secondo e la
   // accende per misurare le attese brevi di INT 15h AH=86h. Senza, un driver
   // che chiede di aspettare un millisecondo aspetta per sempre — ed è così che

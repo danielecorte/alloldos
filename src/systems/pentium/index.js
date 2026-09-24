@@ -2,7 +2,7 @@
 //
 // La pagina è la stessa del 386 — la scheda madre è la stessa — e qui c'è solo
 // quello che cambia: il processore è un Pentium a sessantasei megahertz con
-// trentadue mega, il firmware è SeaBIOS, e la ROM della scheda video non si
+// sessantaquattro mega, il firmware è SeaBIOS, e la ROM della scheda video non si
 // affaccia a C0000 ma la passa al BIOS la scheda madre, dal canale di
 // configurazione, come fa QEMU.
 

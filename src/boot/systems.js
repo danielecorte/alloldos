@@ -71,7 +71,7 @@ export const SYSTEMS = [
     label: 'PC Pentium — SeaBIOS / i440FX',
     year: 1995,
     cpu: 'Intel Pentium @ 66 MHz',
-    memory: '32 MB, disco da 1 GB, VGA, Sound Blaster, CD-ROM, bus PCI',
+    memory: '64 MB, disco da 1 GB, VGA, Sound Blaster, CD-ROM, bus PCI',
     notes: 'Modo protetto, paginazione, firmware libero: la macchina del 1995.',
     available: true,
     load: () => import('../systems/pentium/index.js'),
