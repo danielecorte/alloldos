@@ -36,6 +36,16 @@ export const REG_STATUS_C = 0x0c;
 export const REG_STATUS_D = 0x0d;
 export const REG_CENTURY = 0x32;
 
+/**
+ * Il ciclo di aggiornamento. Una volta al secondo il chip porta avanti l'ora, e
+ * per quei circa due millesimi i registri dell'ora non si leggono: il bit UIP
+ * del registro A lo annuncia 244 microsecondi prima, e resta acceso fino alla
+ * fine. In colpi di quarzo sono 8 di preavviso e 65 di aggiornamento.
+ */
+const UPDATE_WARNING = 8;
+const UPDATE_LENGTH = 65;
+const UIP_TICKS = UPDATE_WARNING + UPDATE_LENGTH;
+
 export class CMOS {
   /**
    * @param {object} [options]
@@ -52,6 +62,8 @@ export class CMOS {
     this.nmiDisabled = true;
     /** I colpi di quarzo passati dall'ultimo battito dell'interruzione periodica. */
     this.phase = 0;
+    /** I colpi di quarzo passati dall'ultimo aggiornamento dell'ora. */
+    this.second = 0;
     this.describe(ram);
   }
 
@@ -89,23 +101,59 @@ export class CMOS {
    * legge il registro C.
    */
   advance(ticks) {
+    this.second += ticks;
+    if (this.second >= RTC_CLOCK) {
+      this.second %= RTC_CLOCK;
+      this.updated();
+    }
     const period = this.period;
     if (!period) return;
     this.phase += ticks;
     if (this.phase < period) return;
     this.phase %= period;
-    this.bytes[REG_STATUS_C] |= 0x40;
-    if (this.bytes[REG_STATUS_B] & 0x40) {
+    this.flag(0x40);
+  }
+
+  /**
+   * Accende un flag del registro C — PF 40h, AF 20h, UF 10h — e se il bit
+   * corrispondente del registro B lo chiede anche IRQF e il filo.
+   */
+  flag(bit) {
+    this.bytes[REG_STATUS_C] |= bit;
+    if (this.bytes[REG_STATUS_B] & bit) {
       this.bytes[REG_STATUS_C] |= 0x80;
       this.onInterrupt?.(true);
     }
   }
 
+  /**
+   * La fine del ciclo di aggiornamento: il flag UF, e la sveglia se l'ora
+   * appena scritta è la sua. Un registro della sveglia da C0h in su vale
+   * «qualunque», ed è così che si chiede un'interruzione ogni secondo o ogni
+   * minuto. Con il bit SET del registro B acceso qualcuno sta scrivendo l'ora,
+   * e il chip non aggiorna niente.
+   */
+  updated() {
+    if (this.bytes[REG_STATUS_B] & 0x80) return;
+    this.flag(0x10);
+    const alarm = [[0x01, REG_SECONDS], [0x03, REG_MINUTES], [0x05, REG_HOURS]];
+    if (alarm.every(([at, register]) => this.bytes[at] >= 0xc0 || this.bytes[at] === this.clock(register))) {
+      this.flag(0x20);
+    }
+  }
+
+  /** Se il chip sta aggiornando l'ora, o sta per farlo: il bit UIP. */
+  get updating() {
+    return !(this.bytes[REG_STATUS_B] & 0x80) && this.second >= RTC_CLOCK - UIP_TICKS;
+  }
+
   /** Quanti colpi di quarzo mancano al prossimo battito che chiama, o Infinity. */
   get ticksToInterrupt() {
+    let ticks = Infinity;
     const period = this.period;
-    if (!period || !(this.bytes[REG_STATUS_B] & 0x40)) return Infinity;
-    return period - this.phase;
+    if (period && this.bytes[REG_STATUS_B] & 0x40) ticks = period - this.phase;
+    if (this.bytes[REG_STATUS_B] & 0x30) ticks = Math.min(ticks, RTC_CLOCK - this.second);
+    return ticks;
   }
 
   /**
@@ -185,10 +233,13 @@ export class CMOS {
       return this.clock(at);
     }
     if (at === REG_STATUS_A) {
-      // Il bit 7 dice "sto aggiornando l'ora, non leggere adesso". Qui l'ora non
-      // si aggiorna mai a metà — la si calcola al momento — e quindi il bit resta
-      // spento: chi aspetta che passi non aspetta.
-      return this.bytes[REG_STATUS_A] & 0x7f;
+      // Il bit 7 dice "sto aggiornando l'ora, non leggere adesso". L'ora qui la
+      // si calcola al momento e non si legge mai a metà, ma il bit va acceso lo
+      // stesso quando il chip aggiornerebbe: c'è chi non aspetta che si spenga
+      // ma che si **accenda**, per sapere dove comincia un secondo. È così che
+      // hwclock mette l'orologio di Linux al passo con quello della scheda, e
+      // senza questo fronte l'avvio di Ubuntu ci restava fermo un minuto.
+      return (this.bytes[REG_STATUS_A] & 0x7f) | (this.updating ? 0x80 : 0);
     }
     if (at === REG_STATUS_C) {
       const value = this.bytes[REG_STATUS_C];

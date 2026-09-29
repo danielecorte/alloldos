@@ -1724,8 +1724,16 @@ section('L\'orologio che non si spegne');
   // il bit e le cifre tornano a mezzo byte per volta.
   cmos.bytes[0x0b] &= ~0x04;
   check('e in decimale codificato in binario se glielo si chiede', read(0x04) === 0x09 && read(0x08) === 0x08);
-  check('il bit «sto aggiornando» resta spento, perché l\'ora non si fa a metà',
-    (read(0x0a) & 0x80) === 0);
+  // Il ciclo di aggiornamento: una volta al secondo il bit UIP si accende per
+  // un paio di millesimi. hwclock, all'avvio di Ubuntu, aspetta proprio che si
+  // accenda, e senza restava a girare a vuoto fino al suo timeout.
+  check('a metà del secondo il bit «sto aggiornando» è spento', (read(0x0a) & 0x80) === 0);
+  cmos.advance(32768 - 73);
+  check('e si accende 244 microsecondi prima dell\'aggiornamento', (read(0x0a) & 0x80) !== 0);
+  cmos.advance(73);
+  check('alla fine si rispegne, con il flag UF nel registro C',
+    (read(0x0a) & 0x80) === 0 && (cmos.bytes[0x0c] & 0x10) !== 0);
+  read(0x0c);
 
   check('si parte dal dischetto, poi dal CD, poi dal disco fisso',
     read(0x3d) === 0x31 && (read(0x38) >> 4) === 2);
@@ -1761,6 +1769,23 @@ section('L\'orologio che non si spegne');
   check('e alla fine si alza, con IRQF e PF nel registro C', line && (rtc.bytes[0x0c] & 0xc0) === 0xc0);
   rtc.write(0x70, 0x0c);
   check('leggere il registro C lo azzera e abbassa il filo', rtc.read(0x71) === 0xc0 && !line && rtc.bytes[0x0c] === 0);
+
+  // L'interruzione di fine aggiornamento, una al secondo: è quella che il
+  // driver /dev/rtc di Linux accende quando hwclock gliela chiede.
+  const uie = new CMOS({ onInterrupt: (active) => { line = active; } });
+  uie.write(0x70, 0x0b);
+  uie.write(0x71, 0x12); // UIE
+  check('con UIE acceso l\'orologio sa quando chiamerà', uie.ticksToInterrupt === 32768);
+  uie.advance(32767);
+  check('prima della fine del secondo il filo resta basso', !line);
+  uie.advance(1);
+  check('alla fine si alza, con IRQF e UF', line && (uie.bytes[0x0c] & 0x90) === 0x90);
+  uie.write(0x70, 0x0b);
+  uie.write(0x71, 0x92); // SET: qualcuno sta scrivendo l'ora
+  uie.write(0x70, 0x0c);
+  uie.read(0x71);
+  uie.advance(32768);
+  check('con il bit SET l\'orologio non aggiorna e non chiama', !line && (uie.bytes[0x0c] & 0x90) === 0);
 }
 
 {
